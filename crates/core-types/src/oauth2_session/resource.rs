@@ -401,6 +401,27 @@ pub struct RefreshToken {
     pub dpop_jkt: Option<String>,
 }
 
+/// Operator view of one refresh token family (an OAuth2 session).
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct RefreshTokenFamilySummary {
+    /// Client the family was issued to.
+    pub client_id: String,
+    /// Owning domain.
+    pub domain_id: String,
+    /// Family id.
+    pub family_id: String,
+    /// UTC epoch seconds the family was created.
+    pub issued_at: i64,
+    /// UTC epoch seconds of the latest rotation.
+    pub last_rotated: i64,
+    /// Why the family was revoked, if it was.
+    pub revocation_reason: Option<String>,
+    /// UTC epoch seconds the family was revoked, if it was.
+    pub revoked_at: Option<i64>,
+    /// Owning user.
+    pub user_id: String,
+}
+
 /// Reason a refresh token family was revoked (stored in
 /// [`RefreshToken::revocation_reason`]).
 #[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]

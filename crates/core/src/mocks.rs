@@ -450,7 +450,8 @@ mod oauth2_session {
 
     use openstack_keystone_core_types::oauth2_session::{
         AuthorizationCode, Consent, DeviceCodeGrant, PreAuthSession, RefreshToken,
-        RefreshTokenRevocationReason, RpSession, SsoSession, UpstreamLoginCompletion,
+        RefreshTokenFamilySummary, RefreshTokenRevocationReason, RpSession, SsoSession,
+        UpstreamLoginCompletion,
     };
 
     use crate::oauth2_session::provider_api::{
@@ -702,6 +703,13 @@ mod oauth2_session {
                 client_id: &str,
                 reason: RefreshTokenRevocationReason,
             ) -> Result<usize, Oauth2SessionProviderError>;
+
+            async fn list_refresh_token_families_by_user(
+                &self,
+                state: &ServiceState,
+                domain_id: &str,
+                user_id: &str,
+            ) -> Result<Vec<RefreshTokenFamilySummary>, Oauth2SessionProviderError>;
 
             async fn revoke_refresh_token_families_by_user<'a>(
                 &self,

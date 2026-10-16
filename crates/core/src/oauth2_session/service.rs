@@ -1006,6 +1006,45 @@ impl Oauth2SessionApi for Oauth2SessionService {
         Ok(family_ids.len())
     }
 
+    #[tracing::instrument(name = "provider.oauth2_session.list_refresh_token_families_by_user", level = "debug", skip_all, fields(user_id = %user_id))]
+    async fn list_refresh_token_families_by_user(
+        &self,
+        state: &ServiceState,
+        domain_id: &str,
+        user_id: &str,
+    ) -> Result<Vec<RefreshTokenFamilySummary>, Oauth2SessionProviderError> {
+        use futures_util::{StreamExt, TryStreamExt, stream};
+
+        let mut family_ids = self
+            .backend_driver
+            .list_refresh_families_by_user(state, domain_id, user_id)
+            .await?;
+        if family_ids.len() > MAX_LISTED_FAMILIES {
+            tracing::warn!(
+                total = family_ids.len(),
+                limit = MAX_LISTED_FAMILIES,
+                "truncating the OAuth2 session listing"
+            );
+            family_ids.truncate(MAX_LISTED_FAMILIES);
+        }
+        // Bounded concurrency; `buffered` keeps the index order.
+        let summaries = stream::iter(family_ids)
+            .map(|family_id| async move {
+                let tokens = self
+                    .backend_driver
+                    .list_refresh_token_family(state, &family_id)
+                    .await?;
+                Ok::<_, Oauth2SessionProviderError>(summarize_family(family_id, &tokens))
+            })
+            .buffered(LIST_FAMILIES_CONCURRENCY)
+            .try_collect::<Vec<_>>()
+            .await?
+            .into_iter()
+            .flatten()
+            .collect();
+        Ok(summaries)
+    }
+
     #[tracing::instrument(name = "provider.oauth2_session.revoke_refresh_token_families_by_user", level = "debug", skip_all, fields(user_id = %user_id))]
     async fn revoke_refresh_token_families_by_user<'a>(
         &self,
@@ -1419,6 +1458,38 @@ impl Oauth2SessionApi for Oauth2SessionService {
             )),
         }
     }
+}
+
+/// Maximum number of families returned by the operator session listing.
+const MAX_LISTED_FAMILIES: usize = 1000;
+/// Concurrent family loads while building the session listing.
+const LIST_FAMILIES_CONCURRENCY: usize = 16;
+
+/// Build the operator summary of one family from its members.
+///
+/// `revoked_at`/`revocation_reason` come from the earliest revocation
+/// stamp (the one that actually ended the family; later revocations never
+/// overwrite it). `last_rotated` is the newest mint time.
+fn summarize_family(
+    family_id: String,
+    tokens: &[RefreshToken],
+) -> Option<RefreshTokenFamilySummary> {
+    let first = tokens.first()?;
+    let last_rotated = tokens.iter().map(|t| t.issued_at).max()?;
+    let revoked = tokens
+        .iter()
+        .filter(|t| t.revoked_at.is_some())
+        .min_by_key(|t| t.revoked_at);
+    Some(RefreshTokenFamilySummary {
+        family_id,
+        domain_id: first.domain_id.clone(),
+        client_id: first.client_id.clone(),
+        user_id: first.user_id.clone(),
+        issued_at: first.issued_at,
+        last_rotated,
+        revoked_at: revoked.and_then(|t| t.revoked_at),
+        revocation_reason: revoked.and_then(|t| t.revocation_reason.clone()),
+    })
 }
 
 #[cfg(test)]
