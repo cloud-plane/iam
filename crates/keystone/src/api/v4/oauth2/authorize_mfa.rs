@@ -30,6 +30,7 @@ use super::passkey::Passkeys;
 use crate::api::common::PeerAddr;
 use crate::audit::{CorrelationId, build_initiator_from_user_id, emit_oauth2_session_event};
 use crate::keystone::ServiceState;
+use openstack_keystone_core::oauth2_metrics::OAUTH2_METRICS;
 
 #[derive(Debug, Deserialize, utoipa::ToSchema)]
 pub(super) struct MfaForm {
@@ -172,7 +173,10 @@ pub(super) async fn authorize_mfa(
     .await
     {
         FactorOutcome::Verified => {}
-        FactorOutcome::RateLimited(retry_after) => return Ok(too_many_requests(retry_after)),
+        FactorOutcome::RateLimited(retry_after) => {
+            OAUTH2_METRICS.record_login_attempt("failure", factor_label(&form.factor));
+            return Ok(too_many_requests(retry_after));
+        }
         FactorOutcome::Failed => {
             return Ok(error_page(
                 StatusCode::INTERNAL_SERVER_ERROR,
@@ -180,6 +184,7 @@ pub(super) async fn authorize_mfa(
             ));
         }
         FactorOutcome::Invalid => {
+            OAUTH2_METRICS.record_login_attempt("failure", factor_label(&form.factor));
             emit_oauth2_session_event(
                 &state.audit_dispatcher,
                 &correlation_id.0,
@@ -252,6 +257,7 @@ pub(super) async fn authorize_mfa(
         }
     };
 
+    OAUTH2_METRICS.record_login_attempt("success", factor_label(&form.factor));
     emit_oauth2_session_event(
         &state.audit_dispatcher,
         &correlation_id.0,
@@ -277,4 +283,14 @@ pub(super) async fn authorize_mfa(
         established.map(|e| e.cookie),
         response,
     ))
+}
+
+/// Fixed `factor` label for the submitted second factor. Only `totp` and
+/// `webauthn` pass the factor check above, so the two labels are exhaustive.
+fn factor_label(factor: &str) -> &'static str {
+    if factor == FACTOR_WEBAUTHN {
+        "passkey"
+    } else {
+        "totp"
+    }
 }

@@ -37,6 +37,7 @@ use secrecy::SecretString;
 use serde::Deserialize;
 
 use openstack_keystone_core::auth::ExecutionContext;
+use openstack_keystone_core::oauth2_metrics::OAUTH2_METRICS;
 use openstack_keystone_core::oauth2_session::{
     IssueAuthorizationCodeRequest, StartPreAuthSessionRequest,
 };
@@ -325,6 +326,42 @@ fn render_consent(
     skip(state, query)
 )]
 pub(super) async fn authorize(
+    Path(domain_id): Path<String>,
+    State(state): State<ServiceState>,
+    headers: HeaderMap,
+    PeerAddr(peer_addr): PeerAddr,
+    correlation_id: CorrelationId,
+    jar: CookieJar,
+    Query(query): Query<AuthorizeQuery>,
+) -> Result<Response, std::convert::Infallible> {
+    let result = authorize_inner(
+        Path(domain_id),
+        State(state),
+        headers,
+        PeerAddr(peer_addr),
+        correlation_id,
+        jar,
+        Query(query),
+    )
+    .await;
+    if let Ok(response) = &result {
+        OAUTH2_METRICS.record_authorize(authorize_outcome(response.status()));
+    }
+    result
+}
+
+/// Fixed `/authorize` outcome label for a response status.
+fn authorize_outcome(status: StatusCode) -> &'static str {
+    match status {
+        s if s.is_redirection() => "redirect",
+        StatusCode::OK => "page",
+        StatusCode::TOO_MANY_REQUESTS => "rate_limited",
+        s if s.is_client_error() => "invalid",
+        _ => "error",
+    }
+}
+
+async fn authorize_inner(
     Path(domain_id): Path<String>,
     State(state): State<ServiceState>,
     headers: HeaderMap,
@@ -805,6 +842,7 @@ pub(super) async fn authorize_login(
         Ok(r) => r,
         Err(e) => {
             tracing::debug!(error = %e, "oauth2 authorize login failed");
+            OAUTH2_METRICS.record_login_attempt("failure", "password");
             emit_oauth2_session_event(
                 &state.audit_dispatcher,
                 &correlation_id.0,
@@ -893,6 +931,7 @@ pub(super) async fn authorize_login(
         }
     };
 
+    OAUTH2_METRICS.record_login_attempt("success", "password");
     emit_oauth2_session_event(
         &state.audit_dispatcher,
         &correlation_id.0,

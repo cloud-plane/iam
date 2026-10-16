@@ -31,6 +31,7 @@ use crate::auth::ExecutionContext;
 use crate::cadf_hook::build_initiator_unknown;
 use crate::events::ProviderHooks;
 use crate::keystone::ServiceState;
+use crate::oauth2_metrics::OAUTH2_METRICS;
 use crate::oauth2_session::Oauth2SessionProviderError;
 use crate::oauth2_session::audit::emit_oauth2_refresh_family_revoked_event;
 
@@ -206,6 +207,8 @@ impl Oauth2SessionHook {
                 reason.as_str(),
             );
         }
+        // Counted once per lifecycle event, after the audit trail is emitted.
+        OAUTH2_METRICS.record_revocations(reason.as_str(), family_ids.len() as u64);
         Ok(())
     }
 }
