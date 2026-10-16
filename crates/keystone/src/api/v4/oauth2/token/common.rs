@@ -124,10 +124,7 @@ pub(in crate::api::v4::oauth2) async fn sign_jwt_typed<T: Serialize>(
         .get_oauth2_key_provider()
         .active_signing_key(state, domain_id)
         .await
-        .map_err(|e| {
-            tracing::warn!(error = %e, "oauth2 signing key lookup failed");
-            Oauth2TokenError::internal("token issuance failed")
-        })?;
+        .map_err(|e| Oauth2TokenError::from_key_err(&e, "oauth2 signing key lookup failed"))?;
     let encoding_key = to_encoding_key(&signing_key).map_err(|e| {
         tracing::warn!(error = %e, "oauth2 signing key conversion failed");
         Oauth2TokenError::internal("token issuance failed")

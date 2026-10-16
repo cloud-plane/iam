@@ -107,8 +107,7 @@ pub(super) async fn handle_authorization_code_grant(
         .redeem_authorization_code(state, &code)
         .await
         .map_err(|e| {
-            tracing::warn!(error = %e, "oauth2 authorization code redemption failed");
-            Oauth2TokenError::internal("token issuance failed")
+            Oauth2TokenError::from_session_err(&e, "oauth2 authorization code redemption failed")
         })?;
     let Some(record) = record else {
         return Err(Oauth2TokenError::invalid_grant(
@@ -174,8 +173,7 @@ pub(super) async fn handle_authorization_code_grant(
             )
             .await
             .map_err(|e| {
-                tracing::warn!(error = %e, "oauth2 refresh token issuance failed");
-                Oauth2TokenError::internal("token issuance failed")
+                Oauth2TokenError::from_session_err(&e, "oauth2 refresh token issuance failed")
             })?;
         (Some(record_rt.family_id), Some(bearer))
     } else {
