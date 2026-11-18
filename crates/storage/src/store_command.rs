@@ -19,7 +19,7 @@ use crate::StoreError;
 use crate::types::Metadata;
 
 /// Re-export `Mutation` from storage-api crate.
-pub use openstack_keystone_storage_api::Mutation;
+pub use openstack_keystone_storage_api::{FeedOp, Mutation};
 
 /// Store command.
 ///
@@ -290,6 +290,64 @@ pub enum MutationInner {
         /// The complete new list.
         sites: Vec<SiteRecord>,
     },
+
+    /// Delete every feed outbox event up to and including `upto_index` on
+    /// every voter and raise the feed floor past it. Proposed by the leader's
+    /// retention task, so all voters prune the same events.
+    PruneOutbox {
+        /// Newest log index to delete.
+        upto_index: u64,
+    },
+
+    /// Start a new feed epoch with a value chosen by the proposer, so every
+    /// voter holds the same one. Proposed once by the node that elects itself
+    /// after a restore into uninitialized nodes, which cannot agree on an
+    /// epoch by themselves.
+    SetFeedEpoch {
+        /// The new epoch.
+        epoch: u64,
+    },
+
+    /// Allow the subscriber `svid` to receive feed events of `kind`, for one
+    /// domain or all of them. Grants add up: a grant for every domain covers
+    /// the kind whatever domain grants exist beside it.
+    SetFeedGrant {
+        /// Full SPIFFE ID of the subscriber.
+        svid: String,
+        /// Feed kind.
+        kind: String,
+        /// The domain, or `None` for every domain.
+        domain: Option<String>,
+    },
+
+    /// Remove one grant made by [`MutationInner::SetFeedGrant`]. The kind,
+    /// SVID and domain must match it exactly.
+    RevokeFeedGrant {
+        /// Full SPIFFE ID of the subscriber.
+        svid: String,
+        /// Feed kind.
+        kind: String,
+        /// The domain, or `None` for the grant of every domain.
+        domain: Option<String>,
+    },
+
+    /// Append an event to the feed outbox (ADR 0045 section 3, M4).
+    Emit {
+        /// Feed kind; must be listed in `[distributed_storage] feed_kinds`;
+        /// checked where the transaction is proposed, not on apply.
+        kind: String,
+        /// Owning domain, if any.
+        domain_id: Option<String>,
+        /// Key of the changed record.
+        #[serde(with = "serde_bytes")]
+        key: Vec<u8>,
+        /// What happened to the record.
+        op: FeedOp,
+        /// Plaintext value for a `Set`.
+        value: Option<serde_bytes::ByteBuf>,
+        /// Data tier (0 to 3); Tier 2 and 3 are refused.
+        tier: u8,
+    },
 }
 
 /// A site that can open the DEK envelope.
@@ -353,6 +411,21 @@ impl MutationInner {
             },
             Mutation::SetIndex { key } => MutationInner::SetIndex { key },
             Mutation::DropKeyspace { keyspace } => MutationInner::DropKeyspace { keyspace },
+            Mutation::Emit {
+                kind,
+                domain_id,
+                key,
+                op,
+                value,
+                tier,
+            } => MutationInner::Emit {
+                kind,
+                domain_id,
+                key,
+                op,
+                value: value.map(serde_bytes::ByteBuf::from),
+                tier: tier as u8,
+            },
         })
     }
 }

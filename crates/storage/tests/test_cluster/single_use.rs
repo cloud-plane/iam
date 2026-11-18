@@ -20,7 +20,7 @@
 use super::harness::*;
 use super::*;
 
-const SINGLE_USE_PORT_BASE: u16 = 2400;
+const SINGLE_USE_PORT_BASE: u16 = 2900;
 
 /// Waits until every node lists exactly `expected` single-use keyspaces.
 async fn expect_listing(nodes: &[RestartableNode], expected: &[&str]) -> bool {

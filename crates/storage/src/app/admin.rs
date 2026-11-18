@@ -508,6 +508,24 @@ impl Storage {
         &self.state_machine_store
     }
 
+    /// A feed service that authorises subscribers with `authz` instead of
+    /// the node's own peer policy, to serve the feed on a dedicated listener
+    /// (and to exercise roles the node's TLS mode cannot grant by name).
+    pub fn feed_service_with_authz(
+        &self,
+        authz: Arc<crate::grpc::authz::PeerAuthz>,
+    ) -> crate::grpc::feed_service::FeedServiceImpl {
+        crate::grpc::feed_service::FeedServiceImpl::new(
+            self.raft.clone(),
+            self.node_id,
+            self.state_machine_store.clone(),
+            authz,
+            self.leader_contact.clone(),
+            self.feed_heartbeat,
+            self.local_read_max_staleness,
+        )
+    }
+
     /// Try to commit the command to the raft cluster.
     ///
     /// Attempt to commit command to the current node forwarding the request
@@ -522,6 +540,17 @@ impl Storage {
         &self,
         command: crate::pb::api::CommandRequest,
     ) -> Result<crate::ZeroizingResponse, StoreError> {
+        // Feed kinds and event sizes are node-local config, so they are enforced here, before
+        // the proposal, and never on apply.
+        if let Ok(cmd) = crate::store_command::StoreCommand::unpack(&command.payload)
+            && let Some(r) = self.state_machine_store.refused_emit(&cmd)
+        {
+            return Err(StoreError::Rejected {
+                violation_type: r.violation_type.to_string(),
+                subject: r.subject,
+                description: r.description,
+            });
+        }
         match self.raft.client_write(command.clone()).await {
             Ok(rsp) => {
                 let rsp = rsp.data;

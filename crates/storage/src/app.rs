@@ -66,6 +66,7 @@ use crate::network::{
     CertExpiryWatchdog, ChannelCache, NetworkManager, RaftTlsClient, init_tls_watcher,
 };
 use crate::pb::raft::cluster_admin_service_server::ClusterAdminServiceServer;
+use crate::pb::raft::feed_service_server::FeedServiceServer;
 use crate::pb::raft::raft_service_server::RaftServiceServer;
 use crate::protobuf::api::storage_service_client::StorageServiceClient;
 use crate::protobuf::api::storage_service_server::StorageServiceServer;
@@ -78,6 +79,7 @@ use openstack_keystone_storage_api::Node;
 
 mod admin;
 mod dek_rotation;
+mod feed_retention;
 mod init;
 mod storage_api;
 
@@ -114,6 +116,11 @@ pub struct Storage {
     /// Delay (ms) between `ensure_linearizable` retry attempts, from
     /// `[distributed_storage] ensure_linearizable_retry_delay_ms`.
     pub(crate) ensure_linearizable_retry_delay_ms: u64,
+    /// `[distributed_storage] feed_retention_days` and `feed_max_events`.
+    feed_retention_days: u32,
+    feed_max_events: u64,
+    /// `[distributed_storage] feed_heartbeat_secs`.
+    pub(crate) feed_heartbeat: Duration,
     /// `[distributed_storage] local_reads_mode`: whether a consumer's
     /// `ReadConsistency::Local` request is honored for Tier 0/1 records.
     pub(crate) local_reads_mode: LocalReadsMode,

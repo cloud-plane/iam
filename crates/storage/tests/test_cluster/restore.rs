@@ -506,6 +506,26 @@ async fn test_disaster_recovery_elects_exactly_one_leader_inner() -> Result<()> 
     let term = |i: usize| dst[i].storage.raft.metrics().borrow_watched().current_term;
     assert_eq!(term(0), term(1), "both nodes must agree on the term");
 
+    // The elected node proposes one feed epoch through Raft, so both voters
+    // end up with the same one and a consumer can fail over between them.
+    let epochs_agree = poll_until(Duration::from_millis(100), 100, || {
+        let e0 = dst[0]
+            .storage
+            .state_machine_store()
+            .feed_epoch()
+            .ok()
+            .flatten();
+        let e1 = dst[1]
+            .storage
+            .state_machine_store()
+            .feed_epoch()
+            .ok()
+            .flatten();
+        e0.is_some() && e0 == e1
+    })
+    .await;
+    assert!(epochs_agree, "voters must agree on one feed epoch");
+
     // Only the leader takes writes, and they replicate.
     dst[0]
         .storage

@@ -148,6 +148,8 @@ impl RaftStateMachine<TypeConfig> for Arc<FjallStateMachine> {
             // Keyspaces named by `DropKeyspace`; dropped after the batch
             // commits, once the lifecycle read guard is released.
             let mut pending_keyspace_drops: Vec<String> = Vec::new();
+            // Position of the next `Emit` within this transaction.
+            let mut emit_position: u16 = 0;
             // Site list of a `SetSites`, installed in the in-memory registry
             // once the batch that re-wrapped the envelopes commits.
             let mut pending_sites: Option<Vec<openstack_keystone_storage_crypto::SiteEntry>> = None;
@@ -183,7 +185,11 @@ impl RaftStateMachine<TypeConfig> for Arc<FjallStateMachine> {
                         let violations = match restore_outcome.take().unwrap_or_else(|| {
                             Err(RestoreError::Fatal(io::Error::other("restore not run")))
                         }) {
-                            Ok(()) => vec![],
+                            Ok(()) => {
+                                self.reset_feed(last_applied_log.index)
+                                    .map_err(|e| io::Error::other(e.to_string()))?;
+                                vec![]
+                            }
                             Err(RestoreError::Rejected(description)) => {
                                 tracing::error!(
                                     restore_id,
@@ -670,6 +676,14 @@ impl RaftStateMachine<TypeConfig> for Arc<FjallStateMachine> {
                                             }
                                         }
                                     }
+                                    if is_emergency {
+                                        self.stage_outbox_revoke(
+                                            &mut batch,
+                                            old_version,
+                                            last_applied_log.index,
+                                        )
+                                        .map_err(|e| io::Error::other(e.to_string()))?;
+                                    }
                                     pending_dek_swap = Some((new_epoch, is_emergency));
                                     tracing::info!(
                                         old_version,
@@ -928,6 +942,12 @@ impl RaftStateMachine<TypeConfig> for Arc<FjallStateMachine> {
                                                 }
                                             }
 
+                                            self.stage_outbox_revoke(
+                                                &mut batch,
+                                                old_version,
+                                                last_applied_log.index,
+                                            )
+                                            .map_err(|e| io::Error::other(e.to_string()))?;
                                             pending_dek_swap = Some((new_epoch, true));
                                             tracing::warn!(
                                                 rotation_id,
@@ -962,6 +982,86 @@ impl RaftStateMachine<TypeConfig> for Arc<FjallStateMachine> {
                                             ),
                                         });
                                     }
+                                }
+                                MutationInner::Emit {
+                                    kind,
+                                    domain_id,
+                                    key,
+                                    op,
+                                    value,
+                                    tier,
+                                } => {
+                                    let refuse = |what: &str, why: String| Violation {
+                                        r#type: what.to_string(),
+                                        subject: kind.clone(),
+                                        description: why,
+                                    };
+                                    if tier >= DataTier::Sensitive as u8 {
+                                        violations.push(refuse(
+                                            "FEED_TIER_REFUSED",
+                                            "Tier 2 and 3 data is never on the feed".to_string(),
+                                        ));
+                                        continue;
+                                    }
+                                    if emit_position == u16::MAX {
+                                        violations.push(refuse(
+                                            "FEED_EMIT_LIMIT",
+                                            "too many Emit mutations in one transaction"
+                                                .to_string(),
+                                        ));
+                                        continue;
+                                    }
+                                    let event = OutboxEvent {
+                                        kind: kind.clone(),
+                                        domain_id,
+                                        key,
+                                        op,
+                                        value,
+                                    };
+                                    let cursor = FeedCursor {
+                                        index: last_applied_log.index,
+                                        position: emit_position,
+                                    };
+                                    emit_position += 1;
+                                    match self.stage_outbox_event(&mut batch, cursor, &event) {
+                                        Ok(()) => {
+                                            self.stage_feed_epoch(
+                                                &mut batch,
+                                                last_applied_log.index,
+                                            )
+                                            .map_err(|e| io::Error::other(e.to_string()))?;
+                                        }
+                                        Err(StoreError::Quarantined(p)) => {
+                                            violations.push(refuse(
+                                                "QUARANTINED",
+                                                format!("partition '{p}' is quarantined"),
+                                            ));
+                                        }
+                                        Err(e) => return Err(io::Error::other(e.to_string())),
+                                    }
+                                }
+                                MutationInner::SetFeedEpoch { epoch } => {
+                                    self.stage_feed_epoch_value(&mut batch, epoch);
+                                }
+                                MutationInner::SetFeedGrant { svid, kind, domain } => {
+                                    self.stage_feed_grant(
+                                        &mut batch,
+                                        &svid,
+                                        &kind,
+                                        domain.as_deref(),
+                                    );
+                                }
+                                MutationInner::RevokeFeedGrant { svid, kind, domain } => {
+                                    self.stage_feed_revoke(
+                                        &mut batch,
+                                        &svid,
+                                        &kind,
+                                        domain.as_deref(),
+                                    );
+                                }
+                                MutationInner::PruneOutbox { upto_index } => {
+                                    self.stage_outbox_prune(&mut batch, upto_index)
+                                        .map_err(|e| io::Error::other(e.to_string()))?;
                                 }
                                 MutationInner::SetSites { sites } => {
                                     pending_sites = Some(

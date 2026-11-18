@@ -168,14 +168,58 @@ impl ClusterAdminServiceImpl {
             .install_full_snapshot(vote, snapshot)
             .await
             .map_err(|e| Status::internal(format!("backup install failed: {e}")))?;
+        // The restored outbox and its epoch belong to the backup's cluster.
+        // This epoch is provisional and local: the nodes cannot agree on one
+        // before they form a cluster, so the elected node proposes the real
+        // one through Raft below.
+        self.sm
+            .reset_feed(rand::random::<u64>() | 1)
+            .map_err(|e| Status::internal(format!("resetting the feed failed: {e}")))?;
         if elect {
             self.raft_node
                 .trigger()
                 .elect(false)
                 .await
                 .map_err(|e| Status::internal(format!("election trigger failed: {e}")))?;
+            self.spawn_feed_epoch_proposal();
         }
         Ok(())
+    }
+
+    /// Proposes one replicated feed epoch once this node is leader, so every
+    /// voter ends up with the same epoch and a consumer can fail over between
+    /// them. A node that joins later takes the epoch from the log or the
+    /// snapshot; until then it serves its provisional local epoch, so a
+    /// consumer that fails over to it in that window reloads.
+    fn spawn_feed_epoch_proposal(&self) {
+        use openraft::async_runtime::WatchReceiver;
+        const GIVE_UP: std::time::Duration = std::time::Duration::from_secs(600);
+        let raft = self.raft_node.clone();
+        let node_id = self.node_id;
+        tokio::spawn(async move {
+            let deadline = tokio::time::Instant::now() + GIVE_UP;
+            while tokio::time::Instant::now() < deadline {
+                if raft.metrics().borrow_watched().current_leader == Some(node_id) {
+                    let cmd = StoreCommand::Transaction(vec![MutationInner::SetFeedEpoch {
+                        epoch: rand::random::<u64>() | 1,
+                    }]);
+                    let Ok(payload) = pb::api::CommandRequest::try_from(cmd) else {
+                        return;
+                    };
+                    match raft.client_write(payload).await {
+                        Ok(_) => return,
+                        Err(e) => {
+                            tracing::debug!(error = %e, "feed epoch proposal not yet committed")
+                        }
+                    }
+                }
+                tokio::time::sleep(std::time::Duration::from_millis(500)).await;
+            }
+            tracing::warn!(
+                "no replicated feed epoch was committed after the restore; voters keep \
+                 their own provisional epochs"
+            );
+        });
     }
 
     pub(super) async fn stage_and_apply(
