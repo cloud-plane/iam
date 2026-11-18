@@ -212,9 +212,9 @@ pub struct SiteKek {
 pub type UnwrapperFactory = Arc<dyn Fn(u32) -> Option<Arc<dyn SiteKeyUnwrapper>> + Send + Sync>;
 
 impl SiteKek {
-    /// `site` is this node's site, `unwrappers` the key store per key version, `registry` the
-    /// sites a new envelope is wrapped for and `escrow` an optional extra
-    /// recipient (kept offline).
+    /// `site` is this node's site, `unwrappers` the key store per key version,
+    /// `registry` the sites a new envelope is wrapped for and `escrow` an
+    /// optional extra recipient (kept offline).
     pub fn new(
         cluster_id: impl Into<String>,
         site: impl Into<String>,

@@ -1085,7 +1085,22 @@ The `sites` entries are only the initial list. After the first `SetSites`
 call the cluster-wide list is stored in the replicated state, travels with
 snapshots and backups, and wins over the configuration on every node.
 
-To add a site, first run `SetSites` with the full new list (on the leader, as an
+`keystone-manage storage sites` lists the sites, and `--add
+<name>=<public-key.pem>[@<version>]` and `--remove <name>` change the list
+(each is repeatable). `--remove` also needs `--allow-removal`. An add or
+key replacement is staged and prints a `change_id`; a second operator
+applies it with `keystone-manage storage confirm-sites --change-id <id>
+--expect-digest <digest>`. The initiator passes the `change_id` and the digest
+to the second operator over a separate channel. `confirm-sites` fetches the
+staged list from the leader (`GetPendingSiteChange`), prints each site with
+the SHA-256 fingerprint of its key and marks added, replaced and removed
+sites. The leader applies the list only if the digest matches, so the second
+operator approves exactly what is applied. Without `--expect-digest` the
+command asks the operator to type `yes` after comparing the fingerprints. The
+fingerprints, key versions and digest are in the `SITES_CHANGE_STAGED` and
+`SITES_SET` audit events.
+
+To add a site, first run `SetSites` (`storage sites --add`) with the full new list (on the leader, as an
 operator; the answering node's own site must stay in it), then start and join
 the new site's node.
 

@@ -42,8 +42,9 @@ const PEER_KEEPALIVE: std::time::Duration = std::time::Duration::from_secs(5);
 ///
 /// The identity is resolved through [`PeerAuthz::roles_of_identity`]: only
 /// `<spiffe_path_prefix><role>` paths (`node` and the operator role), exact
-/// `allowed_peer_svids` entries and SVIDs bound in `peers` are accepted. Per-RPC role enforcement stays in the service handlers; this
-/// is a coarse gate rejecting unknown identities early.
+/// `allowed_peer_svids` entries and SVIDs bound in `peers` are accepted.
+/// Per-RPC role enforcement stays in the service handlers; this is a coarse
+/// gate rejecting unknown identities early.
 ///
 /// Exposed as a standalone function for testability.
 fn validate_spiffe_id(

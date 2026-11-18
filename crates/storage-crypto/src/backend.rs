@@ -28,11 +28,11 @@
 //! ## Adding a backend
 //!
 //! A backend is a module exporting `gcm_seal`, `gcm_open`, `hkdf_expand`,
-//! `hkdf_extract_expand`, `hmac_sha256`, `sha256` and `fill_random` with the signatures
-//! of [`ringlike`]. To add one (for example the RustCrypto crates), add a cargo
-//! feature with optional dependencies, a module, and one arm to each `cfg`
-//! chain below; `fips` stays first so it keeps precedence. Both [`ringlike`]
-//! and the new module must pass `test_gcm_known_answer`.
+//! `hkdf_extract_expand`, `hmac_sha256`, `sha256` and `fill_random` with the
+//! signatures of [`ringlike`]. To add one (for example the RustCrypto crates),
+//! add a cargo feature with optional dependencies, a module, and one arm to
+//! each `cfg` chain below; `fips` stays first so it keeps precedence. Both
+//! [`ringlike`] and the new module must pass `test_gcm_known_answer`.
 //!
 //! Caveat: the validated module only treats AES-GCM encryption as an approved
 //! service when it generates the IV itself. [`gcm_seal_iv`] therefore lets the
@@ -53,7 +53,9 @@ compile_error!("enable either the `ring` (default) or the `fips` feature");
 mod ringlike;
 pub(crate) mod rsa_oaep;
 
-pub(crate) use ringlike::{fill_random, gcm_open, hkdf_expand, hkdf_extract_expand, hmac_sha256, sha256};
+pub(crate) use ringlike::{
+    fill_random, gcm_open, hkdf_expand, hkdf_extract_expand, hmac_sha256, sha256,
+};
 // Sealing with a caller-supplied IV is a non-approved service in the FIPS
 // module, so the `fips` build only keeps it for tests.
 #[cfg(any(not(feature = "fips"), test))]

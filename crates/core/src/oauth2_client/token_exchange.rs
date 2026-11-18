@@ -554,7 +554,8 @@ mod tests {
         let claims = build_claims_with_expiries(None, at(1500), 1900).unwrap();
         assert_eq!(claims.exp, 1500);
 
-        // An already-expired app cred is still rejected without a subject expiry.
+        // An already-expired app cred is still rejected without a subject
+        // expiry.
         assert!(matches!(
             build_claims_with_expiries(None, at(1000), 1900),
             Err(TokenExchangeError::CredentialChainExpired)

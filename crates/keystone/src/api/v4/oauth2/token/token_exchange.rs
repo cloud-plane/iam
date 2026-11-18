@@ -1350,7 +1350,8 @@ mod tests {
         // (input, expected status, expected OAuth2 error code).
         // When a TokenExchangeError variant is added, add a row here.
         let cases = [
-            // Subject or delegation unusable: RFC 8693 §2.2.2 `invalid_request`.
+            // Subject or delegation unusable: RFC 8693 §2.2.2
+            // `invalid_request`.
             (
                 TokenExchangeError::CrossDomainSubjectToken,
                 BAD_REQUEST,

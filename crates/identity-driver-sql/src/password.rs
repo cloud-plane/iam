@@ -66,8 +66,8 @@ pub(crate) fn hash_error(err: PasswordHashError) -> IdentityProviderError {
 /// - `password`: The plaintext password to set.
 /// - `existing_passwords`: Pre-loaded existing passwords sorted DESC by
 ///   creation.
-/// - `self_service`: Whether the password is set by the user itself (as
-///   opposed to creation or an administrative reset).
+/// - `self_service`: Whether the password is set by the user itself (as opposed
+///   to creation or an administrative reset).
 /// - `user_opts`: The options of the user.
 ///
 /// When `[security_compliance] change_password_upon_first_use` is enabled and
