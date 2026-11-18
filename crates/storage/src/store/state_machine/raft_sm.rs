@@ -77,6 +77,8 @@ impl RaftStateMachine<TypeConfig> for Arc<FjallStateMachine> {
             let mut restore_outcome: Option<Result<(), RestoreError>> = None;
             let mut unwrapped_deks: HashMap<Vec<u8>, Zeroizing<[u8; 32]>> = HashMap::new();
             let mut unwrap_failures: HashMap<Vec<u8>, String> = HashMap::new();
+            // Re-wrapped DEK envelopes of a `SetSites`, old envelope to new.
+            let mut site_rewraps: HashMap<Vec<u8>, Vec<u8>> = HashMap::new();
             match &command {
                 Some(StoreCommand::RestoreApply {
                     restore_id,
@@ -87,6 +89,14 @@ impl RaftStateMachine<TypeConfig> for Arc<FjallStateMachine> {
                         Some(self.apply_restore(restore_id, *chunks, *total_len).await);
                 }
                 Some(StoreCommand::Transaction(mutations)) => {
+                    for m in mutations {
+                        if let MutationInner::SetSites { sites } = m {
+                            site_rewraps = self
+                                .rewrap_site_envelopes(sites)
+                                .await
+                                .map_err(|e| io::Error::other(e.to_string()))?;
+                        }
+                    }
                     for wrapped in self.deks_to_unwrap(mutations) {
                         match unwrap_dek_retrying(self.kek.as_ref(), &wrapped).await {
                             Ok(raw) => {
@@ -99,6 +109,24 @@ impl RaftStateMachine<TypeConfig> for Arc<FjallStateMachine> {
                     }
                 }
                 _ => {}
+            }
+            // Envelopes that name another site list than the registry now
+            // holds (made before a `SetSites` committed), re-wrapped with the
+            // DEK just unwrapped so the stored one never excludes a site.
+            let mut refreshed_envelopes: HashMap<Vec<u8>, Vec<u8>> = HashMap::new();
+            if let Some(site_kek) = self.kek.as_site_kek() {
+                for (wrapped, raw) in &unwrapped_deks {
+                    match site_kek.refresh_envelope(wrapped, raw) {
+                        Ok(Some(fresh)) => {
+                            refreshed_envelopes.insert(wrapped.clone(), fresh);
+                        }
+                        Ok(None) => {}
+                        Err(e) => tracing::warn!(
+                            error = %e,
+                            "cannot re-wrap a DEK envelope for the current site list"
+                        ),
+                    }
+                }
             }
             // Held for this entry's whole processing+commit (there is no
             // further `.await` in this loop body until the next iteration),
@@ -120,6 +148,9 @@ impl RaftStateMachine<TypeConfig> for Arc<FjallStateMachine> {
             // Keyspaces named by `DropKeyspace`; dropped after the batch
             // commits, once the lifecycle read guard is released.
             let mut pending_keyspace_drops: Vec<String> = Vec::new();
+            // Site list of a `SetSites`, installed in the in-memory registry
+            // once the batch that re-wrapped the envelopes commits.
+            let mut pending_sites: Option<Vec<openstack_keystone_storage_crypto::SiteEntry>> = None;
 
             let response = if let Some(command) = command {
                 match command {
@@ -542,7 +573,11 @@ impl RaftStateMachine<TypeConfig> for Arc<FjallStateMachine> {
                                     // Persist new DEK: [version_u32_BE; 4] ++
                                     // wrapped_bytes.
                                     let mut persisted = dek_version.to_be_bytes().to_vec();
-                                    persisted.extend_from_slice(&wrapped_dek);
+                                    persisted.extend_from_slice(
+                                        refreshed_envelopes
+                                            .get(&wrapped_dek)
+                                            .unwrap_or(&wrapped_dek),
+                                    );
                                     batch.insert(&self.meta, META_DEK_CURRENT, persisted);
                                     batch.insert(
                                         &self.meta,
@@ -821,7 +856,11 @@ impl RaftStateMachine<TypeConfig> for Arc<FjallStateMachine> {
                                             );
                                             let mut persisted =
                                                 entry.dek_version.to_be_bytes().to_vec();
-                                            persisted.extend_from_slice(&entry.wrapped_dek);
+                                            persisted.extend_from_slice(
+                                                refreshed_envelopes
+                                                    .get(&entry.wrapped_dek)
+                                                    .unwrap_or(&entry.wrapped_dek),
+                                            );
                                             batch.insert(&self.meta, META_DEK_CURRENT, persisted);
                                             batch.insert(
                                                 &self.meta,
@@ -924,6 +963,12 @@ impl RaftStateMachine<TypeConfig> for Arc<FjallStateMachine> {
                                         });
                                     }
                                 }
+                                MutationInner::SetSites { sites } => {
+                                    pending_sites = Some(
+                                        self.stage_site_registry(&mut batch, &sites, &site_rewraps)
+                                            .map_err(|e| io::Error::other(e.to_string()))?,
+                                    );
+                                }
                                 MutationInner::AbortPendingRotation { rotation_id } => {
                                     let now = std::time::SystemTime::now()
                                         .duration_since(std::time::UNIX_EPOCH)
@@ -983,6 +1028,10 @@ impl RaftStateMachine<TypeConfig> for Arc<FjallStateMachine> {
                 batch
                     .commit()
                     .map_err(|e| io::Error::other(e.to_string()))?;
+
+                if let (Some(sites), Some(kek)) = (pending_sites, self.kek.as_site_kek()) {
+                    kek.registry().replace(sites);
+                }
 
                 match pending_rotation_mutation {
                     Some(PendingRotationMutation::Insert(id, entry)) => {

@@ -319,7 +319,7 @@ restart, when a sequential in-memory counter would otherwise reset to 0) still
 get distinct nonces; it is stored directly in the header, so decryption reads it
 rather than searching for it. The header also carries a DEK manifest: the
 current DEK and every retired DEK the snapshot may still need, each wrapped
-under the KEK. A node holding the same KEK can therefore decrypt the backup even
+under the KEK (with the `per_site` provider, one blob per registered site). A node holding the same KEK, or a registered site's key, can therefore decrypt the backup even
 if it does not know these DEKs yet.
 
 ### Nonce Management
@@ -812,7 +812,8 @@ node_listener_addr = "0.0.0.0:8310"
 # initial membership. Any other node adds itself as a learner on the first
 # listed peer that answers (after adopting the cluster DEK). The join is still
 # authenticated by mTLS. Without the list the nodes are joined manually with
-# `init` and `join`. All nodes must share the same KEK material.
+# `init` and `join`. All nodes must share the same KEK material (or, with
+# `kek_provider = "per_site"`, be registered sites of the same cluster).
 # retry_join_nodes = "0=https://keystone-0:8310,1=https://keystone-1:8310,2=https://keystone-2:8310"
 
 # Set to false on nodes that are about to receive a disaster recovery
@@ -866,6 +867,7 @@ write_rate_threshold = 1073741824
 # kek_provider = "pkcs11"
 # kek_provider = "tpm"
 # kek_provider = "transit"
+# kek_provider = "per_site"
 
 # --- Transport: SPIFFE (default) ---
 trust_domains = "example.org"
@@ -1006,13 +1008,8 @@ A wrapped DEK is the Transit ciphertext (`vault:v<N>:...`), so rotating the
 Transit key keeps older DEKs readable; rewrap them with Transit's `rewrap`
 endpoint before retiring old key versions. The FIPS status of the wrap is that
 of the OpenBao build and of the TLS link (the process-wide rustls provider).
-Per-site wrapping of one DEK to several sites with RSA Transit keys builds on
-the same crate (`TransitKek::site_key`, ADR 0045 §11.2), but is not yet wired
-into join, replication or install.
-
-Every node unwraps the replicated DEK with its own Transit key, so until
-per-site blobs are stored in the state machine (#1671) all nodes of a cluster
-must use the **same** Transit key: one OpenBao, or OpenBao instances that share
+With the `transit` provider every node unwraps the replicated DEK with its own
+Transit key, so all nodes of a cluster must use the **same** Transit key: one OpenBao, or OpenBao instances that share
 the key (for example through replication). A node whose OpenBao holds a
 different key cannot join, because it cannot unwrap the DEK it fetches.
 
@@ -1034,6 +1031,94 @@ can start before OpenBao is up, as well as when applying a DEK change
 (rotation, snapshot or restore). After five minutes the retry is logged at
 `error` level. A rejected request (wrong key, bad policy for the operation) is
 a hard error.
+
+Sites that must not share a KEK use the `per_site` provider below.
+
+#### Per-site KEK
+
+Every site holds its own RSA key (2048 bits or more). The DEK is wrapped once
+for each registered site, so the wrapped DEK in the Raft log, in snapshots, in
+backups and in the join handshake is an envelope any registered site opens with
+its own private key; no key material is shared between sites. This node opens
+only the entry of its own `site`. The cluster id and the site name are bound
+inside each blob, so a blob cannot be replayed into another cluster or
+presented as another site's.
+
+```toml
+[distributed_storage]
+kek_provider = "per_site"
+
+[distributed_storage.per_site]
+cluster_id = "prod-global"
+site       = "eu-1"
+# Every site that must be able to open the DEK, this one included, as
+# name=public-key-PEM-file[@key-version] (SubjectPublicKeyInfo, version
+# defaults to 1). Keep the same list on every node.
+sites = "eu-1=/etc/keystone/storage/sites/eu-1.pem,us-1=/etc/keystone/storage/sites/us-1.pem"
+# Optional offline recipient for disaster recovery, same format.
+# escrow_site = "escrow=/etc/keystone/storage/sites/escrow.pem"
+
+# Exactly one place for this site's private key. A software key (PKCS#8 PEM):
+site_key_file = "/etc/keystone/storage/site.key"
+# After the site key is rotated (the new key is registered as `@2` in `sites`
+# and in SetSites), keep the earlier keys as <version>=<file> so envelopes made
+# before the rotation still open: retired DEKs, older snapshots.
+# previous_site_keys = ["1=/etc/keystone/storage/site.v1.key"]
+# or an `rsa-2048`/`rsa-4096` OpenBao Transit key; the connection (address and
+# authentication) comes from [distributed_storage.transit], and the node's
+# policy needs `update` on `transit/decrypt/<name>` only:
+# site_key_transit_name = "keystone-site-key"
+```
+
+Transit decrypts with OAEP-SHA256 and no label; use a non-exportable key. The
+public key of each site is exported with `bao read transit/keys/<name>`.
+A backup, snapshot or log entry made at any registered site opens at every
+other registered site. For disaster recovery with no surviving site key, keep
+`escrow_site` in the list of every node and the escrow private key offline.
+Start the recovery node with `site = "escrow"`, `site_key_file` set to the
+escrow key and the same `sites` and `escrow_site` entries, then `restore` the
+backup as usual. A site that was added or whose key was rotated after a backup
+was taken is not in that backup's envelope and cannot open it; keep the escrow
+recipient in the list from the first day.
+
+The `sites` entries are only the initial list. After the first `SetSites`
+call the cluster-wide list is stored in the replicated state, travels with
+snapshots and backups, and wins over the configuration on every node.
+
+To add a site, first run `SetSites` with the full new list (on the leader, as an
+operator; the answering node's own site must stay in it), then start and join
+the new site's node.
+
+A list that adds a site or replaces a site's public key or key version gives
+that key's holder access to the DEK, so it needs two operators, like an
+emergency DEK rotation. `SetSites` only stages it and returns
+`pending_site_change_id`; a second operator, whose identity differs from the
+initiator's, runs `ConfirmSetSites` with that id on the leader within five
+minutes. The leader checks the list again at confirmation. One change can be
+pending at a time, and it is held in the leader's memory, so after a leader
+change it is staged again. A list that only removes sites is applied at once.
+Staging and applying are audited as `SITES_CHANGE_STAGED` and `SITES_SET`, the
+latter naming initiator and confirmer. `SetSites` makes every node open the DEK envelopes it
+stores and wrap them again for the new list, so the joiner's `FetchDek` and any
+snapshot it receives include it. Joining before that fails with "no entry for
+site". `ListSites` shows the list a node wraps for. Removing a site stops later
+envelopes from including it; a copy of an older envelope that the removed site
+holds stays readable by it, so rotate the DEK (`RotateDek`) after removing a
+site that must lose access, and rotate the site key itself in its key store.
+
+`SetSites` is checked on the leader before it is proposed: the current DEK must
+re-wrap for the new list and the answering site must open the result with its
+own key, so a key version this site holds no key for (a bumped `@version`
+without `previous_site_keys`, or a Transit key version that does not exist) is
+refused. A list that drops a site the current DEK is wrapped for is refused
+unless `allow_site_removal` is set, because nodes of a dropped site can no
+longer open or wrap a DEK.
+
+Envelopes queued in the Raft log or held by an emergency rotation that waits
+for its second operator are not rewritten by `SetSites`. They are wrapped again
+for the current list when the DEK is installed or the rotation confirmed, so a
+site added in between is included. A transient key store outage during a
+re-wrap is waited for, as for any other DEK unwrap.
 
 #### TPM 2.0
 
@@ -1116,7 +1201,8 @@ keystone-manage storage join https://10.0.0.1:8310
 `join` first asks the local node, which must already be running, to fetch the
 cluster's data encryption keys from the leader and install them, and only then
 registers it as a learner. The node therefore never replicates under the DEK it
-generated at first boot. All nodes must share the same KEK material, otherwise
+generated at first boot. All nodes must share the same KEK material (with the
+`per_site` provider: be registered sites that hold their private key), otherwise
 the adoption fails and the join is aborted. Re-running `join` on a node that is
 already a member is harmless. If the registration fails after the adoption (for
 example because the id is registered at a different address), the node keeps the
@@ -1467,7 +1553,8 @@ and the DEKs, is replaced by the backup's contents, so anything written after
 the backup was taken is gone. The DEKs recorded in the backup's DEK manifest
 replace the cluster's current DEK on every node, so the restored data stays
 readable. The cluster must use the same KEK material as the cluster that
-produced the backup; a backup that cannot be unwrapped is rejected by the apply
+produced the backup (with the `per_site` provider: the restoring site must be
+in the backup's envelope, see "Per-site KEK" below); a backup that cannot be unwrapped is rejected by the apply
 entry and leaves the data untouched. The upload is streamed into the Raft log as
 it arrives, so the receiving node never buffers it; the client's declared size
 (sent with the first chunk) lets an oversized backup be refused before any of it

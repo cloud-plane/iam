@@ -11,7 +11,7 @@
 // limitations under the License.
 //
 // SPDX-License-Identifier: Apache-2.0
-// Crypto inventory: STO-1, STO-2, STO-3, STO-4, STO-5, STO-13; see
+// Crypto inventory: STO-1, STO-2, STO-3, STO-4, STO-5, STO-13, STO-15; see
 // doc/src/contributor/crypto-inventory.md
 //! # Cryptographic backend selection
 //!
@@ -28,7 +28,7 @@
 //! ## Adding a backend
 //!
 //! A backend is a module exporting `gcm_seal`, `gcm_open`, `hkdf_expand`,
-//! `hkdf_extract_expand`, `hmac_sha256` and `fill_random` with the signatures
+//! `hkdf_extract_expand`, `hmac_sha256`, `sha256` and `fill_random` with the signatures
 //! of [`ringlike`]. To add one (for example the RustCrypto crates), add a cargo
 //! feature with optional dependencies, a module, and one arm to each `cfg`
 //! chain below; `fips` stays first so it keeps precedence. Both [`ringlike`]
@@ -53,7 +53,7 @@ compile_error!("enable either the `ring` (default) or the `fips` feature");
 mod ringlike;
 pub(crate) mod rsa_oaep;
 
-pub(crate) use ringlike::{fill_random, gcm_open, hkdf_expand, hkdf_extract_expand, hmac_sha256};
+pub(crate) use ringlike::{fill_random, gcm_open, hkdf_expand, hkdf_extract_expand, hmac_sha256, sha256};
 // Sealing with a caller-supplied IV is a non-approved service in the FIPS
 // module, so the `fips` build only keeps it for tests.
 #[cfg(any(not(feature = "fips"), test))]

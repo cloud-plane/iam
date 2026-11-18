@@ -151,6 +151,14 @@ pub(crate) fn hmac_sha256(key: &[u8], msg: &[u8]) -> Result<[u8; 32], CryptoErro
     Ok(out)
 }
 
+/// SHA-256 digest.
+pub(crate) fn sha256(data: &[u8]) -> [u8; 32] {
+    let d = provider::digest::digest(&provider::digest::SHA256, data);
+    let mut out = [0u8; 32];
+    out.copy_from_slice(d.as_ref());
+    out
+}
+
 /// Fill `out` from the provider's CSPRNG.
 pub(crate) fn fill_random(out: &mut [u8]) -> Result<(), CryptoError> {
     SystemRandom::new().fill(out).map_err(|_| CryptoError::Rng)
