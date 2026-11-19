@@ -169,6 +169,16 @@ enum EnsureLinearizableOutcome {
 }
 
 impl Storage {
+    /// A consumer of another authority's feed that applies events to this
+    /// node's storage and presents this node's TLS identity to the source.
+    pub fn feed_consumer(
+        self: &Arc<Self>,
+        config: crate::feed_consumer::FeedConsumerConfig,
+        sink: Arc<dyn crate::feed_consumer::FeedSink>,
+    ) -> crate::feed_consumer::FeedConsumer {
+        crate::feed_consumer::FeedConsumer::new(config, self.tls_client.clone(), self.clone(), sink)
+    }
+
     /// Calls `ensure_linearizable(ReadIndex)` with automatic retry for
     /// transient `QuorumNotEnough` errors that occur during concurrent Raft
     /// activity.

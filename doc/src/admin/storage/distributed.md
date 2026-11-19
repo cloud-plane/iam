@@ -51,25 +51,25 @@ cluster member to contact; it defaults to `node_cluster_addr` from the config
 file when omitted. `init` always targets that local address, and `join` takes
 the member to contact as its positional argument.
 
-| Subcommand                                                                          | Target      | Description                                                 |
-| ----------------------------------------------------------------------------------- | ----------- | ----------------------------------------------------------- |
-| `init`                                                                              | local node  | Bootstrap a new single-node cluster                         |
-| `join <cluster-addr>`                                                               | leader      | Adopt the cluster DEK, then join as a learner               |
-| `promote [--cluster-addr] <node-id>`                                                | leader      | Promote a learner to voting member                          |
-| `demote [--cluster-addr] <node-id>`                                                 | leader      | Demote a voter to non-voting learner                        |
-| `remove-peer [--cluster-addr] <node-id>`                                            | leader      | Remove a voter or a learner from the cluster membership     |
-| `transfer-leader [--cluster-addr] [<node-id>]`                                      | leader      | Hand leadership over to another voter                       |
-| `list-peers [--cluster-addr]`                                                       | any node    | Show cluster peers in a table                               |
-| `metrics [--cluster-addr]`                                                          | any node    | Show raw cluster metrics and leader status                  |
-| `status [--cluster-addr]`                                                           | any node    | Show DEK, rotation, quarantine and nonce state of the node  |
-| `clear-quarantine [--cluster-addr] [--partition <name>]`                            | leader      | Clear a GCM-failure quarantine (default partition `data`)   |
-| `rotate-dek [--cluster-addr] [--emergency]`                                         | leader      | Rotate the Data Encryption Key                              |
-| `rotate-dek [--cluster-addr] --local-quorum-bypass --justification <text>`          | given node  | Stage a node-local emergency DEK candidate (no quorum)      |
-| `confirm-rotate-dek [--cluster-addr] --rotation-id <id>`                            | leader      | Confirm a pending emergency DEK rotation                    |
-| `list-dek-local-emergency-candidates [--cluster-addr]`                              | given node  | List node-local emergency DEK candidates                    |
-| `reconcile-dek-local-emergency [--cluster-addr] --rotation-id <id>`                 | leader only | Install a node-local emergency DEK candidate through Raft   |
-| `backup [--cluster-addr] --output <file>`                                           | leader      | Create an encrypted Fjall snapshot                          |
-| `restore [--cluster-addr] --snapshot <file> [--elect]`                              | leader \*   | Restore an encrypted snapshot to the cluster                |
+| Subcommand                                                                 | Target      | Description                                                |
+| -------------------------------------------------------------------------- | ----------- | ---------------------------------------------------------- |
+| `init`                                                                     | local node  | Bootstrap a new single-node cluster                        |
+| `join <cluster-addr>`                                                      | leader      | Adopt the cluster DEK, then join as a learner              |
+| `promote [--cluster-addr] <node-id>`                                       | leader      | Promote a learner to voting member                         |
+| `demote [--cluster-addr] <node-id>`                                        | leader      | Demote a voter to non-voting learner                       |
+| `remove-peer [--cluster-addr] <node-id>`                                   | leader      | Remove a voter or a learner from the cluster membership    |
+| `transfer-leader [--cluster-addr] [<node-id>]`                             | leader      | Hand leadership over to another voter                      |
+| `list-peers [--cluster-addr]`                                              | any node    | Show cluster peers in a table                              |
+| `metrics [--cluster-addr]`                                                 | any node    | Show raw cluster metrics and leader status                 |
+| `status [--cluster-addr]`                                                  | any node    | Show DEK, rotation, quarantine and nonce state of the node |
+| `clear-quarantine [--cluster-addr] [--partition <name>]`                   | leader      | Clear a GCM-failure quarantine (default partition `data`)  |
+| `rotate-dek [--cluster-addr] [--emergency]`                                | leader      | Rotate the Data Encryption Key                             |
+| `rotate-dek [--cluster-addr] --local-quorum-bypass --justification <text>` | given node  | Stage a node-local emergency DEK candidate (no quorum)     |
+| `confirm-rotate-dek [--cluster-addr] --rotation-id <id>`                   | leader      | Confirm a pending emergency DEK rotation                   |
+| `list-dek-local-emergency-candidates [--cluster-addr]`                     | given node  | List node-local emergency DEK candidates                   |
+| `reconcile-dek-local-emergency [--cluster-addr] --rotation-id <id>`        | leader only | Install a node-local emergency DEK candidate through Raft  |
+| `backup [--cluster-addr] --output <file>`                                  | leader      | Create an encrypted Fjall snapshot                         |
+| `restore [--cluster-addr] --snapshot <file> [--elect]`                     | leader \*   | Restore an encrypted snapshot to the cluster               |
 
 **Leader targeting.** Membership changes, DEK rotations, quarantine clearing,
 backup and restore into a running cluster must be proposed by the Raft leader. A
@@ -234,10 +234,10 @@ Audit HMAC key  HKDF(salt, DEK, "keystone-audit-dek-v1"
 
 The DEK sub-keys use full HKDF with the fixed salt `keystone-dek-hierarchy-v1`.
 The DEK is already uniformly random, so Extract adds no entropy; it is run
-because Extract-then-Expand is the flow the FIPS module documents as an
-approved service. Each sub-key is domain-separated by a
-distinct info string, ensuring ciphertexts from different contexts are never
-encrypted under the same key material.
+because Extract-then-Expand is the flow the FIPS module documents as an approved
+service. Each sub-key is domain-separated by a distinct info string, ensuring
+ciphertexts from different contexts are never encrypted under the same key
+material.
 
 The Audit HMAC key is derived from the **DEK** of the epoch it signs for, so it
 rotates with every DEK epoch swap, while remaining per-node to prevent
@@ -319,8 +319,9 @@ restart, when a sequential in-memory counter would otherwise reset to 0) still
 get distinct nonces; it is stored directly in the header, so decryption reads it
 rather than searching for it. The header also carries a DEK manifest: the
 current DEK and every retired DEK the snapshot may still need, each wrapped
-under the KEK (with the `per_site` provider, one blob per registered site). A node holding the same KEK, or a registered site's key, can therefore decrypt the backup even
-if it does not know these DEKs yet.
+under the KEK (with the `per_site` provider, one blob per registered site). A
+node holding the same KEK, or a registered site's key, can therefore decrypt the
+backup even if it does not know these DEKs yet.
 
 ### Nonce Management
 
@@ -377,16 +378,14 @@ not applied up to the committed index, falls back to `ReadIndex`. A leader
 serves locally only while a quorum has acknowledged it within the bound, so a
 partitioned leader falls back too. The value must be at least twice
 `raft_heartbeat_interval_ms`. `Storage::staleness()` reports the current age.
-Known limitation: OpenRaft does not step a leader down when it loses its
-quorum, so a follower still connected to such a leader keeps receiving
-heartbeats and may serve local reads that the majority side has already
-superseded. Keep the bound well below the time an operator accepts for such
-a partition.
-Records without metadata or with an unknown tier are never served locally, and
-records written without an explicit tier default to Tier 1. Without the option,
-or for Tier 2/3 records (and prefix scans that match one), the request is
-ignored and the read goes through `ReadIndex`. Index key listings are always
-linearizable.
+Known limitation: OpenRaft does not step a leader down when it loses its quorum,
+so a follower still connected to such a leader keeps receiving heartbeats and
+may serve local reads that the majority side has already superseded. Keep the
+bound well below the time an operator accepts for such a partition. Records
+without metadata or with an unknown tier are never served locally, and records
+written without an explicit tier default to Tier 1. Without the option, or for
+Tier 2/3 records (and prefix scans that match one), the request is ignored and
+the read goes through `ReadIndex`. Index key listings are always linearizable.
 
 ---
 
@@ -466,10 +465,11 @@ certificate. In SPIFFE mode (`spiffe_path_prefix` defaults to
 
 The role names `voter`, `learner`, `eval-replica`, `feed-consumer`, `proxy` and
 `reservation-voter` (ADR 0045) cannot be claimed by a path: only an explicit
-binding of a full SPIFFE ID grants them, and no RPC authorises them yet, so a
-peer holding one is denied everywhere. Bind roles to the SVIDs of remote peers
-with `peers` entries (`site.toml`). One SVID may hold several roles, and two
-workloads of one trust domain may hold different roles:
+binding of a full SPIFFE ID grants them. Only the change feed authorises one of
+them (`feed-consumer`) so far; a peer holding any other is denied everywhere.
+Bind roles to the SVIDs of remote peers with `peers` entries (`site.toml`). One
+SVID may hold several roles, and two workloads of one trust domain may hold
+different roles:
 
 ```toml
 [[distributed_storage.peers]]
@@ -483,10 +483,10 @@ roles = ["learner"]
 
 A listed SVID holds exactly its listed roles, whatever its path says. The trust
 domain of every entry must be in `trust_domains`; an unknown role, a repeated
-SVID or a repeated role fails the configuration load. In a trust domain
-without `peers` entries, SVIDs resolve as in the table above. A trust domain with at least one
-entry is managed by its entries: there the path convention is off, and only
-listed SVIDs and exact `allowed_peer_svids` entries are accepted. An
+SVID or a repeated role fails the configuration load. In a trust domain without
+`peers` entries, SVIDs resolve as in the table above. A trust domain with at
+least one entry is managed by its entries: there the path convention is off, and
+only listed SVIDs and exact `allowed_peer_svids` entries are accepted. An
 `allowed_peer_svids` entry under `spiffe_path_prefix` is rejected there; list it
 in `peers`. Only the `node` identity is used for outbound connections so far;
 other `identities` log a warning at startup.
@@ -906,7 +906,8 @@ trust_domains = "example.org"
 
 > **Warning:** `KEYSTONE_DEV_KEK` and `KEYSTONE_ALLOW_ENV_KEK` must never appear
 > in production Dockerfiles, Kubernetes manifests, or systemd units.
-> `tools/check_no_dev_mode.sh` checks for this and runs in the `Linters` CI workflow.
+> `tools/check_no_dev_mode.sh` checks for this and runs in the `Linters` CI
+> workflow.
 
 ### PKCS#11 and TPM KEK Providers
 
@@ -996,9 +997,9 @@ transit_token_file = "/etc/keystone/storage/bao.token"
 ```
 
 Certificate login needs OpenBao's listener to terminate TLS itself and request
-client certificates, and a cert role whose `allowed_uri_sans` matches the
-node's storage SVID (for example `spiffe://<td>/keystone/storage/node`) and
-whose `certificate` holds the CA that verifies it. Keep the OpenBao listener
+client certificates, and a cert role whose `allowed_uri_sans` matches the node's
+storage SVID (for example `spiffe://<td>/keystone/storage/node`) and whose
+`certificate` holds the CA that verifies it. Keep the OpenBao listener
 certificate out of SPIRE (use the site Bao's PKI or a static certificate), or a
 cold start of OpenBao would need a SPIRE that in turn needs OpenBao. Keep a
 token or JWT file source ready for recovery after the SVIDs have lapsed (ADR
@@ -1009,9 +1010,10 @@ Transit key keeps older DEKs readable; rewrap them with Transit's `rewrap`
 endpoint before retiring old key versions. The FIPS status of the wrap is that
 of the OpenBao build and of the TLS link (the process-wide rustls provider).
 With the `transit` provider every node unwraps the replicated DEK with its own
-Transit key, so all nodes of a cluster must use the **same** Transit key: one OpenBao, or OpenBao instances that share
-the key (for example through replication). A node whose OpenBao holds a
-different key cannot join, because it cannot unwrap the DEK it fetches.
+Transit key, so all nodes of a cluster must use the **same** Transit key: one
+OpenBao, or OpenBao instances that share the key (for example through
+replication). A node whose OpenBao holds a different key cannot join, because it
+cannot unwrap the DEK it fetches.
 
 `transit_address` must be an `https://` URL (plain `http://` is accepted only
 with `dev_mode = true`): the plaintext DEK and the token travel to it. When
@@ -1024,13 +1026,12 @@ Redirects are never followed, so the token is not sent to a host you did not
 name. A standby's redirect during a failover is treated like an outage and
 waited out; if it persists, point `transit_address` at the active node.
 
-While OpenBao is unreachable (connection refused, timeout, 5xx, 429, a
-failover, or a login that is briefly denied) the node waits and retries with a
-backoff of up to 30 seconds, with no deadline. This holds at startup, so a node
-can start before OpenBao is up, as well as when applying a DEK change
-(rotation, snapshot or restore). After five minutes the retry is logged at
-`error` level. A rejected request (wrong key, bad policy for the operation) is
-a hard error.
+While OpenBao is unreachable (connection refused, timeout, 5xx, 429, a failover,
+or a login that is briefly denied) the node waits and retries with a backoff of
+up to 30 seconds, with no deadline. This holds at startup, so a node can start
+before OpenBao is up, as well as when applying a DEK change (rotation, snapshot
+or restore). After five minutes the retry is logged at `error` level. A rejected
+request (wrong key, bad policy for the operation) is a hard error.
 
 Sites that must not share a KEK use the `per_site` provider below.
 
@@ -1041,8 +1042,8 @@ for each registered site, so the wrapped DEK in the Raft log, in snapshots, in
 backups and in the join handshake is an envelope any registered site opens with
 its own private key; no key material is shared between sites. This node opens
 only the entry of its own `site`. The cluster id and the site name are bound
-inside each blob, so a blob cannot be replayed into another cluster or
-presented as another site's.
+inside each blob, so a blob cannot be replayed into another cluster or presented
+as another site's.
 
 ```toml
 [distributed_storage]
@@ -1071,9 +1072,9 @@ site_key_file = "/etc/keystone/storage/site.key"
 ```
 
 Transit decrypts with OAEP-SHA256 and no label; use a non-exportable key. The
-public key of each site is exported with `bao read transit/keys/<name>`.
-A backup, snapshot or log entry made at any registered site opens at every
-other registered site. For disaster recovery with no surviving site key, keep
+public key of each site is exported with `bao read transit/keys/<name>`. A
+backup, snapshot or log entry made at any registered site opens at every other
+registered site. For disaster recovery with no surviving site key, keep
 `escrow_site` in the list of every node and the escrow private key offline.
 Start the recovery node with `site = "escrow"`, `site_key_file` set to the
 escrow key and the same `sites` and `escrow_site` entries, then `restore` the
@@ -1081,28 +1082,28 @@ backup as usual. A site that was added or whose key was rotated after a backup
 was taken is not in that backup's envelope and cannot open it; keep the escrow
 recipient in the list from the first day.
 
-The `sites` entries are only the initial list. After the first `SetSites`
-call the cluster-wide list is stored in the replicated state, travels with
-snapshots and backups, and wins over the configuration on every node.
+The `sites` entries are only the initial list. After the first `SetSites` call
+the cluster-wide list is stored in the replicated state, travels with snapshots
+and backups, and wins over the configuration on every node.
 
-`keystone-manage storage sites` lists the sites, and `--add
-<name>=<public-key.pem>[@<version>]` and `--remove <name>` change the list
-(each is repeatable). `--remove` also needs `--allow-removal`. An add or
-key replacement is staged and prints a `change_id`; a second operator
-applies it with `keystone-manage storage confirm-sites --change-id <id>
---expect-digest <digest>`. The initiator passes the `change_id` and the digest
-to the second operator over a separate channel. `confirm-sites` fetches the
-staged list from the leader (`GetPendingSiteChange`), prints each site with
-the SHA-256 fingerprint of its key and marks added, replaced and removed
-sites. The leader applies the list only if the digest matches, so the second
-operator approves exactly what is applied. Without `--expect-digest` the
-command asks the operator to type `yes` after comparing the fingerprints. The
-fingerprints, key versions and digest are in the `SITES_CHANGE_STAGED` and
-`SITES_SET` audit events.
+`keystone-manage storage sites` lists the sites, and
+`--add <name>=<public-key.pem>[@<version>]` and `--remove <name>` change the
+list (each is repeatable). `--remove` also needs `--allow-removal`. An add or
+key replacement is staged and prints a `change_id`; a second operator applies it
+with
+`keystone-manage storage confirm-sites --change-id <id> --expect-digest <digest>`.
+The initiator passes the `change_id` and the digest to the second operator over
+a separate channel. `confirm-sites` fetches the staged list from the leader
+(`GetPendingSiteChange`), prints each site with the SHA-256 fingerprint of its
+key and marks added, replaced and removed sites. The leader applies the list
+only if the digest matches, so the second operator approves exactly what is
+applied. Without `--expect-digest` the command asks the operator to type `yes`
+after comparing the fingerprints. The fingerprints, key versions and digest are
+in the `SITES_CHANGE_STAGED` and `SITES_SET` audit events.
 
-To add a site, first run `SetSites` (`storage sites --add`) with the full new list (on the leader, as an
-operator; the answering node's own site must stay in it), then start and join
-the new site's node.
+To add a site, first run `SetSites` (`storage sites --add`) with the full new
+list (on the leader, as an operator; the answering node's own site must stay in
+it), then start and join the new site's node.
 
 A list that adds a site or replaces a site's public key or key version gives
 that key's holder access to the DEK, so it needs two operators, like an
@@ -1113,13 +1114,14 @@ minutes. The leader checks the list again at confirmation. One change can be
 pending at a time, and it is held in the leader's memory, so after a leader
 change it is staged again. A list that only removes sites is applied at once.
 Staging and applying are audited as `SITES_CHANGE_STAGED` and `SITES_SET`, the
-latter naming initiator and confirmer. `SetSites` makes every node open the DEK envelopes it
-stores and wrap them again for the new list, so the joiner's `FetchDek` and any
-snapshot it receives include it. Joining before that fails with "no entry for
-site". `ListSites` shows the list a node wraps for. Removing a site stops later
-envelopes from including it; a copy of an older envelope that the removed site
-holds stays readable by it, so rotate the DEK (`RotateDek`) after removing a
-site that must lose access, and rotate the site key itself in its key store.
+latter naming initiator and confirmer. `SetSites` makes every node open the DEK
+envelopes it stores and wrap them again for the new list, so the joiner's
+`FetchDek` and any snapshot it receives include it. Joining before that fails
+with "no entry for site". `ListSites` shows the list a node wraps for. Removing
+a site stops later envelopes from including it; a copy of an older envelope that
+the removed site holds stays readable by it, so rotate the DEK (`RotateDek`)
+after removing a site that must lose access, and rotate the site key itself in
+its key store.
 
 `SetSites` is checked on the leader before it is proposed: the current DEK must
 re-wrap for the new list and the answering site must open the result with its
@@ -1129,11 +1131,11 @@ refused. A list that drops a site the current DEK is wrapped for is refused
 unless `allow_site_removal` is set, because nodes of a dropped site can no
 longer open or wrap a DEK.
 
-Envelopes queued in the Raft log or held by an emergency rotation that waits
-for its second operator are not rewritten by `SetSites`. They are wrapped again
-for the current list when the DEK is installed or the rotation confirmed, so a
-site added in between is included. A transient key store outage during a
-re-wrap is waited for, as for any other DEK unwrap.
+Envelopes queued in the Raft log or held by an emergency rotation that waits for
+its second operator are not rewritten by `SetSites`. They are wrapped again for
+the current list when the DEK is installed or the rotation confirmed, so a site
+added in between is included. A transient key store outage during a re-wrap is
+waited for, as for any other DEK unwrap.
 
 #### TPM 2.0
 
@@ -1296,19 +1298,19 @@ What it sets up, and why:
   match the pinned values are rejected.
 - **KEK.** `kek_provider = "pkcs11"` with the token PIN mounted from the
   `keystone-pkcs11-pin` Secret (create it out of band). The published
-  `ghcr.io/cloud-plane/iam:main` image is built with both the
-  PKCS#11 and TPM features (see `.github/workflows/container-publish.yml`), so
-  this overlay works as-is and a TPM-backed cluster can switch the config to
+  `ghcr.io/cloud-plane/iam:main` image is built with both the PKCS#11 and TPM
+  features (see `.github/workflows/container-publish.yml`), so this overlay
+  works as-is and a TPM-backed cluster can switch the config to
   `kek_provider = "tpm"` without changing the image. A self-built image must
   pass the same build argument, e.g.
   `docker build --build-arg KEYSTONE_FEATURES=openstack-keystone/pkcs11,openstack-keystone/tpm .`
   (add `openstack-keystone/wasm_plugins` as well if the image should keep
-  dynamic auth plugin support, as the published image does).
-  The image must also contain the vendor's PKCS#11 module and client
-  configuration at `pkcs11_module_path`. For a TPM, set `kek_provider = "tpm"`
-  and give the pod access to the TPM device (`/dev/tpmrm0`), typically through a
-  device plugin or, for a single-node test, a `hostPath` char-device mount; the
-  image already ships the `libtss2` runtime libraries required by `tss-esapi`.
+  dynamic auth plugin support, as the published image does). The image must also
+  contain the vendor's PKCS#11 module and client configuration at
+  `pkcs11_module_path`. For a TPM, set `kek_provider = "tpm"` and give the pod
+  access to the TPM device (`/dev/tpmrm0`), typically through a device plugin
+  or, for a single-node test, a `hostPath` char-device mount; the image already
+  ships the `libtss2` runtime libraries required by `tss-esapi`.
 - **Pre-flight.** The pods run as non-root with all capabilities dropped and a
   read-only root file system. Keystone sets `RLIMIT_CORE = 0` and
   `PR_SET_DUMPABLE = 0` itself; neither needs a privilege. The container command
@@ -1568,18 +1570,19 @@ and the DEKs, is replaced by the backup's contents, so anything written after
 the backup was taken is gone. The DEKs recorded in the backup's DEK manifest
 replace the cluster's current DEK on every node, so the restored data stays
 readable. The cluster must use the same KEK material as the cluster that
-produced the backup (with the `per_site` provider: the restoring site must be
-in the backup's envelope, see "Per-site KEK" below); a backup that cannot be unwrapped is rejected by the apply
-entry and leaves the data untouched. The upload is streamed into the Raft log as
-it arrives, so the receiving node never buffers it; the client's declared size
-(sent with the first chunk) lets an oversized backup be refused before any of it
-is read. A stalled upload is dropped after two minutes. The DEKs the restore
-replaces are kept on every node so that the node's own Raft log and older
-snapshot files stay readable. Backups larger than 1 GiB are refused on this path
-(every node holds the reassembled and decrypted backup in memory while applying
-it); use the disaster recovery procedure for those. That procedure buffers the
-backup on each node (up to 4 GiB) and also needs it to be decrypted in full. A
-restore that fails part-way discards its staged chunks.
+produced the backup (with the `per_site` provider: the restoring site must be in
+the backup's envelope, see "Per-site KEK" below); a backup that cannot be
+unwrapped is rejected by the apply entry and leaves the data untouched. The
+upload is streamed into the Raft log as it arrives, so the receiving node never
+buffers it; the client's declared size (sent with the first chunk) lets an
+oversized backup be refused before any of it is read. A stalled upload is
+dropped after two minutes. The DEKs the restore replaces are kept on every node
+so that the node's own Raft log and older snapshot files stay readable. Backups
+larger than 1 GiB are refused on this path (every node holds the reassembled and
+decrypted backup in memory while applying it); use the disaster recovery
+procedure for those. That procedure buffers the backup on each node (up to 4
+GiB) and also needs it to be decrypted in full. A restore that fails part-way
+discards its staged chunks.
 
 **Disaster recovery** (the cluster is gone, no leader exists):
 
@@ -1660,8 +1663,8 @@ by the security team.
     the security team before any new encrypted context is added.
 
 11. **Deployment validation.** `tools/check_no_dev_mode.sh` rejects production
-    service definitions containing `--dev-mode` or `KEYSTONE_ALLOW_ENV_KEK`.
-    It runs in the `Linters` CI workflow; development artefacts (the skaffold
+    service definitions containing `--dev-mode` or `KEYSTONE_ALLOW_ENV_KEK`. It
+    runs in the `Linters` CI workflow; development artefacts (the skaffold
     overlay, `tools/k8s/tests/`) are allow-listed in the script. Run it as part
     of the deployment pipeline as well.
 
@@ -1689,10 +1692,10 @@ feed_max_event_bytes = 65536  # kind + domain + key + value
 ```
 
 A subscriber is an SVID that holds the `feed-consumer` role in `peers`. What it
-may receive is not configuration: with hundreds of domains the list would not
-be manageable in a file, and it changes with the tenants. An operator grants it
-at runtime, one kind and one domain (or every domain) at a time, and the grant
-is replicated through Raft, so every voter serves the subscriber the same set:
+may receive is not configuration: with hundreds of domains the list would not be
+manageable in a file, and it changes with the tenants. An operator grants it at
+runtime, one kind and one domain (or every domain) at a time, and the grant is
+replicated through Raft, so every voter serves the subscriber the same set:
 
 ```text
 SetFeedGrant     { svid, kind, domain? }   # no domain: every domain
@@ -1702,18 +1705,34 @@ ListFeedGrants   { svid? }
 
 All three are `ClusterAdminService` RPCs for the operator role, and the two
 writes are audited (`FEED_GRANT_SET`, `FEED_GRANT_REVOKED`). Grants add up: a
-grant for every domain covers its kind whatever domain grants exist beside it.
-A subscription request can only narrow its grants. An event that names no
-domain reaches a subscriber only through a grant for every domain. A grant
-takes effect on open streams at once, and a revoke ends a stream whose last
-grant it removes, within one poll.
+grant for every domain covers its kind whatever domain grants exist beside it. A
+subscription request can only narrow its grants. An event that names no domain
+reaches a subscriber only through a grant for every domain. A grant takes effect
+on open streams at once, and a revoke ends a stream whose last grant it removes,
+within one poll.
 
 `FeedService.Subscribe` streams events after a cursor (`epoch`, log index,
 position) as `FeedEvents`, with a `FeedHead` heartbeat (the voter's applied
 index and its time since leader contact; the stream ends when that exceeds
 `local_read_max_staleness_ms`, or 30 s if unset, and also when the voter has
 never heard from a leader, so a cut-off voter cannot keep serving a revoked
-grant). A `FeedReset` means the cursor cannot be
-resumed because the feed epoch changed (restore, emergency DEK rotation) or the
-event was pruned: reload from a bundle and subscribe again without a cursor.
-The leader prunes events past the retention limits every ten minutes.
+grant). A `FeedReset` means the cursor cannot be resumed because the feed epoch
+changed (restore, emergency DEK rotation) or the event was pruned: reload from a
+bundle and subscribe again without a cursor. The leader prunes events past the
+retention limits every ten minutes.
+
+### Consuming a feed
+
+`feed_consumer::FeedConsumer` (built with `Storage::feed_consumer`) subscribes
+to another authority's voter and applies each event through a `FeedSink`, which
+maps it to mutations of the consumer's own keyspaces. The cursor
+`(epoch, index, position)` is written in the same transaction as the mutations
+of the events it covers, so an event is applied once, and a replay (after a
+restart or a reconnect) is skipped. On a `FeedReset` the sink's `reseed` runs,
+the stored cursor is cleared and the next subscription starts from the
+beginning. A failed, ended or reset session is retried after a wait that doubles
+from one second to one minute until a session applies an event. The node
+presents its own identity to the source as a `feed-consumer`, so that identity
+needs the role (a `peers` entry at the source) and a feed grant for the kinds
+and domains it mirrors. A sink must be idempotent: removing a missing record is
+a no-op and a set replaces.
