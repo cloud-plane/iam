@@ -14,7 +14,7 @@
 //! # Assignment driver to the OpenStack Keystone for the SQL database.
 
 use std::collections::{BTreeMap, BTreeSet, HashSet};
-use std::sync::Arc;
+use std::sync::{Arc, OnceLock};
 
 use async_trait::async_trait;
 use sea_orm::{DatabaseConnection, Schema};
@@ -26,17 +26,26 @@ use openstack_keystone_core::keystone::ServiceState;
 use openstack_keystone_core::plugin_manager::{
     BackendRegistration, NamedAssignmentBackendRegistration,
 };
+use openstack_keystone_core::table_watermark;
 use openstack_keystone_core::{SqlDriver, SqlDriverRegistration};
 use openstack_keystone_core_types::assignment::*;
-use openstack_keystone_core_types::role::RoleListParameters;
+use openstack_keystone_core_types::freshness::Freshness;
+use openstack_keystone_core_types::role::{RoleInference, RoleListParameters};
 
 use openstack_keystone_core::auth::ExecutionContext;
 
 mod assignment;
+mod cache;
 pub mod entity;
+mod migration;
 
 #[derive(Default)]
-pub struct SqlBackend {}
+pub struct SqlBackend {
+    /// Role assignments of a request, validated against the table watermarks.
+    /// Per driver instance: it belongs to the connection the instance reads
+    /// through.
+    caches: OnceLock<cache::AssignmentCaches>,
+}
 
 /// Linkage anchor — see ADR-0018. Referenced by the `keystone` crate's
 /// `build.rs`-generated `_ANCHORS` static so the linker extracts `.rlib`
@@ -45,7 +54,9 @@ pub struct SqlBackend {}
 pub fn anchor() {}
 
 // Submit the plugin to the registry at compile-time
-static PLUGIN: SqlBackend = SqlBackend {};
+static PLUGIN: SqlBackend = SqlBackend {
+    caches: OnceLock::new(),
+};
 inventory::submit! {
     SqlDriverRegistration { driver: &PLUGIN }
 }
@@ -53,9 +64,10 @@ inventory::submit! {
     BackendRegistration::<dyn AssignmentBackend> {
         name: "sql",
         selected: |_| true,
-        build: |_cfg| Box::pin(async {
-            Ok(Arc::new(SqlBackend::default()) as Arc<dyn AssignmentBackend>)
-        }),
+        build: |cfg| {
+            let backend = SqlBackend::new(cfg.core);
+            Box::pin(async move { Ok(Arc::new(backend) as Arc<dyn AssignmentBackend>) })
+        },
     }
 }
 
@@ -64,26 +76,38 @@ inventory::submit! {
 inventory::submit! {
     NamedAssignmentBackendRegistration {
         driver: "sql",
-        build: |_cfg, _name| Box::pin(async {
-            Ok(Arc::new(SqlBackend::default()) as Arc<dyn AssignmentBackend>)
-        }),
+        build: |cfg, _name| {
+            let backend = SqlBackend::new(cfg.core);
+            Box::pin(async move { Ok(Arc::new(backend) as Arc<dyn AssignmentBackend>) })
+        },
     }
 }
 
 impl SqlBackend {
+    /// A backend whose projection caches follow the configuration.
+    fn new(config: &openstack_keystone_config::Config) -> Self {
+        Self {
+            caches: OnceLock::from(cache::AssignmentCaches::new(config)),
+        }
+    }
+
+    fn caches(&self) -> &cache::AssignmentCaches {
+        self.caches.get_or_init(cache::AssignmentCaches::default)
+    }
+
     /// Resolve implied roles for a set of assignments.
     ///
-    /// Reads the whole imply rule table with one `list_role_imply_rules`
-    /// call (the role provider keeps it in the request cache, so every
-    /// resolution of the request shares one read) and computes the
-    /// transitive closure of the assigned roles over it here, instead of
-    /// asking the database for a recursive walk of the graph. The rule table
-    /// is small. Generates assignment entries for each implied role.
+    /// The role provider hands over the role inference resolved into the
+    /// closure of every role. The driver of the role provider does the
+    /// resolving once per version of the rules and keeps the result, so the
+    /// request looks the assigned roles up instead of reading the imply rule
+    /// table and walking its graph. Generates assignment entries for each
+    /// implied role.
     ///
     /// With `include_names` the names of the directly assigned roles are
-    /// looked up concurrently with the imply rules (both need only the
+    /// looked up concurrently with the inference (both need only the
     /// assigned role IDs), and the names of the implied roles come from the
-    /// imply rules themselves. The provider then has no role left to look up.
+    /// inference itself. The provider then has no role left to look up.
     ///
     /// Returns a `Vec<Assignment>` containing both the original assignments
     /// and any additionally generated implied role assignments.
@@ -94,16 +118,12 @@ impl SqlBackend {
         include_names: bool,
     ) -> Result<Vec<Assignment>, AssignmentProviderError> {
         let exec = ExecutionContext::internal(state);
-        let mut imply_rules: BTreeMap<String, BTreeSet<String>> = BTreeMap::new();
         let mut role_names: BTreeMap<String, String> = BTreeMap::new();
         let start: BTreeSet<&str> = assignments.iter().map(|a| a.role_id.as_str()).collect();
         let start: Vec<&str> = start.into_iter().collect();
+        let mut inference = Arc::new(RoleInference::default());
         if !start.is_empty() {
-            // The whole (small) rule table; the closure is computed below.
-            let rules_fut = state
-                .provider
-                .get_role_provider()
-                .list_role_imply_rules(&exec);
+            let inference_fut = state.provider.get_role_provider().get_role_inference(&exec);
             let names_fut = async {
                 if include_names {
                     // Only the names of the listed roles are needed: skip the
@@ -124,50 +144,13 @@ impl SqlBackend {
                     Ok(Vec::new())
                 }
             };
-            let (rules, roles) = tokio::try_join!(
-                async { rules_fut.await.map_err(AssignmentProviderError::from) },
+            let (resolved, roles) = tokio::try_join!(
+                async { inference_fut.await.map_err(AssignmentProviderError::from) },
                 async { names_fut.await.map_err(AssignmentProviderError::from) }
             )?;
+            inference = resolved;
             role_names.extend(roles.into_iter().map(|role| (role.id, role.name)));
-            for rule in rules {
-                if include_names {
-                    for role in [&rule.prior_role, &rule.implied_role] {
-                        if let Some(name) = &role.name {
-                            role_names
-                                .entry(role.id.clone())
-                                .or_insert_with(|| name.clone());
-                        }
-                    }
-                }
-                imply_rules
-                    .entry(rule.prior_role.id.clone())
-                    .or_default()
-                    .insert(rule.implied_role.id.clone());
-            }
         }
-        // Transitive closure of the roles that are assigned: one walk over
-        // the (small) rule graph per assigned role. A role that implies itself
-        // through a cycle is part of its own closure.
-        let closure = |start: &str| -> BTreeSet<String> {
-            let mut seen: BTreeSet<String> = BTreeSet::new();
-            let mut stack: Vec<&String> = imply_rules.get(start).into_iter().flatten().collect();
-            while let Some(role_id) = stack.pop() {
-                if seen.insert(role_id.clone()) {
-                    stack.extend(imply_rules.get(role_id).into_iter().flatten());
-                }
-            }
-            seen
-        };
-        let closures: BTreeMap<String, BTreeSet<String>> = assignments
-            .iter()
-            .map(|a| a.role_id.clone())
-            .collect::<BTreeSet<_>>()
-            .into_iter()
-            .map(|role_id| {
-                let implied = closure(&role_id);
-                (role_id, implied)
-            })
-            .collect();
 
         // Merge and apply role implies
         let mut result_map: HashSet<Assignment> = HashSet::new();
@@ -175,13 +158,16 @@ impl SqlBackend {
         for assignment in assignments {
             result_map.insert(assignment.clone());
 
-            if let Some(implies) = closures.get(&assignment.role_id) {
-                for implied_role_id in implies {
-                    let mut implied_assignment = assignment.clone();
-                    implied_assignment.role_id = implied_role_id.clone();
-                    implied_assignment.implied_via = Some(assignment.role_id.clone());
-                    result_map.insert(implied_assignment);
+            for implied_role in inference.implied(&assignment.role_id) {
+                if include_names && let Some(name) = &implied_role.name {
+                    role_names
+                        .entry(implied_role.id.clone())
+                        .or_insert_with(|| name.clone());
                 }
+                let mut implied_assignment = assignment.clone();
+                implied_assignment.role_id = implied_role.id.clone();
+                implied_assignment.implied_via = Some(assignment.role_id.clone());
+                result_map.insert(implied_assignment);
             }
         }
 
@@ -211,9 +197,21 @@ impl SqlBackend {
         params: &RoleAssignmentListForMultipleActorTargetParameters,
         include_names: bool,
     ) -> Result<Vec<Assignment>, AssignmentProviderError> {
-        let assignments =
-            assignment::list_for_multiple_actors_and_targets(&state.db.connection(), params)
-                .await?;
+        // The rows of the assignment tables are cached; the role inference
+        // below is not (it follows the role provider).
+        let db = state.db.connection();
+        let watermarks = state.db.watermarks();
+        let assignments = self
+            .caches()
+            .lists
+            .get_or_load(
+                &watermarks,
+                &db,
+                &cache::key(params),
+                Freshness::Linearizable,
+                || assignment::list_for_multiple_actors_and_targets(&db, params),
+            )
+            .await?;
 
         if params.resolve_implied_roles {
             self.resolve_implied_roles(state, assignments, include_names)
@@ -243,7 +241,12 @@ impl SqlDriver for SqlBackend {
     ) -> Result<(), DatabaseError> {
         create_table(connection, schema, crate::entity::prelude::Assignment).await?;
         create_table(connection, schema, crate::entity::prelude::SystemAssignment).await?;
+        table_watermark::install(connection, table_watermark::ASSIGNMENT_TABLES).await?;
         Ok(())
+    }
+
+    fn migrations(&self) -> Vec<Box<dyn sea_orm_migration::MigrationTrait>> {
+        crate::migration::migrations()
     }
 }
 
@@ -483,8 +486,8 @@ mod tests {
             .into_connection();
 
         let mut role_mock = MockRoleProvider::default();
-        role_mock.expect_list_role_imply_rules().returning(|_e| {
-            Ok(vec![
+        role_mock.expect_get_role_inference().returning(|_e| {
+            Ok(Arc::new(RoleInference::from_rules(&[
                 RoleImplyBuilder::default()
                     .prior_role(RoleRef {
                         id: "1".into(),
@@ -498,7 +501,7 @@ mod tests {
                     })
                     .build()
                     .unwrap(),
-            ])
+            ])))
         });
         let provider = Provider::mocked_builder()
             .mock_role(role_mock)
@@ -507,7 +510,7 @@ mod tests {
 
         let state = get_mock_state(db, provider).await;
 
-        let sot = SqlBackend {};
+        let sot = SqlBackend::default();
         let res = sot
             .list_assignments_for_multiple_actors_and_targets(
                 &state,
@@ -551,7 +554,7 @@ mod tests {
     }
 
     /// With names requested the assigned roles are named by one `list_roles`
-    /// call made next to the imply rules, and the implied roles get their
+    /// call made next to the inference, and the implied roles get their
     /// names from the rules.
     #[tokio::test]
     async fn test_resolve_implied_roles_with_names() {
@@ -562,10 +565,10 @@ mod tests {
 
         let mut role_mock = MockRoleProvider::default();
         role_mock
-            .expect_list_role_imply_rules()
+            .expect_get_role_inference()
             .times(1)
             .returning(|_e| {
-                Ok(vec![
+                Ok(Arc::new(RoleInference::from_rules(&[
                     RoleImplyBuilder::default()
                         .prior_role(RoleRef {
                             id: "1".into(),
@@ -579,7 +582,7 @@ mod tests {
                         })
                         .build()
                         .unwrap(),
-                ])
+                ])))
             });
         role_mock
             .expect_list_roles()
@@ -600,7 +603,7 @@ mod tests {
             .unwrap();
         let state = get_mock_state(db, provider).await;
 
-        let res = SqlBackend {}
+        let res = SqlBackend::default()
             .list_assignments_for_multiple_actors_and_targets(
                 &state,
                 &RoleAssignmentListForMultipleActorTargetParameters {
@@ -649,16 +652,21 @@ mod tests {
         };
         let mut role_mock = MockRoleProvider::default();
         role_mock
-            .expect_list_role_imply_rules()
+            .expect_get_role_inference()
             .times(1)
-            .returning(move |_e| Ok(vec![rule("1", "2"), rule("2", "3")]));
+            .returning(move |_e| {
+                Ok(Arc::new(RoleInference::from_rules(&[
+                    rule("1", "2"),
+                    rule("2", "3"),
+                ])))
+            });
         let provider = Provider::mocked_builder()
             .mock_role(role_mock)
             .build()
             .unwrap();
         let state = get_mock_state(db, provider).await;
 
-        let res = SqlBackend {}
+        let res = SqlBackend::default()
             .list_assignments_for_multiple_actors_and_targets(
                 &state,
                 &RoleAssignmentListForMultipleActorTargetParameters {
@@ -701,7 +709,7 @@ mod tests {
             .unwrap();
         let state = get_mock_state(db, provider).await;
 
-        SqlBackend {}
+        SqlBackend::default()
             .list_assignments(
                 &state,
                 &RoleAssignmentListParameters {
@@ -729,7 +737,7 @@ mod tests {
 
         let state = get_mock_state(db, provider).await;
 
-        let sot = SqlBackend {};
+        let sot = SqlBackend::default();
         let res = sot
             .list_assignments_for_multiple_actors_and_targets(
                 &state,
@@ -780,7 +788,7 @@ mod tests {
         let provider = Provider::mocked_builder().build().unwrap();
         let state = get_mock_state(db, provider).await;
 
-        let sot = SqlBackend {};
+        let sot = SqlBackend::default();
         let _res = sot
             .list_assignments(
                 &state,
@@ -805,7 +813,7 @@ mod tests {
         let provider = Provider::mocked_builder().build().unwrap();
         let state = get_mock_state(db, provider).await;
 
-        let sot = SqlBackend {};
+        let sot = SqlBackend::default();
         let _res = sot
             .list_assignments(
                 &state,
@@ -855,7 +863,7 @@ mod tests {
         let provider = Provider::mocked_builder().build().unwrap();
         let state = get_mock_state(db, provider).await;
 
-        let sot = SqlBackend {};
+        let sot = SqlBackend::default();
         let res = sot
             .list_assignments(
                 &state,
@@ -887,8 +895,8 @@ mod tests {
             .into_connection();
 
         let mut role_mock = MockRoleProvider::default();
-        role_mock.expect_list_role_imply_rules().returning(|_e| {
-            Ok(vec![
+        role_mock.expect_get_role_inference().returning(|_e| {
+            Ok(Arc::new(RoleInference::from_rules(&[
                 RoleImplyBuilder::default()
                     .prior_role(RoleRef {
                         id: "1".into(),
@@ -902,7 +910,7 @@ mod tests {
                     })
                     .build()
                     .unwrap(),
-            ])
+            ])))
         });
         let provider = Provider::mocked_builder()
             .mock_role(role_mock)
@@ -911,7 +919,7 @@ mod tests {
 
         let state = get_mock_state(db, provider).await;
 
-        let sot = SqlBackend {};
+        let sot = SqlBackend::default();
         let params = RoleAssignmentListForMultipleActorTargetParameters {
             actors: vec!["uid1".into()],
             resolve_implied_roles: true,
@@ -999,7 +1007,7 @@ mod tests {
         let provider = Provider::mocked_builder().build().unwrap();
         let state = get_mock_state(db, provider).await;
 
-        let sot = SqlBackend {};
+        let sot = SqlBackend::default();
         let res = sot
             .list_assignments(
                 &state,
@@ -1050,7 +1058,7 @@ mod tests {
         }
         .pagination_marker();
 
-        let sot = SqlBackend {};
+        let sot = SqlBackend::default();
         let res = sot
             .list_assignments(
                 &state,

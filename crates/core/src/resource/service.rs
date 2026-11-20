@@ -15,7 +15,6 @@
 use async_trait::async_trait;
 use std::collections::HashMap;
 use std::sync::Arc;
-use tokio::sync::RwLock;
 use uuid::Uuid;
 use validator::Validate;
 
@@ -59,21 +58,8 @@ const PROJECT_PARENT_IDS_CACHE_NS: &str = "resource.project_parent_ids";
 /// Request-scoped namespace for the project domain ID.
 const PROJECT_DOMAIN_ID_CACHE_NS: &str = "resource.project_domain_id";
 
-/// Upper bound of the entries of each process-wide cache. The caches are
-/// emptied when they reach it, which keeps the memory bounded without an
-/// eviction policy.
-const PROCESS_CACHE_MAX_ENTRIES: usize = 100_000;
-
 pub struct ResourceService {
     backend_driver: Arc<dyn ResourceBackend>,
-    /// Caching flag (`[resource] caching`). When enabled the facts that never
-    /// change for a project are kept in the process memory.
-    caching: bool,
-    /// `project_id` to `domain_id`. The domain of a project cannot be updated.
-    project_domain_id_cache: RwLock<HashMap<String, String>>,
-    /// `project_id` to the IDs of its parents, the closest first. `parent_id`
-    /// cannot be updated, so the chain is fixed for the life of the project.
-    project_parent_ids_cache: RwLock<HashMap<String, Vec<String>>>,
 }
 
 impl ResourceService {
@@ -94,17 +80,12 @@ impl ResourceService {
         let backend_driver = plugin_manager
             .get_resource_backend(config.resource.driver.clone())?
             .clone();
-        Ok(Self::with_backend(backend_driver, config.resource.caching))
+        Ok(Self::with_backend(backend_driver))
     }
 
     /// Create the service on top of the backend driver.
-    pub(crate) fn with_backend(backend_driver: Arc<dyn ResourceBackend>, caching: bool) -> Self {
-        Self {
-            backend_driver,
-            caching,
-            project_domain_id_cache: RwLock::new(HashMap::new()),
-            project_parent_ids_cache: RwLock::new(HashMap::new()),
-        }
+    pub(crate) fn with_backend(backend_driver: Arc<dyn ResourceBackend>) -> Self {
+        Self { backend_driver }
     }
 
     /// Resolve the `domain_id` a new project should be created in.
@@ -490,15 +471,6 @@ impl ResourceApi for ResourceService {
 
         cache_remove(DOMAIN_CACHE_NS, id);
         cache_remove(DOMAIN_REF_CACHE_NS, id);
-        if self.caching {
-            // The projects of the domain are deleted with it: forget them.
-            self.project_domain_id_cache
-                .write()
-                .await
-                .retain(|_, domain_id| domain_id != id);
-            // The chains are keyed by project and carry no domain: drop all.
-            self.project_parent_ids_cache.write().await.clear();
-        }
         Ok(())
     }
 
@@ -561,14 +533,6 @@ impl ResourceApi for ResourceService {
         cache_remove(PROJECT_PARENTS_CACHE_NS, id);
         cache_remove(PROJECT_PARENT_IDS_CACHE_NS, id);
         cache_remove(PROJECT_DOMAIN_ID_CACHE_NS, id);
-        if self.caching {
-            self.project_domain_id_cache.write().await.remove(id);
-            // A chain that passes through the deleted project goes too.
-            self.project_parent_ids_cache
-                .write()
-                .await
-                .retain(|key, parents| key != id && !parents.iter().any(|parent| parent == id));
-        }
         result
     }
 
@@ -797,9 +761,6 @@ impl ResourceApi for ResourceService {
 
     /// Get the ID of the domain a project belongs to.
     ///
-    /// With `[resource] caching` the value is kept in the process memory: the
-    /// domain of a project never changes.
-    ///
     /// # Parameters
     /// - `ctx`: The execution context.
     /// - `project_id`: The ID of the project.
@@ -822,24 +783,17 @@ impl ResourceApi for ResourceService {
         if let Some(domain_id) = cache_get::<String>(PROJECT_DOMAIN_ID_CACHE_NS, project_id) {
             return Ok(Some(domain_id));
         }
-        if self.caching
-            && let Some(domain_id) = self.project_domain_id_cache.read().await.get(project_id)
-        {
-            return Ok(Some(domain_id.clone()));
-        }
-        let domain_id = self
-            .backend_driver
-            .get_project_domain_id(ctx.state(), project_id)
-            .await?;
+        let domain_id = if ctx.freshness().is_linearizable() {
+            self.backend_driver
+                .get_project_domain_id(ctx.state(), project_id)
+                .await?
+        } else {
+            self.backend_driver
+                .get_project_domain_id_with_freshness(ctx.state(), project_id, ctx.freshness())
+                .await?
+        };
         if let Some(domain_id) = &domain_id {
             cache_set(PROJECT_DOMAIN_ID_CACHE_NS, project_id, domain_id.clone());
-            if self.caching {
-                let mut cache = self.project_domain_id_cache.write().await;
-                if cache.len() >= PROCESS_CACHE_MAX_ENTRIES {
-                    cache.clear();
-                }
-                cache.insert(project_id.to_string(), domain_id.clone());
-            }
         }
         Ok(domain_id)
     }
@@ -860,31 +814,24 @@ impl ResourceApi for ResourceService {
         project_id: &'a str,
     ) -> Result<Option<Vec<String>>, ResourceProviderError> {
         // Request scope first: whatever the request already loaded is as
-        // fresh as the request itself, no matter the `caching` setting.
+        // fresh as the request itself.
         if let Some(parents) = cache_get::<Vec<String>>(PROJECT_PARENT_IDS_CACHE_NS, project_id) {
             return Ok(Some(parents));
         }
         if let Some(parents) = cache_get::<Vec<Project>>(PROJECT_PARENTS_CACHE_NS, project_id) {
             return Ok(Some(parents.into_iter().map(|parent| parent.id).collect()));
         }
-        if self.caching
-            && let Some(parents) = self.project_parent_ids_cache.read().await.get(project_id)
-        {
-            return Ok(Some(parents.clone()));
-        }
-        let parents = self
-            .backend_driver
-            .get_project_parent_ids(ctx.state(), project_id)
-            .await?;
+        let parents = if ctx.freshness().is_linearizable() {
+            self.backend_driver
+                .get_project_parent_ids(ctx.state(), project_id)
+                .await?
+        } else {
+            self.backend_driver
+                .get_project_parent_ids_with_freshness(ctx.state(), project_id, ctx.freshness())
+                .await?
+        };
         if let Some(parents) = &parents {
             cache_set(PROJECT_PARENT_IDS_CACHE_NS, project_id, parents.clone());
-            if self.caching {
-                let mut cache = self.project_parent_ids_cache.write().await;
-                if cache.len() >= PROCESS_CACHE_MAX_ENTRIES {
-                    cache.clear();
-                }
-                cache.insert(project_id.to_string(), parents.clone());
-            }
         }
         Ok(parents)
     }
@@ -1215,7 +1162,7 @@ mod tests {
                 .build()
                 .unwrap())
         });
-        let provider = ResourceService::with_backend(Arc::new(backend), false);
+        let provider = ResourceService::with_backend(Arc::new(backend));
 
         let created = provider
             .create_domain(
@@ -1259,7 +1206,7 @@ mod tests {
                 .build()
                 .unwrap())
         });
-        let provider = ResourceService::with_backend(Arc::new(backend), false);
+        let provider = ResourceService::with_backend(Arc::new(backend));
 
         let vsc = make_vsc();
         let ctx = ExecutionContext::from_auth(&state, &vsc);
@@ -1315,7 +1262,7 @@ mod tests {
         let mut backend = MockResourceBackend::default();
         backend.expect_get_project().returning(|_, _| Ok(None));
         backend.expect_delete_project().returning(|_, _| Ok(()));
-        let provider = ResourceService::with_backend(Arc::new(backend), false);
+        let provider = ResourceService::with_backend(Arc::new(backend));
 
         let vsc = make_vsc();
         let ctx = ExecutionContext::from_auth(&state, &vsc);
@@ -1348,7 +1295,7 @@ mod tests {
         backend.expect_list_projects().returning(|_, _| Ok(vec![]));
         backend.expect_get_domain().returning(|_, _| Ok(None));
         backend.expect_delete_domain().returning(|_, _| Ok(()));
-        let provider = ResourceService::with_backend(Arc::new(backend), false);
+        let provider = ResourceService::with_backend(Arc::new(backend));
 
         let vsc = make_vsc();
         let ctx = ExecutionContext::from_auth(&state, &vsc);
@@ -1472,7 +1419,7 @@ mod tests {
                 log.lock().unwrap().push(format!("domain:{id}"));
                 Ok(())
             });
-        let provider = ResourceService::with_backend(Arc::new(backend), false);
+        let provider = ResourceService::with_backend(Arc::new(backend));
 
         provider
             .delete_domain(&ExecutionContext::internal(&state), "did")
@@ -1520,7 +1467,7 @@ mod tests {
             .expect_get_domain()
             .returning(|_, _| Ok(Some(make_domain("did"))));
         backend.expect_list_projects().returning(|_, _| Ok(vec![]));
-        let provider = ResourceService::with_backend(Arc::new(backend), false);
+        let provider = ResourceService::with_backend(Arc::new(backend));
 
         let res = provider
             .delete_domain(&ExecutionContext::internal(&state), "did")
@@ -1570,7 +1517,7 @@ mod tests {
             .expect_delete_project()
             .withf(|_, id: &'_ str| id == "pid")
             .returning(|_, _| Ok(()));
-        let provider = ResourceService::with_backend(Arc::new(backend), false);
+        let provider = ResourceService::with_backend(Arc::new(backend));
 
         assert!(
             provider
@@ -1617,8 +1564,7 @@ mod tests {
     #[tokio::test]
     async fn test_resolve_project_domain_id_is_domain_self() {
         let state = get_mocked_state(None, Some(Provider::mocked_builder())).await;
-        let provider =
-            ResourceService::with_backend(Arc::new(MockResourceBackend::default()), false);
+        let provider = ResourceService::with_backend(Arc::new(MockResourceBackend::default()));
         let mut project = base_project_create();
         project.is_domain = true;
 
@@ -1632,8 +1578,7 @@ mod tests {
     #[tokio::test]
     async fn test_resolve_project_domain_id_is_domain_rejects_domain_id() {
         let state = get_mocked_state(None, Some(Provider::mocked_builder())).await;
-        let provider =
-            ResourceService::with_backend(Arc::new(MockResourceBackend::default()), false);
+        let provider = ResourceService::with_backend(Arc::new(MockResourceBackend::default()));
         let mut project = base_project_create();
         project.is_domain = true;
         project.domain_id = Some("did".into());
@@ -1651,8 +1596,7 @@ mod tests {
     #[tokio::test]
     async fn test_resolve_project_domain_id_explicit() {
         let state = get_mocked_state(None, Some(Provider::mocked_builder())).await;
-        let provider =
-            ResourceService::with_backend(Arc::new(MockResourceBackend::default()), false);
+        let provider = ResourceService::with_backend(Arc::new(MockResourceBackend::default()));
         let mut project = base_project_create();
         project.domain_id = Some("did".into());
 
@@ -1671,7 +1615,7 @@ mod tests {
             .expect_get_project()
             .withf(|_, id: &'_ str| id == "pid")
             .returning(|_, _| Ok(Some(make_project("pid", "parent-did"))));
-        let provider = ResourceService::with_backend(Arc::new(backend), false);
+        let provider = ResourceService::with_backend(Arc::new(backend));
         let mut project = base_project_create();
         project.parent_id = Some("pid".into());
 
@@ -1690,7 +1634,7 @@ mod tests {
             .expect_get_project()
             .withf(|_, id: &'_ str| id == "pid")
             .returning(|_, _| Ok(Some(make_project("pid", "did"))));
-        let provider = ResourceService::with_backend(Arc::new(backend), false);
+        let provider = ResourceService::with_backend(Arc::new(backend));
         let mut project = base_project_create();
         project.parent_id = Some("pid".into());
         project.domain_id = Some("did".into());
@@ -1710,7 +1654,7 @@ mod tests {
             .expect_get_project()
             .withf(|_, id: &'_ str| id == "pid")
             .returning(|_, _| Ok(Some(make_project("pid", "parent-did"))));
-        let provider = ResourceService::with_backend(Arc::new(backend), false);
+        let provider = ResourceService::with_backend(Arc::new(backend));
         let mut project = base_project_create();
         project.parent_id = Some("pid".into());
         project.domain_id = Some("other-did".into());
@@ -1728,8 +1672,7 @@ mod tests {
     #[tokio::test]
     async fn test_resolve_project_domain_id_falls_back_to_domain_scope() {
         let state = get_mocked_state(None, Some(Provider::mocked_builder())).await;
-        let provider =
-            ResourceService::with_backend(Arc::new(MockResourceBackend::default()), false);
+        let provider = ResourceService::with_backend(Arc::new(MockResourceBackend::default()));
         let vsc = make_vsc_scoped(ScopeInfo::Domain(make_domain("scoped-did").into()));
         let ctx = ExecutionContext::from_auth(&state, &vsc);
         let project = base_project_create();
@@ -1744,8 +1687,7 @@ mod tests {
     #[tokio::test]
     async fn test_resolve_project_domain_id_falls_back_to_project_scope_domain() {
         let state = get_mocked_state(None, Some(Provider::mocked_builder())).await;
-        let provider =
-            ResourceService::with_backend(Arc::new(MockResourceBackend::default()), false);
+        let provider = ResourceService::with_backend(Arc::new(MockResourceBackend::default()));
         let vsc = make_vsc_scoped(ScopeInfo::Project {
             project: make_project("scope-pid", "scoped-did").into(),
             project_domain: make_domain("scoped-did").into(),
@@ -1763,8 +1705,7 @@ mod tests {
     #[tokio::test]
     async fn test_resolve_project_domain_id_no_domain_no_scope_errors() {
         let state = get_mocked_state(None, Some(Provider::mocked_builder())).await;
-        let provider =
-            ResourceService::with_backend(Arc::new(MockResourceBackend::default()), false);
+        let provider = ResourceService::with_backend(Arc::new(MockResourceBackend::default()));
         let project = base_project_create();
 
         let err = provider
@@ -1797,7 +1738,7 @@ mod tests {
             .expect_get_project()
             .withf(|_, id: &'_ str| id == "pid")
             .returning(|_, _| Ok(Some(make_immutable_project("pid", "did"))));
-        let provider = ResourceService::with_backend(Arc::new(backend), false);
+        let provider = ResourceService::with_backend(Arc::new(backend));
 
         let err = provider
             .update_project(
@@ -1821,7 +1762,7 @@ mod tests {
             .expect_get_project()
             .withf(|_, id: &'_ str| id == "pid")
             .returning(|_, _| Ok(Some(make_immutable_project("pid", "did"))));
-        let provider = ResourceService::with_backend(Arc::new(backend), false);
+        let provider = ResourceService::with_backend(Arc::new(backend));
 
         let err = provider
             .replace_project_tags(&ExecutionContext::internal(&state), "pid", vec!["a".into()])
@@ -1833,8 +1774,7 @@ mod tests {
     #[tokio::test]
     async fn test_replace_project_tags_rejects_invalid_tags() {
         let state = get_mocked_state(None, Some(Provider::mocked_builder())).await;
-        let provider =
-            ResourceService::with_backend(Arc::new(MockResourceBackend::default()), false);
+        let provider = ResourceService::with_backend(Arc::new(MockResourceBackend::default()));
 
         for tags in [
             vec!["a/b".to_string()],
@@ -1867,7 +1807,7 @@ mod tests {
             .expect_update_project()
             .withf(|_, id: &'_ str, _| id == "pid")
             .returning(|_, _, _| Ok(make_project("pid", "did")));
-        let provider = ResourceService::with_backend(Arc::new(backend), false);
+        let provider = ResourceService::with_backend(Arc::new(backend));
 
         let result = provider
             .update_project(
@@ -1895,7 +1835,7 @@ mod tests {
             .expect_get_project()
             .withf(|_, id: &'_ str| id == "pid")
             .returning(|_, _| Ok(Some(make_immutable_project("pid", "did"))));
-        let provider = ResourceService::with_backend(Arc::new(backend), false);
+        let provider = ResourceService::with_backend(Arc::new(backend));
 
         let err = provider
             .delete_project(&ExecutionContext::internal(&state), "pid")
@@ -1912,7 +1852,7 @@ mod tests {
             .expect_get_domain()
             .withf(|_, id: &'_ str| id == "did")
             .returning(|_, _| Ok(Some(make_immutable_domain("did"))));
-        let provider = ResourceService::with_backend(Arc::new(backend), false);
+        let provider = ResourceService::with_backend(Arc::new(backend));
 
         let err = provider
             .update_domain(
@@ -1936,7 +1876,7 @@ mod tests {
             .expect_get_domain()
             .withf(|_, id: &'_ str| id == "did")
             .returning(|_, _| Ok(Some(make_immutable_domain("did"))));
-        let provider = ResourceService::with_backend(Arc::new(backend), false);
+        let provider = ResourceService::with_backend(Arc::new(backend));
 
         let err = provider
             .delete_domain(&ExecutionContext::internal(&state), "did")
@@ -1957,7 +1897,7 @@ mod tests {
             .expect_update_project()
             .withf(|_, id: &'_ str, _| id == "pid")
             .returning(|_, _, _| Ok(make_project("pid", "did")));
-        let provider = ResourceService::with_backend(Arc::new(backend), false);
+        let provider = ResourceService::with_backend(Arc::new(backend));
 
         let result = provider
             .update_project(
@@ -1983,7 +1923,7 @@ mod tests {
             .times(1)
             .withf(|_, id: &'_ str| id == "did")
             .returning(|_, _| Ok(Some(make_domain("did"))));
-        let provider = ResourceService::with_backend(Arc::new(backend), false);
+        let provider = ResourceService::with_backend(Arc::new(backend));
 
         crate::request_cache::RequestCache::scope(async {
             let ctx = ExecutionContext::internal(&state);
@@ -2003,7 +1943,7 @@ mod tests {
             .times(2)
             .withf(|_, id: &'_ str| id == "did")
             .returning(|_, _| Ok(Some(make_domain("did"))));
-        let provider = ResourceService::with_backend(Arc::new(backend), false);
+        let provider = ResourceService::with_backend(Arc::new(backend));
 
         let ctx = ExecutionContext::internal(&state);
         provider.get_domain(&ctx, "did").await.unwrap();
@@ -2021,7 +1961,7 @@ mod tests {
             .times(1)
             .withf(|_, id: &'_ str| id == "pid")
             .returning(|_, _| Ok(Some(make_project("pid", "did"))));
-        let provider = ResourceService::with_backend(Arc::new(backend), false);
+        let provider = ResourceService::with_backend(Arc::new(backend));
 
         crate::request_cache::RequestCache::scope(async {
             let ctx = ExecutionContext::internal(&state);
@@ -2041,7 +1981,7 @@ mod tests {
             .times(1)
             .withf(|_, id: &'_ str| id == "pid")
             .returning(|_, _| Ok(Some(ProjectRef::from(make_project("pid", "did")))));
-        let provider = ResourceService::with_backend(Arc::new(backend), false);
+        let provider = ResourceService::with_backend(Arc::new(backend));
 
         crate::request_cache::RequestCache::scope(async {
             let ctx = ExecutionContext::internal(&state);
@@ -2074,7 +2014,7 @@ mod tests {
             .times(1)
             .returning(|_, _| Ok(Some(make_project("pid", "did"))));
         // No `get_project_ref` expectation: the backend must not be asked.
-        let provider = ResourceService::with_backend(Arc::new(backend), false);
+        let provider = ResourceService::with_backend(Arc::new(backend));
 
         crate::request_cache::RequestCache::scope(async {
             let ctx = ExecutionContext::internal(&state);
@@ -2105,7 +2045,7 @@ mod tests {
         backend
             .expect_update_project()
             .returning(|_, _, _| Ok(make_project("pid", "did")));
-        let provider = ResourceService::with_backend(Arc::new(backend), false);
+        let provider = ResourceService::with_backend(Arc::new(backend));
 
         crate::request_cache::RequestCache::scope(async {
             let ctx = ExecutionContext::internal(&state);
@@ -2144,7 +2084,7 @@ mod tests {
             .expect_get_project_ref()
             .times(2)
             .returning(|_, _| Ok(Some(ProjectRef::from(make_project("pid", "did")))));
-        let provider = ResourceService::with_backend(Arc::new(backend), false);
+        let provider = ResourceService::with_backend(Arc::new(backend));
 
         let ctx = ExecutionContext::internal(&state);
         provider.get_project_ref(&ctx, "pid").await.unwrap();
@@ -2160,7 +2100,7 @@ mod tests {
             .times(1)
             .withf(|_, id: &'_ str| id == "did")
             .returning(|_, _| Ok(Some(make_domain("did").into())));
-        let provider = ResourceService::with_backend(Arc::new(backend), false);
+        let provider = ResourceService::with_backend(Arc::new(backend));
 
         crate::request_cache::RequestCache::scope(async {
             let ctx = ExecutionContext::internal(&state);
@@ -2181,7 +2121,7 @@ mod tests {
             .returning(|_, _| Ok(Some(make_domain("did"))));
         // The short lookup must not reach the backend at all.
         backend.expect_get_domain_ref().times(0);
-        let provider = ResourceService::with_backend(Arc::new(backend), false);
+        let provider = ResourceService::with_backend(Arc::new(backend));
 
         crate::request_cache::RequestCache::scope(async {
             let ctx = ExecutionContext::internal(&state);
@@ -2210,7 +2150,7 @@ mod tests {
             }
             Ok(d)
         });
-        let provider = ResourceService::with_backend(Arc::new(backend), false);
+        let provider = ResourceService::with_backend(Arc::new(backend));
 
         crate::request_cache::RequestCache::scope(async {
             let ctx = ExecutionContext::internal(&state);
@@ -2255,7 +2195,7 @@ mod tests {
                 }
                 Ok(d)
             });
-        let provider = ResourceService::with_backend(Arc::new(backend), false);
+        let provider = ResourceService::with_backend(Arc::new(backend));
 
         crate::request_cache::RequestCache::scope(async {
             let ctx = ExecutionContext::internal(&state);
@@ -2302,7 +2242,7 @@ mod tests {
             .expect_delete_domain()
             .withf(|_, id: &'_ str| id == "did")
             .returning(|_, _| Ok(()));
-        let provider = ResourceService::with_backend(Arc::new(backend), false);
+        let provider = ResourceService::with_backend(Arc::new(backend));
 
         crate::request_cache::RequestCache::scope(async {
             let ctx = ExecutionContext::internal(&state);
@@ -2334,7 +2274,7 @@ mod tests {
                 }
                 Ok(p)
             });
-        let provider = ResourceService::with_backend(Arc::new(backend), false);
+        let provider = ResourceService::with_backend(Arc::new(backend));
 
         crate::request_cache::RequestCache::scope(async {
             let ctx = ExecutionContext::internal(&state);
@@ -2386,7 +2326,7 @@ mod tests {
             .expect_delete_project()
             .withf(|_, id: &'_ str| id == "pid")
             .returning(|_, _| Ok(()));
-        let provider = ResourceService::with_backend(Arc::new(backend), false);
+        let provider = ResourceService::with_backend(Arc::new(backend));
 
         crate::request_cache::RequestCache::scope(async {
             let ctx = ExecutionContext::internal(&state);
@@ -2420,7 +2360,7 @@ mod tests {
             .times(2)
             .returning(|_, _| Ok(Some(make_project("pid", "did"))));
         backend.expect_delete_project().returning(|_, _| Ok(()));
-        let provider = ResourceService::with_backend(Arc::new(backend), false);
+        let provider = ResourceService::with_backend(Arc::new(backend));
 
         crate::request_cache::RequestCache::scope(async {
             let ctx = ExecutionContext::internal(&state);
@@ -2441,7 +2381,7 @@ mod tests {
             .times(1)
             .withf(|_, id: &'_ str| id == "pid")
             .returning(|_, _| Ok(Some(vec![make_project("parent", "did")])));
-        let provider = ResourceService::with_backend(Arc::new(backend), false);
+        let provider = ResourceService::with_backend(Arc::new(backend));
 
         crate::request_cache::RequestCache::scope(async {
             let ctx = ExecutionContext::internal(&state);
@@ -2469,7 +2409,7 @@ mod tests {
             .times(2)
             .withf(|_, id: &'_ str| id == "pid")
             .returning(|_, _| Ok(Some(vec![make_project("parent", "did")])));
-        let provider = ResourceService::with_backend(Arc::new(backend), false);
+        let provider = ResourceService::with_backend(Arc::new(backend));
 
         let ctx = ExecutionContext::internal(&state);
         provider.get_project_parents(&ctx, "pid").await.unwrap();
@@ -2485,7 +2425,7 @@ mod tests {
             .times(2)
             .withf(|_, id: &'_ str| id == "pid")
             .returning(|_, _| Ok(None));
-        let provider = ResourceService::with_backend(Arc::new(backend), false);
+        let provider = ResourceService::with_backend(Arc::new(backend));
 
         crate::request_cache::RequestCache::scope(async {
             let ctx = ExecutionContext::internal(&state);
@@ -2539,7 +2479,7 @@ mod tests {
             .expect_delete_project()
             .withf(|_, id: &'_ str| id == "pid")
             .returning(|_, _| Ok(()));
-        let provider = ResourceService::with_backend(Arc::new(backend), false);
+        let provider = ResourceService::with_backend(Arc::new(backend));
 
         crate::request_cache::RequestCache::scope(async {
             let ctx = ExecutionContext::internal(&state);
@@ -2552,45 +2492,6 @@ mod tests {
         .await;
     }
 
-    /// A state whose providers accept the cascade of a project delete.
-    async fn delete_cascade_state() -> crate::keystone::ServiceState {
-        let mut credential_mock = MockCredentialProvider::default();
-        credential_mock
-            .expect_delete_credentials_for_project()
-            .returning(|_, _| Ok(()));
-        get_mocked_state(
-            None,
-            Some(
-                Provider::mocked_builder()
-                    .mock_credential(credential_mock)
-                    .mock_application_credential(project_appcred_mock())
-                    .mock_assignment(project_assignment_mock()),
-            ),
-        )
-        .await
-    }
-
-    #[tokio::test]
-    async fn test_get_project_domain_id_cached_in_process_when_caching() {
-        let state = get_mocked_state(None, Some(Provider::mocked_builder())).await;
-        let mut backend = MockResourceBackend::default();
-        backend
-            .expect_get_project_domain_id()
-            .times(1)
-            .withf(|_, id: &'_ str| id == "pid")
-            .returning(|_, _| Ok(Some("did".into())));
-        let provider = ResourceService::with_backend(Arc::new(backend), true);
-
-        // Outside any request scope: only the process-lifetime cache can help.
-        let ctx = ExecutionContext::internal(&state);
-        for _ in 0..3 {
-            assert_eq!(
-                Some("did".to_string()),
-                provider.get_project_domain_id(&ctx, "pid").await.unwrap()
-            );
-        }
-    }
-
     #[tokio::test]
     async fn test_get_project_domain_id_not_cached_without_caching() {
         let state = get_mocked_state(None, Some(Provider::mocked_builder())).await;
@@ -2599,7 +2500,7 @@ mod tests {
             .expect_get_project_domain_id()
             .times(2)
             .returning(|_, _| Ok(Some("did".into())));
-        let provider = ResourceService::with_backend(Arc::new(backend), false);
+        let provider = ResourceService::with_backend(Arc::new(backend));
 
         let ctx = ExecutionContext::internal(&state);
         provider.get_project_domain_id(&ctx, "pid").await.unwrap();
@@ -2614,7 +2515,7 @@ mod tests {
             .expect_get_project_domain_id()
             .times(2)
             .returning(|_, _| Ok(None));
-        let provider = ResourceService::with_backend(Arc::new(backend), true);
+        let provider = ResourceService::with_backend(Arc::new(backend));
 
         let ctx = ExecutionContext::internal(&state);
         assert!(
@@ -2643,7 +2544,7 @@ mod tests {
             .times(1)
             .returning(|_, _| Ok(Some(make_project("pid", "did"))));
         // No `get_project_domain_id` expectation: a call would fail the mock.
-        let provider = ResourceService::with_backend(Arc::new(backend), false);
+        let provider = ResourceService::with_backend(Arc::new(backend));
 
         crate::request_cache::RequestCache::scope(async {
             let ctx = ExecutionContext::internal(&state);
@@ -2657,25 +2558,6 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn test_get_project_parent_ids_cached_in_process_when_caching() {
-        let state = get_mocked_state(None, Some(Provider::mocked_builder())).await;
-        let mut backend = MockResourceBackend::default();
-        backend
-            .expect_get_project_parent_ids()
-            .times(1)
-            .returning(|_, _| Ok(Some(vec!["p1".into(), "did".into()])));
-        let provider = ResourceService::with_backend(Arc::new(backend), true);
-
-        let ctx = ExecutionContext::internal(&state);
-        for _ in 0..3 {
-            assert_eq!(
-                Some(vec!["p1".to_string(), "did".to_string()]),
-                provider.get_project_parent_ids(&ctx, "pid").await.unwrap()
-            );
-        }
-    }
-
-    #[tokio::test]
     async fn test_get_project_parent_ids_not_cached_without_caching() {
         let state = get_mocked_state(None, Some(Provider::mocked_builder())).await;
         let mut backend = MockResourceBackend::default();
@@ -2683,7 +2565,7 @@ mod tests {
             .expect_get_project_parent_ids()
             .times(2)
             .returning(|_, _| Ok(Some(Vec::new())));
-        let provider = ResourceService::with_backend(Arc::new(backend), false);
+        let provider = ResourceService::with_backend(Arc::new(backend));
 
         let ctx = ExecutionContext::internal(&state);
         provider.get_project_parent_ids(&ctx, "pid").await.unwrap();
@@ -2702,7 +2584,7 @@ mod tests {
             .expect_get_project_domain_id()
             .times(1)
             .returning(|_, _| Ok(Some("did".into())));
-        let provider = ResourceService::with_backend(Arc::new(backend), false);
+        let provider = ResourceService::with_backend(Arc::new(backend));
 
         crate::request_cache::RequestCache::scope(async {
             let ctx = ExecutionContext::internal(&state);
@@ -2734,7 +2616,7 @@ mod tests {
                 }]))
             });
         // No `get_project_parent_ids` expectation: a call would fail the mock.
-        let provider = ResourceService::with_backend(Arc::new(backend), false);
+        let provider = ResourceService::with_backend(Arc::new(backend));
 
         crate::request_cache::RequestCache::scope(async {
             let ctx = ExecutionContext::internal(&state);
@@ -2745,74 +2627,5 @@ mod tests {
             );
         })
         .await;
-    }
-
-    #[tokio::test]
-    async fn test_delete_project_drops_its_process_cache_entries() {
-        let state = delete_cascade_state().await;
-        let mut backend = MockResourceBackend::default();
-        backend
-            .expect_get_project_domain_id()
-            .times(2)
-            .returning(|_, _| Ok(Some("did".into())));
-        backend
-            .expect_get_project_parent_ids()
-            .times(2)
-            .returning(|_, _| Ok(Some(vec!["did".into()])));
-        backend
-            .expect_get_project()
-            .returning(|_, _| Ok(Some(make_project("pid", "did"))));
-        backend.expect_delete_project().returning(|_, _| Ok(()));
-        let provider = ResourceService::with_backend(Arc::new(backend), true);
-
-        let ctx = ExecutionContext::internal(&state);
-        provider.get_project_domain_id(&ctx, "pid").await.unwrap();
-        provider.get_project_parent_ids(&ctx, "pid").await.unwrap();
-        provider.delete_project(&ctx, "pid").await.unwrap();
-        // Both entries are gone: the backend is asked again.
-        provider.get_project_domain_id(&ctx, "pid").await.unwrap();
-        provider.get_project_parent_ids(&ctx, "pid").await.unwrap();
-    }
-
-    #[tokio::test]
-    async fn test_delete_project_drops_chains_through_it_and_keeps_the_rest() {
-        let state = delete_cascade_state().await;
-        let mut backend = MockResourceBackend::default();
-        // "child" sits below "pid"; "other" is unrelated.
-        backend
-            .expect_get_project_parent_ids()
-            .times(3)
-            .returning(|_, id| {
-                Ok(Some(match id {
-                    "child" => vec!["pid".into(), "did".into()],
-                    _ => vec!["did".into()],
-                }))
-            });
-        backend
-            .expect_get_project()
-            .returning(|_, _| Ok(Some(make_project("pid", "did"))));
-        backend.expect_delete_project().returning(|_, _| Ok(()));
-        let provider = ResourceService::with_backend(Arc::new(backend), true);
-
-        let ctx = ExecutionContext::internal(&state);
-        provider
-            .get_project_parent_ids(&ctx, "child")
-            .await
-            .unwrap();
-        provider
-            .get_project_parent_ids(&ctx, "other")
-            .await
-            .unwrap();
-        provider.delete_project(&ctx, "pid").await.unwrap();
-        // "other" is still cached (no backend call: the 3 calls are the two
-        // above plus the refetch of "child").
-        provider
-            .get_project_parent_ids(&ctx, "other")
-            .await
-            .unwrap();
-        provider
-            .get_project_parent_ids(&ctx, "child")
-            .await
-            .unwrap();
     }
 }

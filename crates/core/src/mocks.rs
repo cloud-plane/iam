@@ -2065,6 +2065,11 @@ mod role {
                 id: &'a str,
             ) -> Result<Option<Role>, RoleProviderError>;
 
+            async fn get_role_inference<'a>(
+                &self,
+                ctx: &ExecutionContext<'a>,
+            ) -> Result<std::sync::Arc<RoleInference>, RoleProviderError>;
+
             async fn get_role_imply_rule<'a>(
                 &self,
                 ctx: &ExecutionContext<'a>,

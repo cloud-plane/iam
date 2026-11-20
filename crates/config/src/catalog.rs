@@ -13,12 +13,29 @@
 // SPDX-License-Identifier: Apache-2.0
 use serde::Deserialize;
 
-use crate::common::default_sql_driver;
+use crate::common::{default_cache_time, default_sql_driver, default_true};
 use crate::pagination::ListLimitConfig;
 
 /// Catalog provider.
 #[derive(Debug, Deserialize, Clone)]
 pub struct CatalogProvider {
+    /// Maximum age of an entry of the catalog cache of the SQL
+    /// driver, in seconds. Caps `[database] projection_cache_ttl_ms`, the
+    /// smaller one wins; `0` disables the caches. A change of the tables is
+    /// noticed through the watermarks before this time. Only effective when
+    /// `caching` is enabled.
+    #[serde(default = "default_cache_time")]
+    pub cache_time: u64,
+
+    /// Toggle for catalog caching.
+    ///
+    /// When enabled the SQL driver caches the assembled service catalog in
+    /// memory, within the `[database] projection_cache_*` limits. The cache
+    /// is kept while the `service` and `endpoint` tables are unchanged, as
+    /// told by the table version watermarks.
+    #[serde(default = "default_true")]
+    pub caching: bool,
+
     /// Catalog provider driver.
     #[serde(default = "default_sql_driver")]
     pub driver: String,
@@ -26,39 +43,15 @@ pub struct CatalogProvider {
     /// `GET /v3/services`, `/v3/regions`, `/v3/endpoints` pagination limits.
     #[serde(default)]
     pub list_limit: ListLimitConfig,
-
-    /// Toggle for catalog caching.
-    ///
-    /// When enabled the assembled service catalog is cached in memory for
-    /// `cache_time` seconds.
-    #[serde(default = "default_caching")]
-    pub caching: bool,
-
-    /// Time in seconds the assembled service catalog is cached in memory.
-    ///
-    /// Changes made through this process invalidate the cache immediately;
-    /// changes made by other processes become visible after at most this
-    /// time. `0` disables the cache. Only effective when `caching` is
-    /// enabled.
-    #[serde(default = "default_cache_time")]
-    pub cache_time: u64,
-}
-
-fn default_caching() -> bool {
-    true
-}
-
-fn default_cache_time() -> u64 {
-    10
 }
 
 impl Default for CatalogProvider {
     fn default() -> Self {
         Self {
+            cache_time: default_cache_time(),
+            caching: default_true(),
             driver: default_sql_driver(),
             list_limit: ListLimitConfig::default(),
-            caching: default_caching(),
-            cache_time: default_cache_time(),
         }
     }
 }

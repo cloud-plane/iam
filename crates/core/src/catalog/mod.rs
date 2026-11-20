@@ -32,17 +32,23 @@
 //! users can access resources and perform operations.
 
 pub mod backend;
-mod cache;
 pub mod error;
 pub mod hook;
 mod provider_api;
 pub mod service;
 
-pub use cache::CatalogEntries;
 pub use error::CatalogProviderError;
 pub use hook::CatalogHook;
 pub use provider_api::CatalogApi;
 pub use service::CatalogService;
+
+/// Services with their endpoints, as `get_catalog` returns them. Shared by
+/// the readers through an `Arc`: the driver keeps the assembled catalog in
+/// its cache, a hit hands it over without copying.
+pub type CatalogEntries = Vec<(
+    openstack_keystone_core_types::catalog::Service,
+    Vec<openstack_keystone_core_types::catalog::Endpoint>,
+)>;
 
 #[cfg(any(test, feature = "mock"))]
 pub use crate::mocks::MockCatalogProvider;

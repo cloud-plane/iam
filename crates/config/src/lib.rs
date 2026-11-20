@@ -191,6 +191,7 @@ pub struct Config {
 
     /// Database configuration.
     //#[serde(default)]
+    #[validate(nested)]
     pub database: DatabaseSection,
 
     /// Global configuration options.

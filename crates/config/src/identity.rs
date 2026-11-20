@@ -15,7 +15,7 @@ use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
 use std::path::PathBuf;
 
-use crate::common::{default_sql_driver, default_true};
+use crate::common::{default_cache_time, default_sql_driver, default_true};
 use crate::pagination::ListLimitConfig;
 
 /// Identity provider.
@@ -25,8 +25,18 @@ use crate::pagination::ListLimitConfig;
 /// related.
 #[derive(Debug, Deserialize, Serialize, Clone)]
 pub struct IdentityProvider {
-    /// Caching.
-    #[serde(default)]
+    /// Maximum age of an entry of the projection caches (user options, password expiry, groups of a user, the user row) of the SQL
+    /// driver, in seconds. Caps `[database] projection_cache_ttl_ms`, the
+    /// smaller one wins; `0` disables the caches. A change of the tables is
+    /// noticed through the watermarks before this time. Only effective when
+    /// `caching` is enabled.
+    #[serde(default = "default_cache_time")]
+    pub cache_time: u64,
+
+    /// Caching. Also toggles the projection caches of the SQL driver, kept
+    /// while the identity tables are unchanged, as told by the table version
+    /// watermarks.
+    #[serde(default = "default_true")]
     pub caching: bool,
 
     /// A domain with this ID can optionally be created for you
@@ -103,7 +113,8 @@ pub struct IdentityProvider {
 impl Default for IdentityProvider {
     fn default() -> Self {
         Self {
-            caching: false,
+            cache_time: default_cache_time(),
+            caching: default_true(),
             default_domain_id: default_domain_id(),
             domain_config_dir: default_domain_config_dir(),
             domain_specific_drivers_enabled: false,

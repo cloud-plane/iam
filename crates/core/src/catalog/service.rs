@@ -14,7 +14,6 @@
 //! # Catalog provider
 use async_trait::async_trait;
 use std::sync::Arc;
-use std::time::Duration;
 use validator::Validate;
 
 use openstack_keystone_config::Config;
@@ -22,15 +21,14 @@ use openstack_keystone_core_types::catalog::*;
 use openstack_keystone_core_types::events::{Event, EventPayload, Operation};
 
 use crate::auth::ExecutionContext;
-use crate::catalog::cache::CatalogCache;
 use crate::catalog::{CatalogApi, CatalogEntries, CatalogProviderError, backend::CatalogBackend};
 use crate::events::AuditDispatchError;
 use crate::plugin_manager::PluginManagerApi;
 
 pub struct CatalogService {
+    /// The driver keeps the assembled catalog (`get_catalog`) itself: it
+    /// knows which tables it combined and is told when they change.
     backend_driver: Arc<dyn CatalogBackend>,
-    /// Cache of the assembled catalog (`get_catalog`).
-    cache: CatalogCache,
 }
 
 impl CatalogService {
@@ -50,15 +48,7 @@ impl CatalogService {
         let backend_driver = plugin_manager
             .get_catalog_backend(config.catalog.driver.clone())?
             .clone();
-        let cache = CatalogCache::new(if config.catalog.caching {
-            Duration::from_secs(config.catalog.cache_time)
-        } else {
-            Duration::ZERO
-        });
-        Ok(Self {
-            backend_driver,
-            cache,
-        })
+        Ok(Self { backend_driver })
     }
 }
 
@@ -239,11 +229,7 @@ impl CatalogApi for CatalogService {
                     EventPayload::Endpoint { id: endpoint_clone.id.clone().unwrap_or_default() },
                 ),
                 operation: async {
-                    // Invalidate before the audit step so that a late audit failure
-                    // cannot leave a committed change hidden behind the cache.
-                    let result = backend_driver.create_endpoint(exec.state(), endpoint_clone).await;
-                    self.cache.invalidate().await;
-                    result
+                    backend_driver.create_endpoint(exec.state(), endpoint_clone).await
                 },
                 on_audit_error: |_: AuditDispatchError| CatalogProviderError::Driver("audit dispatch failed".into()),
             }?
@@ -252,7 +238,6 @@ impl CatalogApi for CatalogService {
                 .backend_driver
                 .create_endpoint(exec.state(), endpoint)
                 .await?;
-            self.cache.invalidate().await;
 
             exec.state()
                 .event_dispatcher
@@ -405,11 +390,7 @@ impl CatalogApi for CatalogService {
                     EventPayload::Service { id: service_id },
                 ),
                 operation: async {
-                    // Invalidate before the audit step so that a late audit failure
-                    // cannot leave a committed change hidden behind the cache.
-                    let result = backend_driver.create_service(exec.state(), service_clone).await;
-                    self.cache.invalidate().await;
-                    result
+                    backend_driver.create_service(exec.state(), service_clone).await
                 },
                 on_audit_error: |_: AuditDispatchError| CatalogProviderError::Driver("audit dispatch failed".into()),
             }?
@@ -418,7 +399,6 @@ impl CatalogApi for CatalogService {
                 .backend_driver
                 .create_service(exec.state(), service)
                 .await?;
-            self.cache.invalidate().await;
 
             exec.state()
                 .event_dispatcher
@@ -459,12 +439,7 @@ impl CatalogApi for CatalogService {
                     EventPayload::Endpoint { id: id.to_string() },
                 ),
                 operation: async {
-                    // Invalidate before the audit step so that a late audit failure
-                    // cannot leave a committed change hidden behind the cache.
-                    let result = self.backend_driver.delete_endpoint(exec.state(), id).await;
-                    self.cache.invalidate().await;
-                    result?;
-                    Ok::<(), CatalogProviderError>(())
+                    self.backend_driver.delete_endpoint(exec.state(), id).await
                 },
                 on_audit_error: |_: AuditDispatchError| CatalogProviderError::Driver("audit dispatch failed".into()),
             }?;
@@ -472,7 +447,6 @@ impl CatalogApi for CatalogService {
             self.backend_driver
                 .delete_endpoint(exec.state(), id)
                 .await?;
-            self.cache.invalidate().await;
 
             exec.state()
                 .event_dispatcher
@@ -597,18 +571,12 @@ impl CatalogApi for CatalogService {
                     EventPayload::Service { id: id.to_string() },
                 ),
                 operation: async {
-                    // Invalidate before the audit step so that a late audit failure
-                    // cannot leave a committed change hidden behind the cache.
-                    let result = self.backend_driver.delete_service(exec.state(), id).await;
-                    self.cache.invalidate().await;
-                    result?;
-                    Ok::<(), CatalogProviderError>(())
+                    self.backend_driver.delete_service(exec.state(), id).await
                 },
                 on_audit_error: |_: AuditDispatchError| CatalogProviderError::Driver("audit dispatch failed".into()),
             }?;
         } else {
             self.backend_driver.delete_service(exec.state(), id).await?;
-            self.cache.invalidate().await;
 
             exec.state()
                 .event_dispatcher
@@ -637,11 +605,7 @@ impl CatalogApi for CatalogService {
         exec: &ExecutionContext<'a>,
         enabled: bool,
     ) -> Result<Arc<CatalogEntries>, CatalogProviderError> {
-        self.cache
-            .get_or_load(enabled, || {
-                self.backend_driver.get_catalog(exec.state(), enabled)
-            })
-            .await
+        self.backend_driver.get_catalog(exec.state(), enabled).await
     }
 
     /// Get single endpoint by ID.
@@ -983,11 +947,7 @@ impl CatalogApi for CatalogService {
                     EventPayload::Endpoint { id: id.to_string() },
                 ),
                 operation: async {
-                    // Invalidate before the audit step so that a late audit failure
-                    // cannot leave a committed change hidden behind the cache.
-                    let result = backend_driver.update_endpoint(exec.state(), id, endpoint_clone).await;
-                    self.cache.invalidate().await;
-                    result
+                    backend_driver.update_endpoint(exec.state(), id, endpoint_clone).await
                 },
                 on_audit_error: |_: AuditDispatchError| CatalogProviderError::Driver("audit dispatch failed".into()),
             }?
@@ -996,7 +956,6 @@ impl CatalogApi for CatalogService {
                 .backend_driver
                 .update_endpoint(exec.state(), id, endpoint)
                 .await?;
-            self.cache.invalidate().await;
             exec.state()
                 .event_dispatcher
                 .emit(Event::new(
@@ -1137,11 +1096,7 @@ impl CatalogApi for CatalogService {
                     EventPayload::Service { id: id.to_string() },
                 ),
                 operation: async {
-                    // Invalidate before the audit step so that a late audit failure
-                    // cannot leave a committed change hidden behind the cache.
-                    let result = backend_driver.update_service(exec.state(), id, service_clone).await;
-                    self.cache.invalidate().await;
-                    result
+                    backend_driver.update_service(exec.state(), id, service_clone).await
                 },
                 on_audit_error: |_: AuditDispatchError| CatalogProviderError::Driver("audit dispatch failed".into()),
             }?
@@ -1150,7 +1105,6 @@ impl CatalogApi for CatalogService {
                 .backend_driver
                 .update_service(exec.state(), id, service)
                 .await?;
-            self.cache.invalidate().await;
             exec.state()
                 .event_dispatcher
                 .emit(Event::new(

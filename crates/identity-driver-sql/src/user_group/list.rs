@@ -114,6 +114,25 @@ pub async fn is_user_in_group<U: AsRef<str>, G: AsRef<str>>(
         .is_some())
 }
 
+/// Whether the user has any expiring (federated) membership row, expired or
+/// not. Such a user is in a group only while the row is recent enough, which
+/// the watermark of the tables does not tell.
+///
+/// # Parameters
+/// - `db`: Database connection.
+/// - `user_id`: User ID.
+pub async fn has_expiring_memberships<S: AsRef<str>>(
+    db: &DatabaseConnection,
+    user_id: S,
+) -> Result<bool, IdentityProviderError> {
+    Ok(expiring_user_group_membership::Entity::find()
+        .filter(expiring_user_group_membership::Column::UserId.eq(user_id.as_ref()))
+        .one(db)
+        .await
+        .context("checking for expiring group memberships")?
+        .is_some())
+}
+
 /// List all groups the user is member of.
 ///
 /// Selects all groups with the ID in the list of user group memberships and

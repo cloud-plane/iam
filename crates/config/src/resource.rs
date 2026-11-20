@@ -13,12 +13,27 @@
 // SPDX-License-Identifier: Apache-2.0
 use serde::Deserialize;
 
-use crate::common::default_sql_driver;
+use crate::common::{default_cache_time, default_sql_driver, default_true};
 use crate::pagination::ListLimitConfig;
 
 /// Resource provider (domain, project).
 #[derive(Debug, Deserialize, Clone)]
 pub struct ResourceProvider {
+    /// Maximum age of an entry of the project and domain caches of the SQL
+    /// driver, in seconds. Caps `[database] projection_cache_ttl_ms`, the
+    /// smaller one wins; `0` disables the caches. A change of the tables is
+    /// noticed through the watermarks before this time. Only effective when
+    /// `caching` is enabled.
+    #[serde(default = "default_cache_time")]
+    pub cache_time: u64,
+
+    /// Caching. Toggles the caches of the SQL driver: the domain and the
+    /// parents of a project, the project and domain references. They are
+    /// kept while the `project` table is unchanged, as told by the table
+    /// version watermarks, so a change made by another process is noticed.
+    #[serde(default = "default_true")]
+    pub caching: bool,
+
     /// Resource provider backend.
     #[serde(default = "default_sql_driver")]
     pub driver: String,
@@ -26,26 +41,15 @@ pub struct ResourceProvider {
     /// `GET /v3/projects` and `/v3/domains` pagination limits.
     #[serde(default)]
     pub list_limit: ListLimitConfig,
-
-    /// Caching. When enabled, the facts that never change for a project are
-    /// kept in the memory of the process: the domain of the project and the
-    /// chain of its parents (`domain_id` and `parent_id` cannot be updated).
-    /// Each cache holds at most 100,000 entries and is emptied when it is
-    /// full. An entry is dropped when the project (or its domain) is deleted
-    /// through this process;
-    /// a project removed by another process (or directly in the database)
-    /// and re-created with the same ID in a different place keeps the old
-    /// entry until restart.
-    #[serde(default)]
-    pub caching: bool,
 }
 
 impl Default for ResourceProvider {
     fn default() -> Self {
         Self {
+            cache_time: default_cache_time(),
+            caching: default_true(),
             driver: default_sql_driver(),
             list_limit: ListLimitConfig::default(),
-            caching: false,
         }
     }
 }

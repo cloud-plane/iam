@@ -13,12 +13,30 @@
 // SPDX-License-Identifier: Apache-2.0
 use serde::Deserialize;
 
-use crate::common::default_sql_driver;
+use crate::common::{default_cache_time, default_sql_driver, default_true};
 use crate::pagination::ListLimitConfig;
 
 /// Role Provider.
 #[derive(Debug, Deserialize, Clone)]
 pub struct RoleProvider {
+    /// Toggle for role caching.
+    ///
+    /// When enabled the SQL driver caches the names of the roles and the
+    /// resolved role inference (the roles every role implies) in memory,
+    /// within the `[database] projection_cache_*` limits. The caches are
+    /// kept while the `role` and `implied_role` tables are unchanged, as
+    /// told by the table version watermarks.
+    #[serde(default = "default_true")]
+    pub caching: bool,
+
+    /// Maximum age of an entry of the role caches of the SQL
+    /// driver, in seconds. Caps `[database] projection_cache_ttl_ms`, the
+    /// smaller one wins; `0` disables the caches. A change of the tables is
+    /// noticed through the watermarks before this time. Only effective when
+    /// `caching` is enabled.
+    #[serde(default = "default_cache_time")]
+    pub cache_time: u64,
+
     /// Role provider driver.
     #[serde(default = "default_sql_driver")]
     pub driver: String,
@@ -26,40 +44,15 @@ pub struct RoleProvider {
     /// `GET /v3/roles` pagination limits.
     #[serde(default)]
     pub list_limit: ListLimitConfig,
-
-    /// Toggle for role caching.
-    ///
-    /// When enabled the roles (including their names) and the role imply
-    /// rules are cached in memory for `cache_time` seconds.
-    #[serde(default = "default_caching")]
-    pub caching: bool,
-
-    /// Time in seconds the roles and the role imply rules are cached in
-    /// memory.
-    ///
-    /// Changes made through this process invalidate the cache immediately;
-    /// changes made by other processes become visible after at most this
-    /// time. `0` disables the cache. Only effective when `caching` is
-    /// enabled.
-    #[serde(default = "default_cache_time")]
-    pub cache_time: u64,
-}
-
-fn default_caching() -> bool {
-    true
-}
-
-fn default_cache_time() -> u64 {
-    10
 }
 
 impl Default for RoleProvider {
     fn default() -> Self {
         Self {
+            caching: default_true(),
+            cache_time: default_cache_time(),
             driver: default_sql_driver(),
             list_limit: ListLimitConfig::default(),
-            caching: default_caching(),
-            cache_time: default_cache_time(),
         }
     }
 }

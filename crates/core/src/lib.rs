@@ -117,6 +117,7 @@ pub mod plugin_manager;
 pub mod policy;
 pub mod policy_metrics;
 pub mod policy_store;
+pub mod projection_cache;
 pub mod provider;
 pub mod rate_limit;
 pub mod rate_limit_metrics;
@@ -129,6 +130,7 @@ pub mod scim_resource;
 pub mod service_grant;
 pub mod single_use;
 pub mod spiffe_key;
+pub mod table_watermark;
 pub mod token;
 pub mod trust;
 

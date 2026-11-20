@@ -83,13 +83,6 @@ pub struct IdentityService {
     /// a change to a domain's `identity/driver` through the config API is
     /// picked up only after a restart (issue #960 follow-up).
     resolved_driver_cache: RwLock<HashMap<String, String>>,
-    /// Caching flag. When enabled certain data can be cached (i.e. `domain_id`
-    /// by `user_id`).
-    caching: bool,
-    /// Internal cache of `user_id` to `domain_id` mappings. This information if
-    /// fully static and can never change (well, except with a direct SQL
-    /// update).
-    user_id_domain_id_cache: RwLock<HashMap<String, String>>,
 }
 
 impl IdentityService {
@@ -120,8 +113,6 @@ impl IdentityService {
             backends: plugin_manager.identity_backends().clone(),
             domain_config_resolver,
             resolved_driver_cache: HashMap::new().into(),
-            caching: config.identity.caching,
-            user_id_domain_id_cache: HashMap::new().into(),
         })
     }
 
@@ -141,8 +132,6 @@ impl IdentityService {
             backends: HashMap::new(),
             domain_config_resolver: None,
             resolved_driver_cache: HashMap::new().into(),
-            caching: false,
-            user_id_domain_id_cache: HashMap::new().into(),
         }
     }
 
@@ -162,8 +151,6 @@ impl IdentityService {
             backends,
             domain_config_resolver,
             resolved_driver_cache: HashMap::new().into(),
-            caching: false,
-            user_id_domain_id_cache: HashMap::new().into(),
         }
     }
 
@@ -1276,12 +1263,6 @@ impl IdentityApi for IdentityService {
                     Err(err @ IdentityProviderError::UserNotFound(_)) => Err(err),
                     Err(err) => return Err(err),
                 };
-                if self.caching {
-                    self.user_id_domain_id_cache
-                        .write()
-                        .await
-                        .remove(user_id);
-                }
                 ctx.state()
                     .provider
                     .get_credential_provider()
@@ -1339,7 +1320,13 @@ impl IdentityApi for IdentityService {
             return Ok(Some(user));
         }
         let (backend, local_id) = self.resolve_public_id(ctx, user_id).await?;
-        let mut user = backend.get_user(ctx.state(), &local_id).await?;
+        let mut user = if ctx.freshness().is_linearizable() {
+            backend.get_user(ctx.state(), &local_id).await?
+        } else {
+            backend
+                .get_user_with_freshness(ctx.state(), &local_id, ctx.freshness())
+                .await?
+        };
         if !Arc::ptr_eq(&backend, &self.backend_driver)
             && let Some(user) = &mut user
         {
@@ -1349,12 +1336,6 @@ impl IdentityApi for IdentityService {
             user.id = user_id.to_string();
         }
         if let Some(user) = &user {
-            if self.caching {
-                self.user_id_domain_id_cache
-                    .write()
-                    .await
-                    .insert(user_id.to_string(), user.domain_id.clone());
-            }
             cache_set(USER_CACHE_NS, user_id, user.clone());
         }
         Ok(user)
@@ -1378,7 +1359,13 @@ impl IdentityApi for IdentityService {
             return Ok(Some(core));
         }
         let (backend, local_id) = self.resolve_public_id(ctx, user_id).await?;
-        let mut core = backend.get_user_core(ctx.state(), &local_id).await?;
+        let mut core = if ctx.freshness().is_linearizable() {
+            backend.get_user_core(ctx.state(), &local_id).await?
+        } else {
+            backend
+                .get_user_core_with_freshness(ctx.state(), &local_id, ctx.freshness())
+                .await?
+        };
         if !Arc::ptr_eq(&backend, &self.backend_driver)
             && let Some(core) = &mut core
         {
@@ -1396,39 +1383,21 @@ impl IdentityApi for IdentityService {
     /// - `state`: The service state.
     /// - `user_id`: The ID of the user.
     ///
-    /// When the caching is enabled check for the cached value there. When no
-    /// data is present for the key - invoke the backend driver and place
-    /// the new value into the cache. Other operations (`get_user`,
-    /// `delete_user`) update the cache with `delete_user` purging the value
-    /// from the cache.
+    /// The driver caches the value (the domain of a user never changes while
+    /// the user exists) in its projection cache with an age limit, so that
+    /// a user deleted by another process and recreated under the same ID is
+    /// picked up. The provider holds no cache of its own.
     #[tracing::instrument(name = "provider.identity.get_user_domain_id", level = "debug", skip_all, fields(user_id = %user_id))]
     async fn get_user_domain_id<'a>(
         &self,
         ctx: &ExecutionContext<'a>,
         user_id: &'a str,
     ) -> Result<String, IdentityProviderError> {
-        if self.caching {
-            if let Some(domain_id) = self.user_id_domain_id_cache.read().await.get(user_id) {
-                return Ok(domain_id.clone());
-            } else {
-                let domain_id = self
-                    .driver_for_user(ctx, user_id)
-                    .await?
-                    .get_user_domain_id(ctx.state(), user_id)
-                    .await?;
-                self.user_id_domain_id_cache
-                    .write()
-                    .await
-                    .insert(user_id.to_string(), domain_id.clone());
-                return Ok(domain_id);
-            }
-        } else {
-            Ok(self
-                .driver_for_user(ctx, user_id)
-                .await?
-                .get_user_domain_id(ctx.state(), user_id)
-                .await?)
-        }
+        Ok(self
+            .driver_for_user(ctx, user_id)
+            .await?
+            .get_user_domain_id(ctx.state(), user_id)
+            .await?)
     }
 
     #[tracing::instrument(name = "provider.identity.find_user_by_name_ci", level = "debug", skip_all, fields(domain_id = %domain_id, user_name = %name))]

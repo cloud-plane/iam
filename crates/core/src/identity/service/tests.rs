@@ -276,48 +276,34 @@ async fn test_get_user_core_reuses_full_user_cached_in_request() {
 async fn test_get_user_domain_id() {
     let state = get_mocked_state(None, None).await;
     let mut backend = MockIdentityBackend::default();
+    // The provider holds no cache of its own: the driver caches the domain
+    // in its projection cache, so every call reaches the driver.
     backend
         .expect_get_user_domain_id()
         .withf(|_, uid: &'_ str| uid == "uid")
-        .times(2) // only 2 times
+        .times(2)
         .returning(|_, _| Ok("did".into()));
     backend
         .expect_get_user_domain_id()
         .withf(|_, uid: &'_ str| uid == "missing")
         .returning(|_, _| Err(IdentityProviderError::UserNotFound("missing".into())));
-    let mut provider = IdentityService::from_driver(backend);
-    provider.caching = true;
+    let provider = IdentityService::from_driver(backend);
 
-    assert_eq!(
-        provider
-            .get_user_domain_id(&ExecutionContext::internal(&state), "uid")
-            .await
-            .unwrap(),
-        "did"
-    );
-    assert_eq!(
-        provider
-            .get_user_domain_id(&ExecutionContext::internal(&state), "uid")
-            .await
-            .unwrap(),
-        "did",
-        "second time data extracted from cache"
-    );
-    assert!(
+    for _ in 0..2 {
+        assert_eq!(
+            provider
+                .get_user_domain_id(&ExecutionContext::internal(&state), "uid")
+                .await
+                .unwrap(),
+            "did"
+        );
+    }
+    assert!(matches!(
         provider
             .get_user_domain_id(&ExecutionContext::internal(&state), "missing")
-            .await
-            .is_err()
-    );
-    provider.caching = false;
-    assert_eq!(
-        provider
-            .get_user_domain_id(&ExecutionContext::internal(&state), "uid")
-            .await
-            .unwrap(),
-        "did",
-        "third time backend is again triggered causing total of 2 invocations"
-    );
+            .await,
+        Err(IdentityProviderError::UserNotFound(_))
+    ));
 }
 
 #[tokio::test]

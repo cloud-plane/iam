@@ -13,9 +13,11 @@
 // SPDX-License-Identifier: Apache-2.0
 
 use async_trait::async_trait;
+use std::sync::Arc;
 
 use openstack_keystone_core_types::catalog::*;
 
+use crate::catalog::CatalogEntries;
 use crate::catalog::error::CatalogProviderError;
 use crate::keystone::ServiceState;
 
@@ -216,7 +218,7 @@ pub trait CatalogBackend: Send + Sync {
         &self,
         state: &ServiceState,
         enabled: bool,
-    ) -> Result<Vec<(Service, Vec<Endpoint>)>, CatalogProviderError>;
+    ) -> Result<Arc<CatalogEntries>, CatalogProviderError>;
 
     /// Get single endpoint by ID.
     ///

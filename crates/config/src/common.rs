@@ -54,6 +54,12 @@ pub fn default_raft_driver() -> String {
     "raft".into()
 }
 
+/// Default `cache_time` (seconds): the same as the default of
+/// `[database] projection_cache_ttl_ms`.
+pub fn default_cache_time() -> u64 {
+    300
+}
+
 /// Server interface type.
 #[derive(Debug, Deserialize, Clone, Copy, PartialEq, Eq, Hash)]
 pub enum Interface {
