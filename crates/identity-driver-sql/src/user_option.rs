@@ -19,9 +19,11 @@ use crate::entity::user_option;
 
 mod create;
 mod list;
+mod upsert;
 
 pub use create::create;
 pub use list::list_by_user_id;
+pub use upsert::upsert;
 
 impl FromIterator<user_option::Model> for UserOptions {
     fn from_iter<I: IntoIterator<Item = user_option::Model>>(iter: I) -> Self {
