@@ -21,3 +21,4 @@ mod get;
 mod get_domain_id;
 mod list;
 mod update;
+mod update_options;

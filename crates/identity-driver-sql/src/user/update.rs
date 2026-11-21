@@ -100,6 +100,11 @@ pub async fn update(
         .await
         .context("updating user entry")?;
 
+    // Persist the requested options. Unset options are left untouched.
+    if let Some(ref opts) = user.options {
+        crate::user_option::upsert(&txn, user_id, opts).await?;
+    }
+
     // Handle password update: only local users have passwords
     if let Some(ref new_password) = user.password {
         let (local_user, passwords) =
@@ -514,6 +519,21 @@ mod tests {
             .append_query_results([get_local_user_with_password_mock("1", 1)])
             // user options
             .append_query_results([stored_opts])
+            // replace the requested options (delete + insert), when any
+            .append_exec_results(
+                req_opts
+                    .iter()
+                    .filter(|o| o.ignore_change_password_upon_first_use.is_some())
+                    .flat_map(|_| {
+                        std::iter::repeat_n(
+                            MockExecResult {
+                                rows_affected: 1,
+                                ..Default::default()
+                            },
+                            2,
+                        )
+                    }),
+            )
             // delete the old password
             .append_exec_results([MockExecResult {
                 rows_affected: 1,
