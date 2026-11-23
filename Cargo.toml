@@ -193,7 +193,7 @@ prost = { version = "0.14" }
 proptest = { version = "1" }
 rand = { version = "0.10" }
 regex = { version = "1.13" }
-regorus = { version = "=0.14.1", default-features = false, features = ["arc", "std", "rvm"] }
+regorus = { version = "0.15", default-features = false, features = ["arc", "std", "rvm"] }
 regex-syntax = "0.8"
 reqwest = { version = "0.13", default-features = false, features = ["rustls-no-provider", "charset", "http2", "system-proxy"] }
 reserve-port = "2.5"
