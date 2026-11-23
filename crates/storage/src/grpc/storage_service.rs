@@ -205,7 +205,13 @@ impl StorageService for StorageServiceImpl {
         let req = request.into_inner();
         // Check-only: the decoded value is intentionally discarded; the same
         // bytes are applied through Raft below.
-        decode_data_command(&req.payload)?;
+        let cmd = decode_data_command(&req.payload)?;
+        if let Some(r) = self.state_machine_store.refused_emit(&cmd) {
+            return Err(Status::failed_precondition(format!(
+                "{}: {}",
+                r.violation_type, r.description
+            )));
+        }
 
         let res =
             self.raft_node.client_write(req).await.map_err(|e| {

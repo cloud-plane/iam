@@ -723,6 +723,8 @@ pub async fn init_storage(config_manager: &Arc<ConfigManager>) -> Result<Arc<Sto
     ) = crate::new::<crate::TypeConfig, _>(ds_config.path.clone(), ds_config.node_id, kek.clone())
         .await?;
     state_machine_store.set_write_rate_threshold(ds_config.write_rate_threshold);
+    state_machine_store.set_feed_kinds(ds_config.feed_kinds.iter().cloned());
+    state_machine_store.set_feed_max_event_bytes(ds_config.feed_max_event_bytes);
     let log_nonce = log_store.nonce_manager();
     tracing::debug!("Raft stores opened; initializing Raft TLS client...");
     let tls_client = init_tls_watcher(config_manager).await?;
@@ -896,11 +898,15 @@ pub async fn init_storage(config_manager: &Arc<ConfigManager>) -> Result<Arc<Sto
         leader_contact: Arc::new(LeaderContact::default()),
         log_nonce,
         dek_rotation_days: ds_config.dek_rotation_days,
+        feed_retention_days: ds_config.feed_retention_days,
+        feed_max_events: ds_config.feed_max_events,
+        feed_heartbeat: Duration::from_secs(ds_config.feed_heartbeat_secs),
     });
 
     // Automatic DEK rotation by age and by log nonce volume (ADR 0016-v2
     // §6). Runs on every node but only the leader proposes.
     dek_rotation::spawn_dek_rotation_task(&storage);
+    feed_retention::spawn_feed_retention_task(&storage);
 
     // Best-effort background forwarding of Raft-committed quarantine events
     // (ADR 0016-v2 §10 invariant 5). The local, synchronous quarantine
@@ -1099,6 +1105,16 @@ pub async fn get_app_server(storage: &Storage) -> Result<Routes, StoreError> {
         storage.node_id,
     );
 
+    let feed_svc_impl = crate::grpc::feed_service::FeedServiceImpl::new(
+        storage.raft.clone(),
+        storage.node_id,
+        storage.state_machine_store.clone(),
+        storage.peer_authz.clone(),
+        storage.leader_contact.clone(),
+        storage.feed_heartbeat,
+        storage.local_read_max_staleness,
+    );
+
     let mut router = Routes::builder();
     router
         .add_service(
@@ -1106,6 +1122,7 @@ pub async fn get_app_server(storage: &Storage) -> Result<Routes, StoreError> {
                 .max_decoding_message_size(crate::RAFT_MAX_MESSAGE_SIZE),
         )
         .add_service(ClusterAdminServiceServer::new(cluster_admin_svc_impl))
+        .add_service(FeedServiceServer::new(feed_svc_impl))
         .add_service(StorageServiceServer::new(storage_svc_impl));
 
     Ok(router.routes())

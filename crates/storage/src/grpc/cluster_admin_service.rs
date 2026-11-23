@@ -51,6 +51,7 @@ use crate::types::*;
 
 mod auth;
 mod dek;
+mod feed_grants;
 mod join;
 mod leader;
 mod local_emergency;
@@ -619,6 +620,33 @@ impl ClusterAdminService for ClusterAdminServiceImpl {
         request: Request<()>,
     ) -> Result<Response<pb::raft::ListSitesResponse>, Status> {
         self.handle_list_sites(request).await
+    }
+
+    /// Allows a subscriber to receive the feed events of a kind.
+    #[tracing::instrument(level = "trace", skip(self))]
+    async fn set_feed_grant(
+        &self,
+        request: Request<pb::raft::FeedGrantRequest>,
+    ) -> Result<Response<pb::raft::AdminResponse>, Status> {
+        self.handle_set_feed_grant(request).await
+    }
+
+    /// Removes one feed grant.
+    #[tracing::instrument(level = "trace", skip(self))]
+    async fn revoke_feed_grant(
+        &self,
+        request: Request<pb::raft::FeedGrantRequest>,
+    ) -> Result<Response<pb::raft::AdminResponse>, Status> {
+        self.handle_revoke_feed_grant(request).await
+    }
+
+    /// Lists feed grants.
+    #[tracing::instrument(level = "trace", skip(self))]
+    async fn list_feed_grants(
+        &self,
+        request: Request<pb::raft::ListFeedGrantsRequest>,
+    ) -> Result<Response<pb::raft::ListFeedGrantsResponse>, Status> {
+        self.handle_list_feed_grants(request).await
     }
 
     /// Provides dual-control approval for a pending emergency DEK rotation.

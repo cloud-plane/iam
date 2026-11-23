@@ -204,6 +204,46 @@ fn mutation_inner_layouts() {
         "81a85365745369746573919193a161c401aa02",
     );
     assert_wire(
+        "MutationInner::PruneOutbox",
+        &MutationInner::PruneOutbox { upto_index: 7 },
+        "81ab5072756e654f7574626f789107",
+    );
+    assert_wire(
+        "MutationInner::SetFeedEpoch",
+        &MutationInner::SetFeedEpoch { epoch: 7 },
+        "81ac5365744665656445706f63689107",
+    );
+    assert_wire(
+        "MutationInner::SetFeedGrant",
+        &MutationInner::SetFeedGrant {
+            svid: "s".into(),
+            kind: "k".into(),
+            domain: Some("d".into()),
+        },
+        "81ac536574466565644772616e7493a173a16ba164",
+    );
+    assert_wire(
+        "MutationInner::RevokeFeedGrant",
+        &MutationInner::RevokeFeedGrant {
+            svid: "s".into(),
+            kind: "k".into(),
+            domain: None,
+        },
+        "81af5265766f6b65466565644772616e7493a173a16bc0",
+    );
+    assert_wire(
+        "MutationInner::Emit",
+        &MutationInner::Emit {
+            kind: "k".into(),
+            domain_id: Some("d".into()),
+            key: vec![1],
+            op: openstack_keystone_storage_api::FeedOp::Remove,
+            value: None,
+            tier: 1,
+        },
+        "81a4456d697496a16ba164c40101a652656d6f7665c001",
+    );
+    assert_wire(
         "MutationInner::Quarantine",
         &MutationInner::Quarantine {
             node_id: 3,
