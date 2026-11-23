@@ -39,6 +39,7 @@ use openstack_keystone_distributed_storage::{
 mod backup;
 mod clear_quarantine;
 mod confirm_rotate_dek;
+mod confirm_sites;
 mod demote;
 mod init;
 mod join;
@@ -50,6 +51,7 @@ mod reconcile_dek_local_emergency;
 mod remove_peer;
 mod restore;
 mod rotate_dek;
+mod sites;
 mod status;
 mod transfer_leader;
 
@@ -57,6 +59,7 @@ use crate::PerformAction;
 use crate::storage::backup::BackupCommand;
 use crate::storage::clear_quarantine::ClearQuarantineCommand;
 use crate::storage::confirm_rotate_dek::ConfirmRotateDekCommand;
+use crate::storage::confirm_sites::ConfirmSitesCommand;
 use crate::storage::demote::DemoteCommand;
 use crate::storage::init::InitCommand;
 use crate::storage::join::JoinCommand;
@@ -68,6 +71,7 @@ use crate::storage::reconcile_dek_local_emergency::ReconcileDekLocalEmergencyCom
 use crate::storage::remove_peer::RemovePeerCommand;
 use crate::storage::restore::RestoreCommand;
 use crate::storage::rotate_dek::RotateDekCommand;
+use crate::storage::sites::SitesCommand;
 use crate::storage::status::StatusCommand;
 use crate::storage::transfer_leader::TransferLeaderCommand;
 
@@ -88,6 +92,7 @@ impl PerformAction for StorageCommand {
             StorageCommands::Backup(e) => e.take_action(config).await,
             StorageCommands::ClearQuarantine(e) => e.take_action(config).await,
             StorageCommands::ConfirmRotateDek(e) => e.take_action(config).await,
+            StorageCommands::ConfirmSites(e) => e.take_action(config).await,
             StorageCommands::Demote(e) => e.take_action(config).await,
             StorageCommands::Init(e) => e.take_action(config).await,
             StorageCommands::Join(e) => e.take_action(config).await,
@@ -97,6 +102,7 @@ impl PerformAction for StorageCommand {
             StorageCommands::RemovePeer(e) => e.take_action(config).await,
             StorageCommands::Restore(e) => e.take_action(config).await,
             StorageCommands::RotateDek(e) => e.take_action(config).await,
+            StorageCommands::Sites(e) => e.take_action(config).await,
             StorageCommands::Status(e) => e.take_action(config).await,
             StorageCommands::TransferLeader(e) => e.take_action(config).await,
             StorageCommands::ListDekLocalEmergencyCandidates(e) => e.take_action(config).await,
@@ -110,6 +116,7 @@ enum StorageCommands {
     Backup(BackupCommand),
     ClearQuarantine(ClearQuarantineCommand),
     ConfirmRotateDek(ConfirmRotateDekCommand),
+    ConfirmSites(ConfirmSitesCommand),
     Demote(DemoteCommand),
     Init(InitCommand),
     Join(JoinCommand),
@@ -119,6 +126,7 @@ enum StorageCommands {
     RemovePeer(RemovePeerCommand),
     Restore(RestoreCommand),
     RotateDek(RotateDekCommand),
+    Sites(SitesCommand),
     Status(StatusCommand),
     TransferLeader(TransferLeaderCommand),
     ListDekLocalEmergencyCandidates(ListDekLocalEmergencyCandidatesCommand),

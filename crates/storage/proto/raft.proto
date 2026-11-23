@@ -242,6 +242,16 @@ message AdminResponse {
   // of dual-control). The caller must pass this id to ConfirmRotateDek within
   // 5 minutes.
   string pending_rotation_id = 4;
+
+  // Non-empty when the response is a staged site list change (stage 1 of
+  // dual-control): the list adds or replaces a site key. A second operator
+  // must pass this id to ConfirmSetSites before `pending_site_change_expires_at`
+  // (Unix seconds).
+  string pending_site_change_id = 5;
+  uint64 pending_site_change_expires_at = 6;
+  // Digest of the staged list (see PendingSiteChange.digest). The initiator
+  // shows it to the second operator out-of-band.
+  string pending_site_change_digest = 7;
 }
 
 message MetricsResponse {
@@ -260,7 +270,7 @@ message MetricsResponse {
 // management.
 //
 // Leader-only RPCs (AddLearner, ChangeMembership, ClearQuarantine,
-// RotateDek, ConfirmRotateDek, ReconcileDekLocalEmergency, Backup, and
+// RotateDek, ConfirmRotateDek, SetSites, ConfirmSetSites, GetPendingSiteChange, ReconcileDekLocalEmergency, Backup, and
 // Restore into an initialized cluster) answered by a non-leader fail with
 // UNAVAILABLE carrying the `x-openraft-leader-id` and
 // `x-openraft-leader-endpoint` metadata when the leader is known; clients
@@ -297,6 +307,27 @@ service ClusterAdminService {
   // DEK rotation. Must be invoked within 5 minutes of the initial
   // RotateDekRequest{emergency: true} by a second storage-operator.
   rpc ConfirmRotateDek(ConfirmRotateDekRequest) returns (AdminResponse) {}
+
+  // SetSites replaces the list of sites the DEK is wrapped for, with the
+  // per_site KEK provider (ADR 0045 §11.2). Leader-only, operator access
+  // over the internal management network.
+  // A list that adds a site or replaces a site's key is only staged: the
+  // response carries pending_site_change_id and a second operator confirms
+  // it with ConfirmSetSites within 5 minutes. A list that only removes sites
+  // is applied at once.
+  rpc SetSites(SetSitesRequest) returns (AdminResponse) {}
+
+  // ConfirmSetSites provides dual-control approval for a staged SetSites. The
+  // confirming operator must differ from the initiator. Leader-only.
+  rpc ConfirmSetSites(ConfirmSetSitesRequest) returns (AdminResponse) {}
+
+  // GetPendingSiteChange returns the staged SetSites change, with the
+  // fingerprint of every key, so the second operator sees what they approve.
+  // NOT_FOUND when nothing is pending. Leader-only.
+  rpc GetPendingSiteChange(google.protobuf.Empty) returns (PendingSiteChange) {}
+
+  // ListSites returns the sites the responding node wraps new DEKs for.
+  rpc ListSites(google.protobuf.Empty) returns (ListSitesResponse) {}
 
   // RotateDekLocalEmergency stages a node-local, quorum-bypass DEK rotation
   // candidate (ADR 0028 §3, amending ADR 0016-v2 §6.2): written only to this
@@ -451,6 +482,63 @@ message RetiredDek {
   uint32 dek_version = 1;
   // The retired DEK, wrapped under the responding node's KEK.
   bytes wrapped_dek = 2;
+}
+
+// A site that can open the DEK envelope.
+message Site {
+  // Site name, unique in the list.
+  string name = 1;
+  // RSA public key, SubjectPublicKeyInfo DER, at least 2048 bits.
+  bytes public_key_der = 2;
+  // Version of the site's key pair.
+  uint32 key_version = 3;
+}
+
+message SetSitesRequest {
+  // The complete new list; it must include the site of the node answering.
+  repeated Site sites = 1;
+  // Acknowledge that sites named in the current DEK envelope but missing from
+  // the list are dropped. Nodes of a dropped site can no longer open or wrap
+  // a DEK, so the call is refused without this flag.
+  bool allow_site_removal = 2;
+}
+
+message ConfirmSetSitesRequest {
+  // The pending_site_change_id returned by SetSites.
+  string change_id = 1;
+  // The digest of the staged list, as shown by GetPendingSiteChange. The
+  // confirmation is refused when it differs, so the confirming operator
+  // approves exactly what the leader applies.
+  string digest = 2;
+}
+
+// A site of a staged list with the fingerprint of its key.
+message SiteSummary {
+  string name = 1;
+  uint32 key_version = 2;
+  // SHA-256 of the SubjectPublicKeyInfo DER, lowercase hex.
+  string fingerprint = 3;
+}
+
+// The staged SetSites change waiting for a second operator.
+message PendingSiteChange {
+  string change_id = 1;
+  string initiator = 2;
+  // Unix seconds.
+  uint64 expires_at = 3;
+  // The complete staged list.
+  repeated SiteSummary sites = 4;
+  // Names of sites the list adds or gives a different key.
+  repeated string changed = 5;
+  // Names of registered sites the list drops.
+  repeated string removed = 6;
+  bool allow_site_removal = 7;
+  // SHA-256 over the whole list and allow_site_removal, lowercase hex.
+  string digest = 8;
+}
+
+message ListSitesResponse {
+  repeated Site sites = 1;
 }
 
 message RotateDekRequest {

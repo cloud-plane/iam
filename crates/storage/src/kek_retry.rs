@@ -63,6 +63,31 @@ async fn unwrap_with_backoff(
     }
 }
 
+/// [`SiteKek::rewrap_for`], repeated with the same backoff for as long as
+/// the failure is transient.
+pub(crate) async fn rewrap_for_retrying(
+    kek: &openstack_keystone_storage_crypto::SiteKek,
+    sites: &[openstack_keystone_storage_crypto::SiteEntry],
+    envelope: &[u8],
+) -> Result<Vec<u8>, CryptoError> {
+    let mut delay = FIRST_DELAY;
+    let started = tokio::time::Instant::now();
+    loop {
+        match kek.rewrap_for(sites, envelope).await {
+            Err(e) if e.is_transient() => {
+                if started.elapsed() >= LOUD_AFTER {
+                    tracing::error!(error = %e, waited = ?started.elapsed(), retry_in = ?delay, "KEK still unavailable; DEK re-wrap is blocked");
+                } else {
+                    tracing::warn!(error = %e, retry_in = ?delay, "KEK unavailable; retrying DEK re-wrap");
+                }
+                tokio::time::sleep(delay).await;
+                delay = (delay * 2).min(MAX_DELAY);
+            }
+            other => return other,
+        }
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use std::sync::atomic::{AtomicU32, Ordering};

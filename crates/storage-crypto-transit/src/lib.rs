@@ -362,7 +362,8 @@ fn forbidden_to_message(e: CryptoError) -> CryptoError {
     }
 }
 
-/// Largest response body accepted from OpenBao; real replies are well under 1 KiB.
+/// Largest response body accepted from OpenBao; real replies are well under 1
+/// KiB.
 const MAX_RESPONSE_BYTES: usize = 1 << 20;
 
 /// Classifies a failed request. A rejected server certificate is a

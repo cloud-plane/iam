@@ -31,15 +31,15 @@ impl Storage {
     /// How stale this node's local state may be, `None` when that cannot be
     /// bounded (ADR 0045 §2).
     ///
-    /// - `None` whenever the state machine has not applied up to the
-    ///   committed index.
+    /// - `None` whenever the state machine has not applied up to the committed
+    ///   index.
     /// - Leader: the age of the last quorum acknowledgement. A leader cut off
     ///   from its quorum keeps `current_leader == self` until it sees a higher
     ///   term, so the role alone proves nothing. `None` before the first ack.
-    /// - Follower or learner: the time since the last accepted
-    ///   `AppendEntries`, or `None` if there was none. Contact only proves the
-    ///   log was current, so a node whose state machine has not applied up to
-    ///   the committed index is `None` too.
+    /// - Follower or learner: the time since the last accepted `AppendEntries`,
+    ///   or `None` if there was none. Contact only proves the log was current,
+    ///   so a node whose state machine has not applied up to the committed
+    ///   index is `None` too.
     pub fn staleness(&self) -> Option<Duration> {
         let metrics = self.raft.metrics().borrow_watched().clone();
         // Applies to the leader too: a leader that has not applied up to its

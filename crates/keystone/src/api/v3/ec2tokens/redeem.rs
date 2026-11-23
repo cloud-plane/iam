@@ -23,8 +23,9 @@ use crate::api::error::KeystoneApiError;
 use crate::auth::*;
 use crate::keystone::ServiceState;
 
-/// Look the credential up by EC2 access key, run `verify(secret, auth_ttl_seconds)`
-/// and rebuild the authentication context from the credential.
+/// Look the credential up by EC2 access key, run `verify(secret,
+/// auth_ttl_seconds)` and rebuild the authentication context from the
+/// credential.
 ///
 /// The returned context carries the `ec2credential` authentication method
 /// marker. Callers that do not hand the token out still get a validated

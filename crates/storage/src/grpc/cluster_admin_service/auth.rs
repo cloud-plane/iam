@@ -36,6 +36,14 @@ pub(super) const CLEAR_QUARANTINE_PER_HOUR: NonZeroU32 = {
     }
 };
 
+/// Maximum `SetSites` invocations per operator per hour.
+pub(super) const SET_SITES_PER_HOUR: NonZeroU32 = {
+    match NonZeroU32::new(10) {
+        Some(v) => v,
+        None => panic!("rate limit constant must be non-zero"),
+    }
+};
+
 pub(super) type IdentityLimiter = DefaultKeyedRateLimiter<String>;
 
 pub(super) use crate::grpc::authz::{PeerAuthz, PeerRole};

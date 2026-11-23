@@ -55,6 +55,7 @@ mod join;
 mod leader;
 mod local_emergency;
 mod restore;
+mod sites;
 mod status;
 mod transfer;
 
@@ -98,6 +99,11 @@ pub struct ClusterAdminServiceImpl {
     /// Serializes live restores: their staged chunks share one namespace, and
     /// a second restore starting would supersede the first.
     restore_lock: tokio::sync::Mutex<()>,
+    /// Site list changes that add or replace a key, awaiting a second
+    /// operator (leader memory only).
+    pending_site_changes: sites::PendingSiteChanges,
+    /// Per-identity rate limiter for SetSites.
+    set_sites_limiter: Arc<IdentityLimiter>,
     /// Per-identity rate limiter for RotateDek (ADR 0016-v2 §1: 2/hour).
     rotate_dek_limiter: Arc<IdentityLimiter>,
     /// State machine store — used for backup snapshot building and restore.
@@ -216,6 +222,8 @@ impl ClusterAdminServiceImpl {
             pending_rotations,
             sm,
             authz,
+            pending_site_changes: sites::PendingSiteChanges::default(),
+            set_sites_limiter: Arc::new(RateLimiter::keyed(Quota::per_hour(SET_SITES_PER_HOUR))),
             rotate_dek_limiter: Arc::new(RateLimiter::keyed(Quota::per_hour(ROTATE_DEK_PER_HOUR))),
             clear_quarantine_limiter: Arc::new(RateLimiter::keyed(Quota::per_hour(
                 CLEAR_QUARANTINE_PER_HOUR,
@@ -575,6 +583,42 @@ impl ClusterAdminService for ClusterAdminServiceImpl {
         request: Request<pb::raft::ClearQuarantineRequest>,
     ) -> Result<Response<()>, Status> {
         self.handle_clear_quarantine(request).await
+    }
+
+    /// Replaces the list of sites the DEK is wrapped for.
+    #[tracing::instrument(level = "trace", skip(self))]
+    async fn set_sites(
+        &self,
+        request: Request<pb::raft::SetSitesRequest>,
+    ) -> Result<Response<pb::raft::AdminResponse>, Status> {
+        self.handle_set_sites(request).await
+    }
+
+    /// Provides dual-control approval for a staged site list change.
+    #[tracing::instrument(level = "trace", skip(self))]
+    async fn confirm_set_sites(
+        &self,
+        request: Request<pb::raft::ConfirmSetSitesRequest>,
+    ) -> Result<Response<pb::raft::AdminResponse>, Status> {
+        self.handle_confirm_set_sites(request).await
+    }
+
+    /// Returns the staged site list change.
+    #[tracing::instrument(level = "trace", skip(self))]
+    async fn get_pending_site_change(
+        &self,
+        request: Request<()>,
+    ) -> Result<Response<pb::raft::PendingSiteChange>, Status> {
+        self.handle_get_pending_site_change(request).await
+    }
+
+    /// Lists the sites the DEK is wrapped for.
+    #[tracing::instrument(level = "trace", skip(self))]
+    async fn list_sites(
+        &self,
+        request: Request<()>,
+    ) -> Result<Response<pb::raft::ListSitesResponse>, Status> {
+        self.handle_list_sites(request).await
     }
 
     /// Provides dual-control approval for a pending emergency DEK rotation.

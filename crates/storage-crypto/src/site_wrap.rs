@@ -66,7 +66,8 @@ impl SiteBinding<'_> {
         Ok(())
     }
 
-    /// `v1 | dek_version | len | cluster_id | len | site` (lengths are one byte).
+    /// `v1 | dek_version | len | cluster_id | len | site` (lengths are one
+    /// byte).
     fn encode(&self, dek: &[u8; 32]) -> Result<Zeroizing<Vec<u8>>, CryptoError> {
         self.validate()?;
         let mut out = Zeroizing::new(Vec::with_capacity(8 + 2 * MAX_NAME_LEN + 32));
@@ -123,7 +124,8 @@ pub async fn unwrap_dek_for_site(
     Ok(out)
 }
 
-/// Software site key (feature `software-site-key`): an RSA private key (PKCS#8 DER) held in process memory.
+/// Software site key (feature `software-site-key`): an RSA private key (PKCS#8
+/// DER) held in process memory.
 ///
 /// Fallback for sites without a Transit key or HSM. The key sits next to the
 /// process that uses it, so it protects the DEK only as well as the secret
