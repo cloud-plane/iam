@@ -20,7 +20,7 @@ use axum::{
     http::StatusCode,
     response::IntoResponse,
 };
-use serde_json::json;
+use openstack_keystone_core::policy::policy_object;
 
 use openstack_keystone_api_types::v3::role::RoleImplyResponse;
 
@@ -61,10 +61,10 @@ pub(super) async fn create(
     // Policy enforcement first
     state
         .policy_enforcer
-        .enforce(
+        .enforce_serialized(
             "identity/role/imply_rule/create",
             &user_auth,
-            json!({
+            &policy_object!({
                 "role_imply_rule": {
                     "prior_role_id": prior_role_id,
                     "implied_role_id": implied_role_id

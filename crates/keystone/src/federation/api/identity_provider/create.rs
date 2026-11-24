@@ -14,7 +14,7 @@
 
 //! Identity providers: create IDP.
 use axum::{Json, debug_handler, extract::State, http::StatusCode, response::IntoResponse};
-use serde_json::json;
+use openstack_keystone_core::policy::policy_object;
 use validator::Validate;
 
 use crate::api::auth::Auth;
@@ -54,10 +54,10 @@ pub(super) async fn create(
     req.validate()?;
     state
         .policy_enforcer
-        .enforce(
+        .enforce_serialized(
             "identity/federation/identity_provider/create",
             &user_auth,
-            json!({"identity_provider": req.identity_provider.to_policy_input()}),
+            &policy_object!({"identity_provider": req.identity_provider.to_policy_input()}),
             None,
         )
         .await?;

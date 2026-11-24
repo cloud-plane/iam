@@ -19,7 +19,7 @@ use axum::{
     http::{HeaderMap, StatusCode},
     response::{IntoResponse, Response},
 };
-use serde_json::json;
+use openstack_keystone_core::policy::policy_object;
 
 use cadf::sanitize::{HostKind, sanitize_initiator_host};
 use openstack_keystone_api_types::v3::auth::token::{TokenBuilder, TokenResponse};
@@ -30,7 +30,7 @@ use crate::api::auth::Auth;
 use crate::api::common::PeerAddr;
 use crate::api::v3::ec2tokens::redeem::redeem_ec2_credential;
 use crate::api::v3::ec2tokens::types::Ec2TokenAuthRequest;
-use crate::api::{Catalog, CatalogService, error::KeystoneApiError};
+use crate::api::{Catalog, error::KeystoneApiError};
 use crate::audit::{
     CorrelationId, build_initiator_from_vsc, build_initiator_unknown,
     emit_perimeter_authenticate_event, perimeter_outcome,
@@ -65,7 +65,12 @@ pub(super) async fn create(
     // behalf), unlike the historical fully-unauthenticated behaviour.
     state
         .policy_enforcer
-        .enforce("identity/ec2tokens/validate", &caller_auth, json!({}), None)
+        .enforce_serialized(
+            "identity/ec2tokens/validate",
+            &caller_auth,
+            &policy_object!({}),
+            None,
+        )
         .await?;
 
     // Security review V6: this is the redemption endpoint of the OSSA-2026-005
@@ -125,20 +130,13 @@ async fn create_inner(
     let mut api_token = TokenResponse {
         token: TokenBuilder::try_from(&vsc)?.build()?,
     };
-    let catalog: Catalog = Catalog(
+    let catalog: Catalog = Catalog::from(
         state
             .provider
             .get_catalog_provider()
             .get_catalog(&ExecutionContext::internal(state), true)
             .await?
-            .into_iter()
-            .map(|(s, es)| CatalogService {
-                id: s.id.clone(),
-                name: s.name(),
-                r#type: s.r#type,
-                endpoints: es.into_iter().map(Into::into).collect(),
-            })
-            .collect::<Vec<_>>(),
+            .as_slice(),
     );
     api_token.token.catalog = Some(catalog);
 
@@ -397,7 +395,7 @@ mod tests {
         let mut catalog_mock = crate::catalog::MockCatalogProvider::default();
         catalog_mock
             .expect_get_catalog()
-            .returning(|_, _| Ok(Vec::new()));
+            .returning(|_, _| Ok(std::sync::Arc::new(Vec::new())));
 
         let provider = Provider::mocked_builder()
             .mock_credential(credential_mock)
@@ -595,7 +593,7 @@ mod tests {
         let mut catalog_mock = crate::catalog::MockCatalogProvider::default();
         catalog_mock
             .expect_get_catalog()
-            .returning(|_, _| Ok(Vec::new()));
+            .returning(|_, _| Ok(std::sync::Arc::new(Vec::new())));
 
         let provider = Provider::mocked_builder()
             .mock_credential(credential_mock)
@@ -660,7 +658,7 @@ mod tests {
             let mut catalog_mock = crate::catalog::MockCatalogProvider::default();
             catalog_mock
                 .expect_get_catalog()
-                .returning(|_, _| Ok(Vec::new()));
+                .returning(|_, _| Ok(std::sync::Arc::new(Vec::new())));
 
             Provider::mocked_builder()
                 .mock_credential(credential_mock)

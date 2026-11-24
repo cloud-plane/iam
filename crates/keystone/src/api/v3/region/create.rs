@@ -17,7 +17,7 @@ use axum::{
     http::StatusCode,
     response::IntoResponse,
 };
-use serde_json::json;
+use openstack_keystone_core::policy::{PolicyObject, policy_object};
 use validator::Validate;
 
 use super::types::{RegionCreateRequest, RegionResponse, RegionUpdate, RegionUpdateRequest};
@@ -50,10 +50,10 @@ pub(super) async fn create(
 
     state
         .policy_enforcer
-        .enforce(
+        .enforce_serialized(
             "identity/region/create",
             &user_auth,
-            json!({"region": payload.region}),
+            &policy_object!({"region": payload.region}),
             None,
         )
         .await?;
@@ -113,15 +113,19 @@ pub(super) async fn create_with_id(
 
     state
         .policy_enforcer
-        .enforce(
+        .enforce_serialized(
             if current.is_some() {
                 "identity/region/update"
             } else {
                 "identity/region/create"
             },
             &user_auth,
-            json!({"region": payload.region}),
-            current.as_ref().map(|c| json!({"region": c})),
+            &policy_object!({"region": payload.region}),
+            current
+                .as_ref()
+                .map(|c| PolicyObject::single("region", c))
+                .as_ref()
+                .map(|v| v as _),
         )
         .await?;
 

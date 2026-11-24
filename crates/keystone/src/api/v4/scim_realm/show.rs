@@ -20,6 +20,7 @@ use axum::{
     response::IntoResponse,
 };
 use openstack_keystone_api_types::v4::scim_realm::{ScimRealm, ScimRealmResponse};
+use openstack_keystone_core::policy::policy_object;
 
 use crate::api::auth::Auth;
 use crate::api::error::KeystoneApiError;
@@ -68,11 +69,11 @@ pub(super) async fn show(
 
     state
         .policy_enforcer
-        .enforce(
+        .enforce_serialized(
             "identity/scim_realm/show",
             &user_auth,
-            serde_json::json!({"scim_realm": null}),
-            Some(serde_json::json!({"scim_realm": ScimRealm::from(current.clone())})),
+            &policy_object!({"scim_realm": null}),
+            Some(&policy_object!({"scim_realm": ScimRealm::from(current.clone())})),
         )
         .await?;
 

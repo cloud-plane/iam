@@ -19,7 +19,7 @@ use axum::{
     http::StatusCode,
     response::IntoResponse,
 };
-use serde_json::json;
+use openstack_keystone_core::policy::policy_object;
 
 use crate::api::auth::Auth;
 use crate::api::error::KeystoneApiError;
@@ -69,10 +69,10 @@ pub(super) async fn show(
 
     state
         .policy_enforcer
-        .enforce(
+        .enforce_serialized(
             "identity/federation/identity_provider/show",
             &user_auth,
-            json!({"identity_provider": current}),
+            &policy_object!({"identity_provider": current}),
             None,
         )
         .await?;

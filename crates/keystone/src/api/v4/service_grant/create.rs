@@ -14,6 +14,7 @@
 //! Service grant: create.
 
 use axum::{Json, extract::State, http::StatusCode, response::IntoResponse};
+use openstack_keystone_core::policy::policy_object;
 use validator::Validate;
 
 use openstack_keystone_api_types::v4::service_grant::{
@@ -60,10 +61,10 @@ pub(super) async fn create(
 
     state
         .policy_enforcer
-        .enforce(
+        .enforce_serialized(
             "identity/service_grant/create",
             &user_auth,
-            serde_json::json!({"service_grant": req.service_grant}),
+            &policy_object!({"service_grant": req.service_grant}),
             None,
         )
         .await?;

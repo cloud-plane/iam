@@ -14,10 +14,10 @@
 
 //! Role inferences (imply rules) global API.
 
+use openstack_keystone_core::policy::policy_object;
 use std::collections::HashMap;
 
 use axum::{Json, extract::State, http::StatusCode, response::IntoResponse};
-use serde_json::json;
 use utoipa_axum::{router::OpenApiRouter, routes};
 
 use openstack_keystone_api_types::v3::role::{ImplyGroup, RoleInferencesList};
@@ -53,7 +53,12 @@ pub(super) async fn list(
     // Policy enforcement first
     state
         .policy_enforcer
-        .enforce("identity/role/imply_rule/list", &user_auth, json!({}), None)
+        .enforce_serialized(
+            "identity/role/imply_rule/list",
+            &user_auth,
+            &policy_object!({}),
+            None,
+        )
         .await?;
 
     // Get all imply rules

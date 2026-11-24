@@ -19,6 +19,7 @@ use axum::{
     http::StatusCode,
     response::IntoResponse,
 };
+use openstack_keystone_core::policy::policy_object;
 
 use openstack_keystone_api_types::PaginationQuery;
 use openstack_keystone_api_types::v4::scim_realm::{
@@ -65,10 +66,10 @@ pub(super) async fn list(
 ) -> Result<impl IntoResponse, KeystoneApiError> {
     state
         .policy_enforcer
-        .enforce(
+        .enforce_serialized(
             "identity/scim_realm/list",
             &user_auth,
-            serde_json::json!({"scim_realm": query}),
+            &policy_object!({"scim_realm": query}),
             None,
         )
         .await?;

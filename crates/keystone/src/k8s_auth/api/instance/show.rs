@@ -19,7 +19,7 @@ use axum::{
     http::StatusCode,
     response::IntoResponse,
 };
-use serde_json::json;
+use openstack_keystone_core::policy::policy_object;
 
 use openstack_keystone_api_types::k8s_auth::*;
 
@@ -70,10 +70,10 @@ pub(super) async fn show(
 
     state
         .policy_enforcer
-        .enforce(
+        .enforce_serialized(
             "identity/k8s_auth/instance/show",
             &user_auth,
-            json!({"instance": current}),
+            &policy_object!({"instance": current}),
             None,
         )
         .await?;

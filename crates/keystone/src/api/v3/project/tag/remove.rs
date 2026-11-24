@@ -17,7 +17,7 @@ use axum::{
     http::StatusCode,
     response::IntoResponse,
 };
-use serde_json::json;
+use openstack_keystone_core::policy::policy_object;
 
 use crate::api::auth::Auth;
 use crate::api::error::KeystoneApiError;
@@ -50,11 +50,11 @@ pub(super) async fn remove(
 
     state
         .policy_enforcer
-        .enforce(
+        .enforce_serialized(
             "identity/resource/project/tag/delete",
             &user_auth,
-            json!({"tag": &tag}),
-            Some(json!({"project": current})),
+            &policy_object!({"tag": &tag}),
+            Some(&policy_object!({"project": current})),
         )
         .await?;
     if current.is_none() {

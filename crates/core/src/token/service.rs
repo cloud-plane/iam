@@ -275,13 +275,13 @@ impl TokenService {
         window_seconds: Option<i64>,
         user_detail: UserDetail,
     ) -> Result<ValidatedSecurityContext, TokenProviderError> {
-        let driver = self.config.token.provider.to_string();
+        let driver = self.config.token.provider.as_str();
         let start = std::time::Instant::now();
         let result = self
             .validate_to_context_inner(ctx, credential, allow_expired, window_seconds, user_detail)
             .await;
         crate::token::TOKEN_METRICS.record_validation(
-            &driver,
+            driver,
             result.is_ok(),
             start.elapsed().as_secs_f64(),
         );
@@ -300,7 +300,8 @@ impl TokenService {
         window_seconds: Option<i64>,
         user_detail: UserDetail,
     ) -> Result<ValidatedSecurityContext, TokenProviderError> {
-        let token = self.backend_driver.decode(credential)?;
+        // Shared by the authentication context and the security context.
+        let token = Arc::new(self.backend_driver.decode(credential)?);
         let state = ctx.state();
 
         let latest_expiration_cutof = Utc::now()
@@ -351,7 +352,7 @@ impl TokenService {
         // (ApplicationCredential, Trust, etc) to use it for the
         // corresponding AuthenticationContext. Otherwise the
         // AuthenticationContext remains just Token
-        let auth_context = match &token {
+        let auth_context = match &*token {
             FernetToken::ApplicationCredential(data) => {
                 AuthenticationContext::ApplicationCredential {
                     application_credential: state
@@ -364,7 +365,7 @@ impl TokenService {
                                 data.application_credential_id.clone(),
                             )
                         })?,
-                    token: Some(token.clone()),
+                    token: Some(Arc::clone(&token)),
                 }
             }
             FernetToken::Trust(data) => AuthenticationContext::Trust {
@@ -374,11 +375,11 @@ impl TokenService {
                     .get_trust(ctx, &data.trust_id)
                     .await?
                     .ok_or_else(|| TrustProviderError::TrustNotFound(data.trust_id.clone()))?,
-                token: Some(token.clone()),
+                token: Some(Arc::clone(&token)),
             },
             // No other payload types require to substitute the
             // AuthenticationContext
-            _ => AuthenticationContext::Token(token.clone()),
+            _ => AuthenticationContext::Token(Arc::clone(&token)),
         };
         // The user and the token scope are independent of each other. The
         // user domain is usually the very domain the scope already carries
@@ -436,7 +437,7 @@ impl TokenService {
         let mut user_identity = UserIdentityInfoBuilder::default();
         user_identity
             .user_id(token.user_id())
-            .user_domain(user_domain.clone());
+            .user_domain(user_domain);
         match user {
             Some(user) => user_identity.user(user),
             None => user_identity.user_core(user_core),
@@ -448,7 +449,7 @@ impl TokenService {
             })
             .expires_at(*token.expires_at())
             .authorization(authz_info);
-        if let FernetToken::Restricted(restriction) = &token {
+        if let FernetToken::Restricted(restriction) = &*token {
             if !restriction.allow_renew {
                 return Err(AuthenticationError::TokenRenewalForbidden.into());
             }
@@ -466,7 +467,7 @@ impl TokenService {
         let auth_result = auth_result_builder.build()?;
 
         let mut sc = SecurityContext::try_from(auth_result)?;
-        sc.set_token(token.clone());
+        sc.set_token(token);
         let scope = sc
             .authorization()
             .ok_or(TokenProviderError::ScopeMissing)?
@@ -1337,3 +1338,6 @@ mod tests {
         assert!(result.is_ok(), "expected Ok, got {result:?}");
     }
 }
+
+#[cfg(test)]
+mod alloc_profile;

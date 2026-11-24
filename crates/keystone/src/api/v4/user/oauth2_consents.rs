@@ -20,7 +20,7 @@ use axum::{
     http::StatusCode,
     response::IntoResponse,
 };
-use serde_json::json;
+use openstack_keystone_core::policy::policy_object;
 
 use openstack_keystone_api_types::v4::oauth2_consent::{Oauth2Consent, Oauth2ConsentList};
 use openstack_keystone_core::auth::ExecutionContext;
@@ -57,10 +57,10 @@ pub(super) async fn oauth2_consents(
 ) -> Result<impl IntoResponse, KeystoneApiError> {
     state
         .policy_enforcer
-        .enforce(
+        .enforce_serialized(
             "identity/oauth2/consent/list",
             &user_auth,
-            json!({"user_id": &user_id}),
+            &policy_object!({"user_id": &user_id}),
             None,
         )
         .await?;

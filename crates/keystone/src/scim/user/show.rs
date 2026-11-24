@@ -14,7 +14,7 @@
 //! `GET /SCIM/v2/{domain_id}/Users/{id}` (ADR 0024 §3.C Ownership Fencing).
 
 use axum::{Json, extract::Path, extract::State, http::HeaderMap};
-use serde_json::json;
+use openstack_keystone_core::policy::policy_object;
 
 use openstack_keystone_core::api::KeystoneApiError;
 use openstack_keystone_core::api::api_key_auth::ScimRealmAuth;
@@ -81,11 +81,11 @@ pub(super) async fn show(
 
     state
         .policy_enforcer
-        .enforce(
+        .enforce_serialized(
             "identity/scim/user/show",
             &ctx,
-            serde_json::Value::Null,
-            Some(json!({"user": user})),
+            &serde_json::Value::Null,
+            Some(&policy_object!({"user": user})),
         )
         .await?;
 

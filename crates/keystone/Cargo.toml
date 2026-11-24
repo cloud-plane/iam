@@ -17,16 +17,17 @@ name="keystone"
 path="src/bin/keystone.rs"
 
 [dependencies]
-openstack-keystone-jwt-crypto.workspace = true
 async-trait.workspace = true
 axum = { workspace = true, features = ["form", "http1", "http2", "macros", "matched-path", "original-uri", "query", "tokio", "tracing"] }
 axum-extra = { workspace = true, features = ["cookie"] }
 base64.workspace = true
+cadf = { workspace = true, features = ["runtime"] }
 chrono.workspace = true
 clap = { workspace = true, features = ["derive"] }
 color-eyre.workspace = true
 dashmap.workspace = true
 derive_builder.workspace = true
+erased-serde.workspace = true
 eyre.workspace = true
 futures-util.workspace = true
 governor.workspace = true
@@ -40,54 +41,54 @@ minijinja.workspace = true
 nix = { workspace = true, features = ["socket", "user"] }
 openstack-keystone-api-key-driver-raft.workspace = true
 openstack-keystone-api-types = { workspace = true, features = ["openapi", "validate", "conv"]}
-cadf = { workspace = true, features = ["runtime"] }
+openstack-keystone-auth-plugin-identity-driver-raft.workspace = true
+openstack-keystone-auth-plugin-runtime = { workspace = true, optional = true }
 openstack-keystone-appcred-driver-sql.workspace = true
 openstack-keystone-assignment-driver-openfga = { workspace = true, optional = true }
-openstack-keystone-policy-regorus = { workspace = true, optional = true }
 openstack-keystone-assignment-driver-sql.workspace = true
-openstack-keystone-auth-plugin-runtime = { workspace = true, optional = true }
 openstack-keystone-catalog-driver-sql.workspace = true
 openstack-keystone-config.workspace = true
-oslo-config.workspace = true
 openstack-keystone-credential-driver-sql.workspace = true
-openstack-keystone-auth-plugin-identity-driver-raft.workspace = true
 openstack-keystone-core = { workspace = true, features = ["api"] }
 openstack-keystone-core-types.workspace = true
 openstack-keystone-distributed-storage.workspace = true
 openstack-keystone-domain-config-driver-fs.workspace = true
 openstack-keystone-domain-config-driver-sql.workspace = true
-openstack-keystone-storage-api.workspace = true
-openstack-keystone-federation-driver-sql.workspace = true
-openstack-keystone-k8s-auth-driver-sql.workspace = true
-openstack-keystone-limit-driver-sql.workspace = true
-openstack-keystone-k8s-auth-driver-raft.workspace = true
-openstack-keystone-mapping-driver-raft.workspace = true
-openstack-keystone-oauth2-client-driver-raft.workspace = true
-openstack-keystone-service-grant-driver-raft.workspace = true
-openstack-keystone-oauth2-key-driver-raft.workspace = true
-openstack-keystone-oauth2-session-driver-raft.workspace = true
-openstack-keystone-key-repository.workspace = true
+openstack-keystone-jwt-crypto.workspace = true
 openstack-keystone-identity-driver-ldap.workspace = true
 openstack-keystone-identity-driver-sql.workspace = true
 openstack-keystone-idmapping-driver-sql.workspace = true
+openstack-keystone-federation-driver-sql.workspace = true
+openstack-keystone-limit-driver-sql.workspace = true
+openstack-keystone-k8s-auth-driver-raft.workspace = true
+openstack-keystone-k8s-auth-driver-sql.workspace = true
+openstack-keystone-key-repository.workspace = true
+openstack-keystone-mapping-driver-raft.workspace = true
+openstack-keystone-oauth2-client-driver-raft.workspace = true
+openstack-keystone-oauth2-key-driver-raft.workspace = true
+openstack-keystone-oauth2-session-driver-raft.workspace = true
 openstack-keystone-password-hashing.workspace = true
+openstack-keystone-policy-regorus = { workspace = true, optional = true }
 openstack-keystone-policy-store-driver-sql.workspace = true
 openstack-keystone-resource-driver-sql.workspace = true
 openstack-keystone-revoke-driver-sql.workspace = true
 openstack-keystone-role-driver-sql.workspace = true
 openstack-keystone-scim-driver-raft.workspace = true
+openstack-keystone-storage-api.workspace = true
+openstack-keystone-service-grant-driver-raft.workspace = true
+openstack-keystone-tls-provider.workspace = true
 openstack-keystone-token-driver-fernet.workspace = true
 openstack-keystone-telemetry.workspace = true
 openstack-keystone-token-driver-jws.workspace = true
 openstack-keystone-token-restriction-driver-sql.workspace = true
 openstack-keystone-trust-driver-sql.workspace = true
 openstack-keystone-webauthn.workspace = true
+oslo-config.workspace = true
 pem.workspace = true
 rand.workspace = true
 reqwest = { workspace = true, features = ["json", "form", "http2", "gzip", "deflate"] }
-sha2.workspace = true
-openstack-keystone-tls-provider.workspace = true
 rustls.workspace = true
+sha2.workspace = true
 sea-orm = { workspace = true, features = ["runtime-tokio", "runtime-tokio-rustls"] }
 secrecy = { workspace = true, features = ["serde"] }
 serde.workspace = true
@@ -121,17 +122,17 @@ validator = { workspace = true, features = ["derive"] }
 toml = { version = "1.1", default-features = false, features = ["parse", "serde"] }
 
 [dev-dependencies]
-sea-orm = { workspace = true, features = ["sqlx-sqlite"] }
-openstack-keystone-telemetry = { workspace = true, features = ["golden"] }
-rcgen.workspace = true
+cadf = { workspace = true, features = ["testing"] }
 http-body-util.workspace = true
 httpmock = { workspace = true, features = ["http2"] }
-cadf = { workspace = true, features = ["testing"] }
 openstack-keystone-core = { workspace = true, features = ["api", "mock"] }
 openstack-keystone-core-types = { workspace = true, features = ["mock"] }
 openstack-keystone-distributed-storage = { workspace = true, features = ["mock"] }
+openstack-keystone-telemetry = { workspace = true, features = ["golden"] }
+rcgen.workspace = true
 rstest.workspace = true
 secrecy = { workspace = true, features = ["serde"] }
+sea-orm = { workspace = true, features = ["sqlx-sqlite"] }
 tempfile.workspace = true
 tokio = { workspace = true, features = ["process", "macros"] }
 tracing-test = { workspace = true, features = ["no-env-filter"] }

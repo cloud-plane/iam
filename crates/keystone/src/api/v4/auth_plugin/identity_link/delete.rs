@@ -22,6 +22,7 @@ use axum::{
 };
 use chrono::Utc;
 use openstack_keystone_core::auth::ExecutionContext;
+use openstack_keystone_core::policy::policy_object;
 use openstack_keystone_core_types::revoke::RevocationEventCreate;
 
 use super::{require_full_auth_plugin, target_holds_system_role};
@@ -86,10 +87,10 @@ pub(crate) async fn delete(
 
     state
         .policy_enforcer
-        .enforce(
+        .enforce_serialized(
             "identity/auth_plugin/identity_link/delete",
             &user_auth,
-            serde_json::json!({
+            &policy_object!({
                 "identity_link": {
                     "plugin_name": plugin_name,
                     "user_id": user_id,

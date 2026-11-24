@@ -22,6 +22,7 @@ use axum::{
 use openstack_keystone_api_types::v4::scim_realm::{
     ScimRealm, ScimRealmResponse, ScimRealmUpdateRequest,
 };
+use openstack_keystone_core::policy::policy_object;
 use validator::Validate;
 
 use crate::api::auth::Auth;
@@ -89,11 +90,11 @@ pub(super) async fn update(
 
     state
         .policy_enforcer
-        .enforce(
+        .enforce_serialized(
             "identity/scim_realm/disable",
             &user_auth,
-            serde_json::json!({"scim_realm": req.scim_realm}),
-            Some(serde_json::json!({"scim_realm": ScimRealm::from(current.clone())})),
+            &policy_object!({"scim_realm": req.scim_realm}),
+            Some(&policy_object!({"scim_realm": ScimRealm::from(current.clone())})),
         )
         .await?;
 

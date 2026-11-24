@@ -17,7 +17,7 @@ use axum::{
     http::StatusCode,
     response::IntoResponse,
 };
-use serde_json::json;
+use openstack_keystone_core::policy::policy_object;
 use validator::Validate;
 
 use super::types::{Group, GroupCreateRequest, GroupResponse};
@@ -47,10 +47,10 @@ pub async fn create(
     req.validate()?;
     state
         .policy_enforcer
-        .enforce(
+        .enforce_serialized(
             "identity/group/create",
             &user_auth,
-            json!({"group": req.group}),
+            &policy_object!({"group": req.group}),
             None,
         )
         .await?;

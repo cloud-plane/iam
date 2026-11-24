@@ -19,7 +19,7 @@ use axum::{
     http::StatusCode,
     response::IntoResponse,
 };
-use serde_json::json;
+use openstack_keystone_core::policy::policy_object;
 use validator::Validate;
 
 use super::types::{User, UserCreateRequest, UserResponse};
@@ -50,10 +50,10 @@ pub(super) async fn create(
 
     state
         .policy_enforcer
-        .enforce(
+        .enforce_serialized(
             "identity/user/create",
             &user_auth,
-            json!({"user": req.user.to_policy_input()}),
+            &policy_object!({"user": req.user.to_policy_input()}),
             None,
         )
         .await?;

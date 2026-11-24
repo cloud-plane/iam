@@ -28,7 +28,7 @@ use axum::{
     http::{HeaderMap, StatusCode},
     response::IntoResponse,
 };
-use serde_json::{Value, json, to_value};
+use serde_json::Value;
 use tracing::error;
 
 use openstack_keystone_api_types::v3::auth::token::TokenBuilder;
@@ -36,8 +36,8 @@ use openstack_keystone_api_types::v3::auth::token::TokenBuilder;
 use openstack_keystone_core::auth::ExecutionContext;
 
 use crate::api::common::PeerAddr;
-use crate::api::v3::auth::token::types::{TokenResponse, ValidateTokenParameters};
-use crate::api::{Catalog, CatalogService, auth::Auth, error::KeystoneApiError};
+use crate::api::v3::auth::token::types::{ExistingToken, TokenResponse, ValidateTokenParameters};
+use crate::api::{Catalog, auth::Auth, error::KeystoneApiError};
 use crate::keystone::ServiceState;
 
 /// Validate and show information for token.
@@ -70,12 +70,11 @@ pub(super) async fn show(
     PeerAddr(peer_addr): PeerAddr,
     State(state): State<ServiceState>,
 ) -> Result<impl IntoResponse, KeystoneApiError> {
-    let subject_token: String = headers
+    let subject_token: &str = headers
         .get("X-Subject-Token")
         .ok_or(KeystoneApiError::SubjectTokenMissing)?
         .to_str()
-        .map_err(|_| KeystoneApiError::InvalidHeader)?
-        .to_string();
+        .map_err(|_| KeystoneApiError::InvalidHeader)?;
 
     // Security review V6: the subject token is caller-supplied and, unlike
     // `user_auth`'s own token, is not required to be one this caller minted
@@ -98,7 +97,7 @@ pub(super) async fn show(
         .get_token_provider()
         .validate_to_context(
             &ExecutionContext::from_auth(&state, &user_auth),
-            &subject_token,
+            subject_token,
             query.allow_expired,
             None,
         )
@@ -113,31 +112,24 @@ pub(super) async fn show(
 
     state
         .policy_enforcer
-        .enforce(
+        .enforce_serialized(
             "identity/auth/token/show",
             &user_auth,
-            Value::Null,
-            Some(to_value(json!({"token": &token}))?),
+            &Value::Null,
+            Some(&ExistingToken { token: &token }),
         )
         .await?;
 
     let mut response_token = TokenResponse { token };
 
     if !query.nocatalog.is_some_and(|x| x) {
-        let catalog: Catalog = Catalog(
+        let catalog: Catalog = Catalog::from(
             state
                 .provider
                 .get_catalog_provider()
                 .get_catalog(&ExecutionContext::from_auth(&state, &user_auth), true)
                 .await?
-                .into_iter()
-                .map(|(s, es)| CatalogService {
-                    id: s.id.clone(),
-                    name: s.name(),
-                    r#type: s.r#type,
-                    endpoints: es.into_iter().map(Into::into).collect(),
-                })
-                .collect::<Vec<_>>(),
+                .as_slice(),
         );
 
         response_token.token.catalog = Some(catalog);
@@ -217,7 +209,7 @@ mod tests {
         let mut catalog_mock = MockCatalogProvider::default();
         catalog_mock
             .expect_get_catalog()
-            .returning(|_exec, _| Ok(Vec::new()));
+            .returning(|_exec, _| Ok(std::sync::Arc::new(Vec::new())));
 
         let mut resource_mock = MockResourceProvider::default();
         resource_mock
@@ -346,7 +338,7 @@ mod tests {
             let mut catalog_mock = MockCatalogProvider::default();
             catalog_mock
                 .expect_get_catalog()
-                .returning(|_, _| Ok(Vec::new()));
+                .returning(|_, _| Ok(std::sync::Arc::new(Vec::new())));
 
             let mut resource_mock = MockResourceProvider::default();
             resource_mock.expect_get_domain().returning(|_, _| {
@@ -459,7 +451,7 @@ mod tests {
         let mut catalog_mock = MockCatalogProvider::default();
         catalog_mock
             .expect_get_catalog()
-            .returning(|_exec, _| Ok(Vec::new()));
+            .returning(|_exec, _| Ok(std::sync::Arc::new(Vec::new())));
 
         let mut resource_mock = MockResourceProvider::default();
         resource_mock
@@ -595,7 +587,7 @@ mod tests {
         let mut catalog_mock = MockCatalogProvider::default();
         catalog_mock
             .expect_get_catalog()
-            .returning(|_exec, _| Ok(Vec::new()));
+            .returning(|_exec, _| Ok(std::sync::Arc::new(Vec::new())));
 
         let mut resource_mock = MockResourceProvider::default();
         resource_mock

@@ -24,6 +24,7 @@
 //! remaining roles against the CADF audit trail (§6.E records `plugin_name` on
 //! every `assign_role`) and revokes any they deem compromised out of band.
 
+use openstack_keystone_core::policy::policy_object;
 use std::collections::HashSet;
 
 use axum::{
@@ -75,10 +76,10 @@ pub(crate) async fn revoke_all(
     // narrower RBAC tier is meaningful (ADR §4).
     state
         .policy_enforcer
-        .enforce(
+        .enforce_serialized(
             "identity/auth_plugin/revoke_all",
             &user_auth,
-            serde_json::json!({ "plugin_name": plugin_name }),
+            &policy_object!({ "plugin_name": plugin_name }),
             None,
         )
         .await?;

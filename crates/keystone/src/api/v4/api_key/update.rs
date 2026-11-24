@@ -20,6 +20,7 @@ use axum::{
     response::IntoResponse,
 };
 use openstack_keystone_core::auth::ExecutionContext;
+use openstack_keystone_core::policy::policy_object;
 use serde::Deserialize;
 use validator::Validate;
 
@@ -79,11 +80,11 @@ pub(super) async fn update(
 
     state
         .policy_enforcer
-        .enforce(
+        .enforce_serialized(
             "identity/api_key/update",
             &user_auth,
-            serde_json::json!({"api_key": req.api_key}),
-            Some(serde_json::json!({"api_key": ApiKey::from(current)})),
+            &policy_object!({"api_key": req.api_key}),
+            Some(&policy_object!({"api_key": ApiKey::from(current)})),
         )
         .await?;
 

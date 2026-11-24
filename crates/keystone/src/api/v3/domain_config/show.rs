@@ -19,7 +19,7 @@ use axum::{
     http::StatusCode,
     response::IntoResponse,
 };
-use serde_json::json;
+use openstack_keystone_core::policy::policy_object;
 
 use super::types::DomainConfigResponse;
 use crate::api::auth::Auth;
@@ -45,10 +45,10 @@ pub(super) async fn show(
 ) -> Result<impl IntoResponse, KeystoneApiError> {
     state
         .policy_enforcer
-        .enforce(
+        .enforce_serialized(
             "identity/domain_config/show",
             &user_auth,
-            json!({"domain_id": domain_id}),
+            &policy_object!({"domain_id": domain_id}),
             None,
         )
         .await?;

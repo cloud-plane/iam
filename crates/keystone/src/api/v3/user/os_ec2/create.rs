@@ -18,7 +18,7 @@ use axum::{
     http::StatusCode,
     response::IntoResponse,
 };
-use serde_json::json;
+use openstack_keystone_core::policy::policy_object;
 use uuid::Uuid;
 use validator::Validate;
 
@@ -54,10 +54,10 @@ pub(super) async fn create(
 
     state
         .policy_enforcer
-        .enforce(
+        .enforce_serialized(
             "identity/os_ec2/create_credential",
             &user_auth,
-            json!({"user_id": &user_id, "tenant_id": &payload.project_id}),
+            &policy_object!({"user_id": &user_id, "tenant_id": &payload.project_id}),
             None,
         )
         .await?;

@@ -30,6 +30,7 @@ use crate::v3::role::RoleRef;
     derive(derive_builder::Builder),
     builder(
         build_fn(error = "crate::error::BuilderError"),
+        pattern = "owned",
         setter(strip_option, into)
     )
 )]

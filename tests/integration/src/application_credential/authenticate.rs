@@ -884,7 +884,7 @@ async fn test_issue_token_app_cred_scope_rules() -> Result<(), Report> {
         AuthenticationResultBuilder::default()
             .context(AuthenticationContext::ApplicationCredential {
                 application_credential: ApplicationCredential::from(cred.clone()),
-                token: Some(vsc.token()?.clone()),
+                token: Some(std::sync::Arc::new(vsc.token()?.clone())),
             })
             .principal(ctx.principal().clone())
             .build()?,

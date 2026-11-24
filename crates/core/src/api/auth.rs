@@ -1215,7 +1215,7 @@ mod tests {
             .once()
             .returning(move |_exec, _token| {
                 let mut security_context = SecurityContextTestingBuilder::default()
-                    .authentication_context(AuthenticationContext::Token(
+                    .authentication_context(AuthenticationContext::Token(Arc::new(
                         openstack_keystone_core_types::token::FernetToken::ProjectScope(
                             openstack_keystone_core_types::token::ProjectScopePayload {
                                 user_id: "token-user".into(),
@@ -1226,7 +1226,7 @@ mod tests {
                                 ..Default::default()
                             },
                         ),
-                    ))
+                    )))
                     .principal(
                         PrincipalInfoBuilder::default()
                             .identity(IdentityInfo::Principal(

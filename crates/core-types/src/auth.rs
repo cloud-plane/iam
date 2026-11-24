@@ -23,6 +23,7 @@
 use std::borrow::Cow;
 use std::collections::{HashMap, HashSet};
 use std::iter::once;
+use std::sync::Arc;
 
 use base64::{Engine as _, engine::general_purpose::URL_SAFE_NO_PAD};
 use chrono::{DateTime, Utc};
@@ -268,7 +269,7 @@ impl From<AssignmentProviderError> for AuthenticationError {
 /// Authentication and information bound to the operation.
 #[derive(Builder, Clone, Debug, PartialEq)]
 #[builder(build_fn(error = "BuilderError"))]
-#[builder(private, setter(into, strip_option))]
+#[builder(private, pattern = "owned", setter(into, strip_option))]
 pub struct SecurityContext {
     /// Audit IDs.
     #[builder(default)]
@@ -307,8 +308,11 @@ pub struct SecurityContext {
     token_restriction: Option<TokenRestriction>,
 
     /// Original token used for authentication.
+    ///
+    /// Shared with the [`AuthenticationContext`] the context was built from:
+    /// the payload is not copied.
     #[builder(default)]
-    token: Option<FernetToken>,
+    token: Option<Arc<FernetToken>>,
 
     /// Request correlation ID for linking perimeter and provider audit events.
     ///
@@ -402,7 +406,7 @@ impl SecurityContextTestingBuilder {
             is_admin: false,
             interface: Interface::Public,
             token_restriction: self.token_restriction,
-            token: self.token,
+            token: self.token.map(Arc::new),
             correlation_id: None,
             peer_addr: None,
         }
@@ -499,7 +503,7 @@ impl SecurityContext {
     /// set during construction.
     #[must_use]
     pub fn token(&self) -> Option<&FernetToken> {
-        self.token.as_ref()
+        self.token.as_deref()
     }
 
     /// Sets the `FernetToken` on this context.
@@ -512,8 +516,8 @@ impl SecurityContext {
     /// # Arguments
     ///
     /// * `token` - The freshly minted [`FernetToken`] for the session.
-    pub fn set_token(&mut self, token: FernetToken) {
-        self.token = Some(token);
+    pub fn set_token(&mut self, token: impl Into<Arc<FernetToken>>) {
+        self.token = Some(token.into());
     }
 
     /// Returns the authorization information, if a scope and roles have been
@@ -1044,29 +1048,37 @@ impl TryFrom<AuthenticationResult> for SecurityContext {
     /// authentication result's context and principal into the security
     /// context.
     fn try_from(value: AuthenticationResult) -> Result<Self, Self::Error> {
-        let mut builder = SecurityContextBuilder::default();
-        builder
-            .authentication_context(value.context.clone())
-            .principal(value.principal.clone());
+        // The result is owned: move its parts into the context instead of
+        // copying them (the token and the principal carry the whole user).
+        let AuthenticationResult {
+            audit_id,
+            context,
+            expires_at,
+            principal,
+            authorization,
+            token_restriction,
+        } = value;
 
-        let mut audit_ids = vec![value.audit_id];
-        if let AuthenticationContext::Token(token) = &value.context {
+        let mut audit_ids = vec![audit_id];
+        if let AuthenticationContext::Token(token) = &context {
             // Only the root of the parent chain is carried forward.
             audit_ids.extend(token.audit_ids().last().cloned());
         }
-        if let Some(expires) = &value.expires_at {
-            builder.expires_at(*expires);
+        let mut builder = SecurityContextBuilder::default()
+            .audit_ids(audit_ids)
+            .auth_methods(context.methods())
+            .authentication_context(context)
+            .principal(principal);
+        if let Some(expires) = expires_at {
+            builder = builder.expires_at(expires);
         }
-        builder.audit_ids(audit_ids);
-        if let Some(token_restriction) = value.token_restriction {
-            builder.token_restriction(token_restriction);
+        if let Some(token_restriction) = token_restriction {
+            builder = builder.token_restriction(token_restriction);
         }
-        builder.auth_methods(value.context.methods());
-        let mut ctx = builder.build()?;
-        if let Some(authz) = value.authorization {
-            ctx.set_authorization(authz);
+        if let Some(authz) = authorization {
+            builder = builder.authorization(authz);
         }
-        Ok(ctx)
+        Ok(builder.build()?)
     }
 }
 
@@ -1085,25 +1097,26 @@ impl TryFrom<Vec<AuthenticationResult>> for SecurityContext {
         let mut auth_results = value.into_iter();
 
         if let Some(auth) = auth_results.next() {
-            builder.principal(auth.principal.clone());
-            builder.authentication_context(auth.context.clone());
-            audit_ids.push(auth.audit_id.clone());
-            if let Some(expires) = &auth.expires_at {
-                builder.expires_at(*expires);
+            if let AuthenticationContext::Token(token) = &auth.context {
+                audit_ids.extend(token.audit_ids().last().cloned());
+            }
+            audit_ids.insert(0, auth.audit_id);
+            builder = builder
+                .auth_methods(auth.context.methods())
+                .authentication_context(auth.context)
+                .principal(auth.principal);
+            if let Some(expires) = auth.expires_at {
+                builder = builder.expires_at(expires);
             }
             // TODO: process properly the token restrictions
             if let Some(token_restriction) = auth.token_restriction {
-                builder.token_restriction(token_restriction);
+                builder = builder.token_restriction(token_restriction);
             }
-            if let Some(authorization) = auth.authorization.clone() {
-                builder.authorization(authorization);
+            if let Some(authorization) = auth.authorization {
+                builder = builder.authorization(authorization);
             }
-            if let AuthenticationContext::Token(token) = &auth.context {
-                audit_ids.extend(token.audit_ids().last().cloned());
-            };
-            builder.auth_methods(auth.context.methods());
         }
-        builder.audit_ids(audit_ids);
+        builder = builder.audit_ids(audit_ids);
         let mut ctx = builder.build()?;
         for auth in auth_results {
             if auth.principal != *ctx.principal() {
@@ -1396,13 +1409,13 @@ pub enum AuthenticationContext {
         /// Application credential.
         application_credential: ApplicationCredential,
         /// Original token with the ApplicationCredential payload type.
-        token: Option<FernetToken>,
+        token: Option<Arc<FernetToken>>,
     },
     /// Login using OIDC federation.
     Oidc {
         oidc: OidcContext,
         /// Original token with the Federated payload type.
-        token: Option<FernetToken>,
+        token: Option<Arc<FernetToken>>,
     },
     /// K8s Auth.
     K8s(K8sContext),
@@ -1411,12 +1424,12 @@ pub enum AuthenticationContext {
     /// Admin SVID authenticated via admin interface.
     Admin,
     /// Login using regular fernet/jwt token.
-    Token(FernetToken),
+    Token(Arc<FernetToken>),
     /// Login consuming the trust.
     Trust {
         trust: Trust,
         /// Original token with the Trust payload type.
-        token: Option<FernetToken>,
+        token: Option<Arc<FernetToken>>,
     },
     /// Login with WebauthN credentials.
     WebauthN,

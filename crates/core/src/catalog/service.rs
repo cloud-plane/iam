@@ -23,7 +23,7 @@ use openstack_keystone_core_types::events::{Event, EventPayload, Operation};
 
 use crate::auth::ExecutionContext;
 use crate::catalog::cache::CatalogCache;
-use crate::catalog::{CatalogApi, CatalogProviderError, backend::CatalogBackend};
+use crate::catalog::{CatalogApi, CatalogEntries, CatalogProviderError, backend::CatalogBackend};
 use crate::events::AuditDispatchError;
 use crate::plugin_manager::PluginManagerApi;
 
@@ -629,21 +629,19 @@ impl CatalogApi for CatalogService {
     /// - `enabled`: Whether to return only enabled services.
     ///
     /// # Returns
-    /// A `Result` containing a vector of tuples of `Service` and its associated
-    /// `Endpoint`s, or a `CatalogProviderError`.
+    /// A `Result` containing the shared list of tuples of `Service` and its
+    /// associated `Endpoint`s, or a `CatalogProviderError`.
     #[tracing::instrument(name = "provider.catalog.get_catalog", level = "debug", skip_all)]
     async fn get_catalog<'a>(
         &self,
         exec: &ExecutionContext<'a>,
         enabled: bool,
-    ) -> Result<Vec<(Service, Vec<Endpoint>)>, CatalogProviderError> {
-        let catalog = self
-            .cache
+    ) -> Result<Arc<CatalogEntries>, CatalogProviderError> {
+        self.cache
             .get_or_load(enabled, || {
                 self.backend_driver.get_catalog(exec.state(), enabled)
             })
-            .await?;
-        Ok(catalog.as_ref().clone())
+            .await
     }
 
     /// Get single endpoint by ID.
@@ -1165,3 +1163,6 @@ impl CatalogApi for CatalogService {
         Ok(updated)
     }
 }
+
+#[cfg(test)]
+mod alloc_profile;

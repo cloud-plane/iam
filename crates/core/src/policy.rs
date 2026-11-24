@@ -116,6 +116,84 @@ impl From<PolicyError> for openstack_keystone_api_types::error::KeystoneApiError
     }
 }
 
+/// A JSON object whose values are borrowed.
+///
+/// A drop-in for the `json!({"key": &value})` objects handed to the policy
+/// engine as `target` and `existing`: it serializes to the same document, but
+/// it only holds references, so no value tree is built. Build it with
+/// [`policy_object!`].
+pub struct PolicyObject<'a>(
+    /// Entries in the insertion order.
+    pub  Vec<(
+        &'static str,
+        &'a (dyn erased_serde::Serialize + Send + Sync),
+    )>,
+);
+
+impl<'a> PolicyObject<'a> {
+    /// An object with the single entry `key`.
+    pub fn single(
+        key: &'static str,
+        value: &'a (dyn erased_serde::Serialize + Send + Sync),
+    ) -> Self {
+        Self(vec![(key, value)])
+    }
+}
+
+impl Serialize for PolicyObject<'_> {
+    fn serialize<S: serde::Serializer>(&self, serializer: S) -> Result<S::Ok, S::Error> {
+        use serde::ser::SerializeMap;
+        let mut map = serializer.serialize_map(Some(self.0.len()))?;
+        for (key, value) in &self.0 {
+            map.serialize_entry(key, value)?;
+        }
+        map.end()
+    }
+}
+
+/// Build a [`PolicyObject`] with the `json!` object syntax.
+///
+/// Values are borrowed (`"key": value` borrows `value`), `null` is the JSON
+/// null and nested `{..}` objects are nested [`PolicyObject`]s. The object
+/// borrows temporaries of the enclosing statement, so it has to be built in the
+/// call that uses it.
+#[macro_export]
+macro_rules! policy_object {
+    ({ $($body:tt)* }) => {
+        $crate::policy_object!(@entries [] $($body)*)
+    };
+    (@entries [$($acc:tt)*]) => {
+        $crate::policy::PolicyObject(vec![$($acc)*])
+    };
+    (@entries [$($acc:tt)*] $key:literal : null $(, $($rest:tt)*)?) => {
+        $crate::policy_object!(@entries [$($acc)* ($key, &() as &(dyn $crate::policy::erased_serde::Serialize + Send + Sync)),] $($($rest)*)?)
+    };
+    (@entries [$($acc:tt)*] $key:literal : { $($inner:tt)* } $(, $($rest:tt)*)?) => {
+        $crate::policy_object!(@entries [$($acc)* ($key, &$crate::policy_object!({ $($inner)* }) as &(dyn $crate::policy::erased_serde::Serialize + Send + Sync)),] $($($rest)*)?)
+    };
+    (@entries [$($acc:tt)*] $key:literal : $value:expr $(, $($rest:tt)*)?) => {
+        $crate::policy_object!(@entries [$($acc)* ($key, &$value as &(dyn $crate::policy::erased_serde::Serialize + Send + Sync)),] $($($rest)*)?)
+    };
+}
+
+pub use crate::policy_object;
+#[doc(hidden)]
+pub use erased_serde;
+
+/// The OPA `input` document, built from borrowed parts.
+///
+/// Serializes to exactly `{"credentials": .., "target": .., "existing": ..}`
+/// with `existing` being `null` when absent.
+#[derive(Serialize)]
+pub struct PolicyInput<'a> {
+    /// The credentials of the requester.
+    pub credentials: &'a Credentials,
+    /// The object the action is acting upon.
+    pub target: &'a (dyn erased_serde::Serialize + Send + Sync),
+    /// The stored object before the action.
+    pub existing: Option<&'a (dyn erased_serde::Serialize + Send + Sync)>,
+}
+
 #[async_trait]
 pub trait PolicyEnforcer: Send + Sync {
     /// Enforces a policy for a given action and credentials.
@@ -139,6 +217,27 @@ pub trait PolicyEnforcer: Send + Sync {
         target: Value,
         existing: Option<Value>,
     ) -> Result<PolicyEvaluationResult, PolicyError>;
+
+    /// Enforces a policy for borrowed, serializable `target` and `existing`.
+    ///
+    /// Same contract and same policy input document as
+    /// [`PolicyEnforcer::enforce`], but the caller does not have to build an
+    /// intermediate `serde_json::Value` tree of the objects first. Enforcers
+    /// serialize them straight into the document they send to the policy
+    /// engine. The default implementation builds the trees and delegates to
+    /// [`PolicyEnforcer::enforce`], so every implementation keeps working.
+    async fn enforce_serialized(
+        &self,
+        policy_name: &'static str,
+        credentials: &ValidatedSecurityContext,
+        target: &(dyn erased_serde::Serialize + Send + Sync),
+        existing: Option<&(dyn erased_serde::Serialize + Send + Sync)>,
+    ) -> Result<PolicyEvaluationResult, PolicyError> {
+        let target = serde_json::to_value(target)?;
+        let existing = existing.map(serde_json::to_value).transpose()?;
+        self.enforce(policy_name, credentials, target, existing)
+            .await
+    }
 
     /// Performs a health check of the policy enforcer.
     ///
@@ -631,6 +730,60 @@ mod tests {
         assert_eq!(creds.project_id.as_deref(), Some("project_id"));
         assert_eq!(creds.project_domain_id.as_deref(), Some("domain_id"));
         assert_eq!(creds.domain_id, None);
+    }
+
+    /// `policy_object!` takes the `json!` syntax and yields the same document.
+    #[test]
+    fn policy_object_serializes_like_json() {
+        let user = serde_json::json!({"id": "u", "roles": ["a", "b"]});
+        let name = "n".to_string();
+        // The object borrows temporaries, so it is built where it is used.
+        let actual = serde_json::to_value(policy_object!({
+            "user": user,
+            "name": name.as_str(),
+            "missing": null,
+            "nested": {"a": &name, "b": null, "c": {"d": 1}},
+            "last": Some(2),
+        }))
+        .unwrap();
+        assert_eq!(
+            actual,
+            serde_json::json!({
+                "user": user,
+                "name": "n",
+                "missing": null,
+                "nested": {"a": "n", "b": null, "c": {"d": 1}},
+                "last": 2,
+            })
+        );
+        assert_eq!(
+            serde_json::to_value(policy_object!({})).unwrap(),
+            serde_json::json!({})
+        );
+    }
+
+    /// The borrowed input must be the very document the value based path
+    /// builds, for both the present and the absent `existing` object.
+    #[test]
+    fn policy_input_serializes_like_the_value_document() {
+        let creds = Credentials::try_from(&test_fixture_scoped()).unwrap();
+        let target = serde_json::json!({"project": {"name": "a"}});
+        let existing = serde_json::json!({"token": {"user": {"id": "u"}}});
+
+        for existing in [Some(&existing), None] {
+            let borrowed = serde_json::to_value(PolicyInput {
+                credentials: &creds,
+                target: &target,
+                existing: existing.map(|v| v as _),
+            })
+            .unwrap();
+            let expected = serde_json::json!({
+                "credentials": creds,
+                "target": target,
+                "existing": existing.cloned().unwrap_or(Value::Null),
+            });
+            assert_eq!(borrowed, expected);
+        }
     }
 
     #[test]

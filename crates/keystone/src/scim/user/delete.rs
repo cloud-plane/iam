@@ -17,7 +17,7 @@
 
 use axum::{extract::Path, extract::State, http::StatusCode};
 use chrono::Utc;
-use serde_json::json;
+use openstack_keystone_core::policy::policy_object;
 
 use openstack_keystone_core::api::api_key_auth::ScimRealmAuth;
 use openstack_keystone_core::auth::ExecutionContext;
@@ -41,11 +41,11 @@ pub(super) async fn delete(
 
     state
         .policy_enforcer
-        .enforce(
+        .enforce_serialized(
             "identity/scim/user/delete",
             &ctx,
-            serde_json::Value::Null,
-            Some(json!({"user": existing_user})),
+            &serde_json::Value::Null,
+            Some(&policy_object!({"user": existing_user})),
         )
         .await?;
 

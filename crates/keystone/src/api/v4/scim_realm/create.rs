@@ -17,6 +17,7 @@ use axum::{Json, extract::State, http::StatusCode, response::IntoResponse};
 use openstack_keystone_api_types::v4::scim_realm::{
     ScimRealm, ScimRealmCreateRequest, ScimRealmResponse,
 };
+use openstack_keystone_core::policy::policy_object;
 use validator::Validate;
 
 use crate::api::auth::Auth;
@@ -51,10 +52,10 @@ pub(super) async fn create(
 
     state
         .policy_enforcer
-        .enforce(
+        .enforce_serialized(
             "identity/scim_realm/create",
             &user_auth,
-            serde_json::json!({"scim_realm": req.scim_realm}),
+            &policy_object!({"scim_realm": req.scim_realm}),
             None,
         )
         .await?;

@@ -594,11 +594,11 @@ mod tests {
             .build()
             .unwrap();
         let auth = AuthenticationResultBuilder::default()
-            .context(AuthenticationContext::Token(
+            .context(AuthenticationContext::Token(std::sync::Arc::new(
                 openstack_keystone_core_types::token::FernetToken::Unscoped(
                     openstack_keystone_core_types::token::UnscopedPayload::default(),
                 ),
-            ))
+            )))
             .principal(PrincipalInfo {
                 identity: IdentityInfo::User(
                     UserIdentityInfoBuilder::default()

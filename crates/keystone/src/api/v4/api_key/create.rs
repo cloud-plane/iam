@@ -15,6 +15,7 @@
 
 use axum::{Json, extract::State, http::StatusCode, response::IntoResponse};
 use openstack_keystone_core::auth::ExecutionContext;
+use openstack_keystone_core::policy::policy_object;
 use secrecy::ExposeSecret;
 use validator::Validate;
 
@@ -55,10 +56,10 @@ pub(super) async fn create(
 
     state
         .policy_enforcer
-        .enforce(
+        .enforce_serialized(
             "identity/api_key/create",
             &user_auth,
-            serde_json::json!({"api_key": req.api_key}),
+            &policy_object!({"api_key": req.api_key}),
             None,
         )
         .await?;

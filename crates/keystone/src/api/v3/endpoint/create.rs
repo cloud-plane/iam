@@ -17,7 +17,7 @@ use axum::{
     http::StatusCode,
     response::IntoResponse,
 };
-use serde_json::json;
+use openstack_keystone_core::policy::policy_object;
 use validator::Validate;
 
 use super::types::{EndpointCreateRequest, EndpointResponse};
@@ -51,10 +51,10 @@ pub(super) async fn create(
 
     state
         .policy_enforcer
-        .enforce(
+        .enforce_serialized(
             "identity/endpoint/create",
             &user_auth,
-            json!({"endpoint": payload.endpoint}),
+            &policy_object!({"endpoint": payload.endpoint}),
             None,
         )
         .await?;

@@ -15,8 +15,8 @@
 //! pagination).
 
 use axum::{Json, extract::Query, extract::State};
+use openstack_keystone_core::policy::policy_object;
 use serde::Deserialize;
-use serde_json::json;
 
 use openstack_keystone_core::api::api_key_auth::ScimRealmAuth;
 use openstack_keystone_core::auth::ExecutionContext;
@@ -45,10 +45,10 @@ pub(super) async fn list(
 ) -> Result<Json<ScimGroupListResponse>, ScimApiError> {
     state
         .policy_enforcer
-        .enforce(
+        .enforce_serialized(
             "identity/scim/group/list",
             &ctx,
-            json!({"group": {"domain_id": realm.domain_id}}),
+            &policy_object!({"group": {"domain_id": realm.domain_id}}),
             None,
         )
         .await?;

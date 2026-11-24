@@ -19,6 +19,7 @@ use axum::{
     http::StatusCode,
     response::IntoResponse,
 };
+use openstack_keystone_core::policy::policy_object;
 
 use crate::api::auth::Auth;
 use crate::api::error::KeystoneApiError;
@@ -69,11 +70,11 @@ pub(super) async fn delete(
 
     state
         .policy_enforcer
-        .enforce(
+        .enforce_serialized(
             "identity/oauth2/client/delete",
             &user_auth,
-            serde_json::Value::Null,
-            Some(serde_json::json!({"oauth2_client": OAuth2Client::from(current)})),
+            &serde_json::Value::Null,
+            Some(&policy_object!({"oauth2_client": OAuth2Client::from(current)})),
         )
         .await?;
 

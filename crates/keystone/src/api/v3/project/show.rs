@@ -13,6 +13,7 @@
 // SPDX-License-Identifier: Apache-2.0
 //! # Show project API
 
+use openstack_keystone_core::policy::policy_object;
 use std::collections::{BTreeMap, HashMap, HashSet};
 
 use axum::{
@@ -61,11 +62,11 @@ pub(crate) async fn get_visible_project(
 
     state
         .policy_enforcer
-        .enforce(
+        .enforce_serialized(
             "identity/resource/project/show",
             user_auth,
-            Value::Null,
-            Some(json!({"project": current})),
+            &Value::Null,
+            Some(&policy_object!({"project": current})),
         )
         .await?;
     current.ok_or_else(|| KeystoneApiError::NotFound {
@@ -86,11 +87,11 @@ pub(crate) async fn filter_visible(
     for project in projects {
         match state
             .policy_enforcer
-            .enforce(
+            .enforce_serialized(
                 "identity/resource/project/show",
                 user_auth,
-                Value::Null,
-                Some(json!({"project": &project})),
+                &Value::Null,
+                Some(&policy_object!({"project": &project})),
             )
             .await
         {

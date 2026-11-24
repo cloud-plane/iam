@@ -1195,7 +1195,7 @@ mod catalog {
                 &self,
                 ctx: &ExecutionContext<'a>,
                 enabled: bool,
-            ) -> Result<Vec<(Service, Vec<Endpoint>)>, CatalogProviderError>;
+            ) -> Result<std::sync::Arc<crate::catalog::CatalogEntries>, CatalogProviderError>;
 
             async fn get_endpoint<'a>(
                 &self,

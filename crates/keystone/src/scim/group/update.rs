@@ -14,10 +14,10 @@
 //! `PUT /SCIM/v2/{domain_id}/Groups/{id}` — full-replace update (ADR 0024
 //! §3.C, §4, §5.C, §5.E, §7, §11).
 
+use openstack_keystone_core::policy::policy_object;
 use std::collections::HashSet;
 
 use axum::{Json, extract::Path, extract::State, http::HeaderMap};
-use serde_json::json;
 
 use openstack_keystone_core::api::KeystoneApiError;
 use openstack_keystone_core::api::api_key_auth::ScimRealmAuth;
@@ -61,11 +61,11 @@ pub(super) async fn update(
 
     state
         .policy_enforcer
-        .enforce(
+        .enforce_serialized(
             "identity/scim/group/update",
             &ctx,
-            json!({"group": {"display_name": req.display_name}}),
-            Some(json!({"group": existing_group})),
+            &policy_object!({"group": {"display_name": req.display_name}}),
+            Some(&policy_object!({"group": existing_group})),
         )
         .await?;
 

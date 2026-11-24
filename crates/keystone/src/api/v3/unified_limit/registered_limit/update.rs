@@ -18,7 +18,7 @@ use axum::{
     http::StatusCode,
     response::IntoResponse,
 };
-use serde_json::json;
+use openstack_keystone_core::policy::policy_object;
 use validator::Validate;
 
 use super::types::{RegisteredLimit, RegisteredLimitResponse, RegisteredLimitUpdateRequest};
@@ -70,11 +70,11 @@ pub(super) async fn update(
 
     state
         .policy_enforcer
-        .enforce(
+        .enforce_serialized(
             "identity/registered_limit/update",
             &user_auth,
-            json!({"registered_limit": req.registered_limit}),
-            Some(json!({"registered_limit": current})),
+            &policy_object!({"registered_limit": req.registered_limit}),
+            Some(&policy_object!({"registered_limit": current})),
         )
         .await?;
 

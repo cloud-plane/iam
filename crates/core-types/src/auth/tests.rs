@@ -16,6 +16,7 @@ use super::*;
 use crate::resource::Project;
 use chrono::Duration;
 use std::collections::HashMap;
+use std::sync::Arc;
 
 use crate::application_credential::ApplicationCredentialBuilder;
 use crate::assignment::{AssignmentBuilder, AssignmentType};
@@ -361,7 +362,7 @@ fn make_token_ctx(principal: PrincipalInfo) -> SecurityContext {
         .unwrap();
     let token = FernetToken::Unscoped(payload);
     let auth = AuthenticationResultBuilder::default()
-        .context(AuthenticationContext::Token(token))
+        .context(AuthenticationContext::Token(Arc::new(token)))
         .principal(principal)
         .build()
         .unwrap();
@@ -678,7 +679,7 @@ fn test_validate_scope_boundarires_trust() {
     let ctx_from_bearer_token = make_auth_ctx_with_scope(
         AuthenticationContext::Trust {
             trust: trust2,
-            token: Some(bearer_token),
+            token: Some(Arc::new(bearer_token)),
         },
         make_principal("uid"),
     );
@@ -991,7 +992,7 @@ fn test_mfa_token_audit_ids_extended() {
         .unwrap();
     let token1 = FernetToken::Unscoped(payload1);
     let auth1 = AuthenticationResultBuilder::default()
-        .context(AuthenticationContext::Token(token1))
+        .context(AuthenticationContext::Token(Arc::new(token1)))
         .principal(make_principal("uid"))
         .build()
         .unwrap();
@@ -1005,7 +1006,7 @@ fn test_mfa_token_audit_ids_extended() {
         .unwrap();
     let token2 = FernetToken::Unscoped(payload2);
     let auth2 = AuthenticationResultBuilder::default()
-        .context(AuthenticationContext::Token(token2))
+        .context(AuthenticationContext::Token(Arc::new(token2)))
         .principal(make_principal("uid"))
         .authorization(AuthzInfo {
             scope: ScopeInfo::Unscoped,
@@ -1412,7 +1413,7 @@ fn test_methods_token_chain() {
         .build()
         .unwrap();
     let token = FernetToken::Unscoped(payload);
-    let m = AuthenticationContext::Token(token).methods();
+    let m = AuthenticationContext::Token(Arc::new(token)).methods();
     assert!(m.contains("password"));
     assert!(m.contains("token"));
 }
@@ -1542,7 +1543,7 @@ fn test_try_from_single_auth_result_token_audit_ids() {
         .unwrap();
     let token = FernetToken::Unscoped(payload);
     let auth = AuthenticationResultBuilder::default()
-        .context(AuthenticationContext::Token(token))
+        .context(AuthenticationContext::Token(Arc::new(token)))
         .principal(make_principal("uid"))
         .build()
         .unwrap();
@@ -1566,7 +1567,9 @@ fn test_rescope_chain_does_not_grow() {
             .build()
             .unwrap();
         let auth = AuthenticationResultBuilder::default()
-            .context(AuthenticationContext::Token(FernetToken::Unscoped(payload)))
+            .context(AuthenticationContext::Token(Arc::new(
+                FernetToken::Unscoped(payload),
+            )))
             .principal(make_principal("uid"))
             .build()
             .unwrap();
@@ -1587,7 +1590,7 @@ fn make_token_with_methods(methods: Vec<&str>) -> AuthenticationContext {
         .expires_at(Utc::now())
         .build()
         .unwrap();
-    AuthenticationContext::Token(FernetToken::Unscoped(payload))
+    AuthenticationContext::Token(Arc::new(FernetToken::Unscoped(payload)))
 }
 
 #[test]

@@ -17,7 +17,7 @@ use axum::{
     http::StatusCode,
     response::IntoResponse,
 };
-use serde_json::json;
+use openstack_keystone_core::policy::policy_object;
 use validator::Validate;
 
 use super::types::{TrustCreateRequest, TrustResponse};
@@ -84,10 +84,10 @@ pub(super) async fn create(
 
     state
         .policy_enforcer
-        .enforce(
+        .enforce_serialized(
             "identity/trust/create",
             &user_auth,
-            json!({"trust": payload.trust}),
+            &policy_object!({"trust": payload.trust}),
             None,
         )
         .await?;

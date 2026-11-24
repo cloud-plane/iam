@@ -19,7 +19,7 @@ use axum::{
     http::StatusCode,
     response::IntoResponse,
 };
-use serde_json::json;
+use openstack_keystone_core::policy::{PolicyObject, policy_object};
 use validator::Validate;
 
 use super::types::{Domain, DomainResponse, DomainUpdateRequest};
@@ -57,15 +57,15 @@ pub(super) async fn update(
         .get_domain(&ExecutionContext::from_auth(&state, &user_auth), &domain_id)
         .await?;
 
-    let existing_domain = current.as_ref().map(|c| json!({"domain": c}));
+    let existing_domain = current.as_ref().map(|c| PolicyObject::single("domain", c));
 
     state
         .policy_enforcer
-        .enforce(
+        .enforce_serialized(
             "identity/resource/domain/update",
             &user_auth,
-            json!({"domain": req.domain}),
-            existing_domain,
+            &policy_object!({"domain": req.domain}),
+            existing_domain.as_ref().map(|v| v as _),
         )
         .await?;
 

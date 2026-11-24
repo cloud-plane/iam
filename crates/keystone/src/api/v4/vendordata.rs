@@ -35,6 +35,7 @@
 //! than round-tripping through mapping-engine claims.
 
 use axum::{Extension, Json, extract::State, http::StatusCode, response::IntoResponse};
+use openstack_keystone_core::policy::policy_object;
 use utoipa::OpenApi;
 use utoipa_axum::{router::OpenApiRouter, routes};
 
@@ -116,10 +117,10 @@ async fn create(
 
     state
         .policy_enforcer
-        .enforce(
+        .enforce_serialized(
             "identity/vendordata/create",
             &user_auth,
-            serde_json::json!({
+            &policy_object!({
                 "project_id": body.project_id.clone(),
                 "instance_id": body.instance_id.clone(),
             }),

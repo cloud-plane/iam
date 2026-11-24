@@ -19,7 +19,7 @@ use axum::{
     http::StatusCode,
     response::IntoResponse,
 };
-use serde_json::json;
+use openstack_keystone_core::policy::policy_object;
 
 use super::types::{Domain, DomainResponse};
 use crate::api::auth::Auth;
@@ -52,11 +52,11 @@ pub(super) async fn show(
 
     state
         .policy_enforcer
-        .enforce(
+        .enforce_serialized(
             "identity/resource/domain/show",
             &user_auth,
-            serde_json::Value::Null,
-            Some(json!({"domain": current})),
+            &serde_json::Value::Null,
+            Some(&policy_object!({"domain": current})),
         )
         .await?;
     match current {

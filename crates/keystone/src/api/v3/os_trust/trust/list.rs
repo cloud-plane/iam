@@ -18,7 +18,7 @@ use axum::{
     http::StatusCode,
     response::IntoResponse,
 };
-use serde_json::json;
+use openstack_keystone_core::policy::policy_object;
 
 use super::types::{Trust, TrustList, TrustListParameters};
 use crate::api::auth::Auth;
@@ -56,10 +56,10 @@ pub(super) async fn list(
 ) -> Result<impl IntoResponse, KeystoneApiError> {
     state
         .policy_enforcer
-        .enforce(
+        .enforce_serialized(
             "identity/trust/list",
             &user_auth,
-            json!({"trust": query}),
+            &policy_object!({"trust": query}),
             None,
         )
         .await?;
@@ -77,11 +77,11 @@ pub(super) async fn list(
     for item in raw {
         match state
             .policy_enforcer
-            .enforce(
+            .enforce_serialized(
                 "identity/trust/show",
                 &user_auth,
-                serde_json::Value::Null,
-                Some(json!({"trust": item})),
+                &serde_json::Value::Null,
+                Some(&policy_object!({"trust": item})),
             )
             .await
         {

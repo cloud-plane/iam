@@ -23,6 +23,7 @@ use openstack_keystone_api_types::v4::auth_plugin::{
     IdentityLink, IdentityLinkCreateRequest, IdentityLinkResponse,
 };
 use openstack_keystone_core::auth::ExecutionContext;
+use openstack_keystone_core::policy::policy_object;
 use validator::Validate;
 
 use super::{domain_allowed, require_full_auth_plugin, target_holds_system_role};
@@ -91,10 +92,10 @@ pub(crate) async fn create(
     let is_system = target_holds_system_role(&state, &exec, &user_id).await?;
     state
         .policy_enforcer
-        .enforce(
+        .enforce_serialized(
             "identity/auth_plugin/identity_link/create",
             &user_auth,
-            serde_json::json!({
+            &policy_object!({
                 "identity_link": {
                     "plugin_name": plugin_name,
                     "user_id": user_id,

@@ -80,6 +80,35 @@ fn test_role_show_decisions() {
     );
 }
 
+/// The production path (`evaluate_json`, from the serialized input) must
+/// decide exactly as the value based path.
+#[test]
+fn test_evaluate_json_matches_evaluate() {
+    let e = enforcer();
+    for (roles, domain) in [
+        (json!(["admin"]), "x"),
+        (json!(["manager"]), "d"),
+        (json!(["manager"]), "other"),
+        (json!(["member"]), "d"),
+    ] {
+        let input = json!({
+            "credentials": {"roles": roles, "is_admin": false, "domain_id": domain},
+            "target": null,
+            "existing": {"role": {"id": "r", "domain_id": "d"}}
+        });
+        let by_value = e.evaluate("identity/role/show", input.clone()).unwrap();
+        let by_json = e
+            .evaluate_json("identity/role/show", &input.to_string())
+            .unwrap();
+        assert_eq!(by_value.allow(), by_json.allow(), "{input}");
+        assert_eq!(
+            format!("{:?}", by_value.violations),
+            format!("{:?}", by_json.violations),
+            "{input}"
+        );
+    }
+}
+
 #[test]
 fn test_violations_are_returned() {
     let e = enforcer();

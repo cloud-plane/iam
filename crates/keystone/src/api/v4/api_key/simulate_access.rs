@@ -21,6 +21,7 @@
 //! ruleset, and reads the matched `Authorization`'s roles directly -- no
 //! token, no crypto verification, no provisioning.
 
+use openstack_keystone_core::policy::policy_object;
 use std::collections::HashMap;
 
 use axum::{Json, extract::State, http::StatusCode, response::IntoResponse};
@@ -77,11 +78,11 @@ pub(super) async fn simulate_access(
 
     state
         .policy_enforcer
-        .enforce(
+        .enforce_serialized(
             "identity/api_key/simulate_access",
             &user_auth,
-            serde_json::json!({"api_key": null}),
-            Some(serde_json::json!({"api_key": ApiKey::from(current.clone())})),
+            &policy_object!({"api_key": null}),
+            Some(&policy_object!({"api_key": ApiKey::from(current.clone())})),
         )
         .await?;
 

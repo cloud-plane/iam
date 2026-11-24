@@ -18,7 +18,7 @@ use axum::{
     http::StatusCode,
     response::IntoResponse,
 };
-use serde_json::json;
+use openstack_keystone_core::policy::policy_object;
 
 use super::super::types::ProjectTags;
 use crate::api::auth::Auth;
@@ -53,11 +53,11 @@ pub(super) async fn replace(
 
     state
         .policy_enforcer
-        .enforce(
+        .enforce_serialized(
             "identity/resource/project/tag/update",
             &user_auth,
-            json!({"tags": &req.tags}),
-            Some(json!({"project": current})),
+            &policy_object!({"tags": &req.tags}),
+            Some(&policy_object!({"project": current})),
         )
         .await?;
     if current.is_none() {

@@ -19,7 +19,7 @@ use axum::{
     http::StatusCode,
     response::IntoResponse,
 };
-use serde_json::json;
+use openstack_keystone_core::policy::policy_object;
 use validator::Validate;
 
 use openstack_keystone_api_types::k8s_auth::*;
@@ -72,11 +72,11 @@ pub(super) async fn update(
 
     state
         .policy_enforcer
-        .enforce(
+        .enforce_serialized(
             "identity/k8s_auth/instance/update",
             &user_auth,
-            json!({"instance": current}),
-            Some(json!({"instance": req.instance})),
+            &policy_object!({"instance": current}),
+            Some(&policy_object!({"instance": req.instance})),
         )
         .await?;
 
