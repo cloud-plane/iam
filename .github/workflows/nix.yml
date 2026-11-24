@@ -23,8 +23,8 @@ jobs:
   flake-eval:
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
-      - uses: cachix/install-nix-action@3dc140bfc76c49fbd4dd958429132e3746bcb086 # v31.11.5
+      - uses: actions/checkout@v7
+      - uses: cachix/install-nix-action@v31
       - name: Evaluate all flake outputs
         run: nix flake check --no-build --all-systems
       - name: Instantiate packages

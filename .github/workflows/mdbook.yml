@@ -36,21 +36,21 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - name: Harden Runner
-        uses: step-security/harden-runner@aebdcf6156ab6691adf63218240e476564a1ed4c # v2.23.0
+        uses: step-security/harden-runner@v2
         with:
           egress-policy: audit
 
-      - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
+      - uses: actions/checkout@v7
 
       - name: Install Mdbook
-        uses: jaxxstorm/action-install-gh-release@b82b2052fdf822192f2119b7e289a6f63e668bc8 # v4.0.0
+        uses: jaxxstorm/action-install-gh-release@v4.0.0
         with:
           repo: rust-lang/mdbook
           tag: v0.5.1
           cache: enable
 
       - name: Install Mdbook-mermaid
-        uses: jaxxstorm/action-install-gh-release@b82b2052fdf822192f2119b7e289a6f63e668bc8 # v4.0.0
+        uses: jaxxstorm/action-install-gh-release@v4.0.0
         with:
           repo: badboy/mdbook-mermaid
           tag: v0.17.0
@@ -69,7 +69,7 @@ jobs:
           sudo apt-get install -y protobuf-compiler
 
       - name: Rust Cache
-        uses: swatinem/rust-cache@c19371144df3bb44fab255c43d04cbc2ab54d1c4 # v2.9.1
+        uses: swatinem/rust-cache@v2
         with:
           shared-key: openapi-build
           save-if: ${{ github.ref == 'refs/heads/main' }}
@@ -79,13 +79,13 @@ jobs:
 
       - name: Setup Pages
         id: pages
-        uses: actions/configure-pages@45bfe0192ca1faeb007ade9deae92b16b8254a0d # v6.0.0
+        uses: actions/configure-pages@v6
 
       - name: Build with mdBook
         run: mdbook build doc
 
       - name: Upload artifact
-        uses: actions/upload-pages-artifact@fc324d3547104276b827a68afc52ff2a11cc49c9 # v5.0.0
+        uses: actions/upload-pages-artifact@v5
         with:
           path: ./doc/html
 
@@ -99,10 +99,10 @@ jobs:
     if: ${{ github.event_name == 'push' }}
     steps:
       - name: Harden Runner
-        uses: step-security/harden-runner@aebdcf6156ab6691adf63218240e476564a1ed4c # v2.23.0
+        uses: step-security/harden-runner@v2
         with:
           egress-policy: audit
 
       - name: Deploy to GitHub Pages
         id: deployment
-        uses: actions/deploy-pages@cd2ce8fcbc39b97be8ca5fce6e763baed58fa128 # v5.0.0
+        uses: actions/deploy-pages@v5

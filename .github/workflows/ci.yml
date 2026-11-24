@@ -33,12 +33,12 @@ jobs:
       code: ${{ github.event_name != 'pull_request' || steps.filter.outputs.code == 'true' }}
     steps:
       - name: Harden Runner
-        uses: step-security/harden-runner@aebdcf6156ab6691adf63218240e476564a1ed4c # v2.23.0
+        uses: step-security/harden-runner@v2
         with:
           egress-policy: audit
 
-      - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
-      - uses: dorny/paths-filter@7b450fff21473bca461d4b92ce414b9d0420d706 # v4.0.2
+      - uses: actions/checkout@v7
+      - uses: dorny/paths-filter@v4
         id: filter
         with:
           filters: |
@@ -73,11 +73,11 @@ jobs:
 
     steps:
       - name: Harden Runner
-        uses: step-security/harden-runner@aebdcf6156ab6691adf63218240e476564a1ed4c # v2.23.0
+        uses: step-security/harden-runner@v2
         with:
           egress-policy: audit
 
-      - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
+      - uses: actions/checkout@v7
 
       # protobuf-compiler: build dependency. libtss2-dev + pkg-config: build-time
       # dependency of the `tpm` feature (`storage-crypto-tpm`'s `tss-esapi`
@@ -100,14 +100,14 @@ jobs:
 
       - name: Install Rust
         if: needs.changes.outputs.code == 'true'
-        uses: dtolnay/rust-toolchain@683b588c487a69d01f6c6ddf40f036ff682cc2c8 # stable
+        uses: dtolnay/rust-toolchain@master
         with:
           toolchain: stable
           targets: "${{ matrix.target }},wasm32-unknown-unknown"
 
       - name: Install cargo-nextest
         if: needs.changes.outputs.code == 'true'
-        uses: taiki-e/install-action@8cca0918f8471c33515202b73f56ab27f2bed283 # v2.87.29
+        uses: taiki-e/install-action@v2
         with:
           tool: cargo-nextest
 
@@ -122,7 +122,7 @@ jobs:
 
       - name: Setup OPA
         if: needs.changes.outputs.code == 'true'
-        uses: open-policy-agent/setup-opa@b2b258e089860efaadaaf71bf6e3aecb4a3eeff1 # v2.4.0
+        uses: open-policy-agent/setup-opa@v2
         with:
           version: latest
 
@@ -137,13 +137,13 @@ jobs:
 
       - name: Rust Cache
         if: needs.changes.outputs.code == 'true'
-        uses: swatinem/rust-cache@c19371144df3bb44fab255c43d04cbc2ab54d1c4 # v2.9.1
+        uses: swatinem/rust-cache@v2
         with:
           save-if: ${{ github.ref == 'refs/heads/main' }}
 
       - name: Set up Python for cross-verification tests
         if: needs.changes.outputs.code == 'true'
-        uses: actions/setup-python@6d4fd22b20465ccc0f7354476588e8df7c9ca0e0 # v7.1.0
+        uses: actions/setup-python@v7
         with:
           python-version: '3.x'
 
@@ -264,7 +264,7 @@ jobs:
         run: docker ps -a
 
       - name: Upload state dir as artifact
-        uses: actions/upload-artifact@bbbca2ddaa5d8feaa63e36b76fdaad77386f024f # v7.0.0
+        uses: actions/upload-artifact@v7
         if: failure()
         with:
           name: nextest
@@ -272,7 +272,7 @@ jobs:
 
       # Convert JUnit XML into an interactive GitHub Step Summary
       - name: Publish Test Report
-        uses: dorny/test-reporter@d1b5dff021aa968b288b02285a8bf47471c5928a # v3.2.0
+        uses: dorny/test-reporter@v3
         if: needs.changes.outputs.code == 'true' && (success() || failure()) # Run even if tests fail
         with:
           name: Cargo Nextest Results
@@ -288,11 +288,11 @@ jobs:
 
     steps:
       - name: Harden Runner
-        uses: step-security/harden-runner@aebdcf6156ab6691adf63218240e476564a1ed4c # v2.23.0
+        uses: step-security/harden-runner@v2
         with:
           egress-policy: audit
 
-      - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
+      - uses: actions/checkout@v7
 
       - name: Check policy<->handler existence (Gate B1)
         run: python3 tools/check_policy_handler_coverage.py
@@ -333,14 +333,14 @@ jobs:
 
     steps:
       - name: Harden Runner
-        uses: step-security/harden-runner@aebdcf6156ab6691adf63218240e476564a1ed4c # v2.23.0
+        uses: step-security/harden-runner@v2
         with:
           egress-policy: audit
 
-      - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
+      - uses: actions/checkout@v7
 
       - name: Install Rust
-        uses: dtolnay/rust-toolchain@683b588c487a69d01f6c6ddf40f036ff682cc2c8 # stable
+        uses: dtolnay/rust-toolchain@master
         with:
           toolchain: stable
 
@@ -406,11 +406,11 @@ jobs:
 
     steps:
       - name: Harden Runner
-        uses: step-security/harden-runner@aebdcf6156ab6691adf63218240e476564a1ed4c # v2.23.0
+        uses: step-security/harden-runner@v2
         with:
           egress-policy: audit
 
-      - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
+      - uses: actions/checkout@v7
 
       - name: Install system packages
         run: |
@@ -422,23 +422,23 @@ jobs:
         run: sudo apt-get install -y cmake clang golang-go
 
       - name: Install Rust
-        uses: dtolnay/rust-toolchain@683b588c487a69d01f6c6ddf40f036ff682cc2c8 # stable
+        uses: dtolnay/rust-toolchain@master
         with:
           toolchain: stable
 
       # The keystone unit tests evaluate the real Rego policies via `opa run`.
       - name: Setup OPA
-        uses: open-policy-agent/setup-opa@b2b258e089860efaadaaf71bf6e3aecb4a3eeff1 # v2.4.0
+        uses: open-policy-agent/setup-opa@v2
         with:
           version: latest
 
       - name: Install cargo-nextest and cargo-hack
-        uses: taiki-e/install-action@8cca0918f8471c33515202b73f56ab27f2bed283 # v2.87.29
+        uses: taiki-e/install-action@v2
         with:
           tool: cargo-nextest,cargo-hack
 
       - name: Rust Cache
-        uses: swatinem/rust-cache@c19371144df3bb44fab255c43d04cbc2ab54d1c4 # v2.9.1
+        uses: swatinem/rust-cache@v2
         with:
           shared-key: features-${{ matrix.name }}
           save-if: ${{ github.ref == 'refs/heads/main' }}
@@ -453,14 +453,14 @@ jobs:
 
     steps:
       - name: Harden Runner
-        uses: step-security/harden-runner@aebdcf6156ab6691adf63218240e476564a1ed4c # v2.23.0
+        uses: step-security/harden-runner@v2
         with:
           egress-policy: audit
 
-      - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
+      - uses: actions/checkout@v7
 
       - name: Install Rust
-        uses: dtolnay/rust-toolchain@683b588c487a69d01f6c6ddf40f036ff682cc2c8 # stable
+        uses: dtolnay/rust-toolchain@master
         with:
           toolchain: stable
           targets: ${{ matrix.target }}
@@ -471,7 +471,7 @@ jobs:
           sudo apt-get install -y protobuf-compiler libtss2-dev pkg-config
 
       - name: Rust Cache
-        uses: swatinem/rust-cache@c19371144df3bb44fab255c43d04cbc2ab54d1c4 # v2.9.1
+        uses: swatinem/rust-cache@v2
         with:
           shared-key: openapi-build
           save-if: ${{ github.ref == 'refs/heads/main' }}
@@ -480,7 +480,7 @@ jobs:
         run: cargo run -p openstack-keystone --bin keystone -- --dump-openapi yaml > openapi.yaml
 
       - name: Upload OpenAPI spec
-        uses: actions/upload-artifact@bbbca2ddaa5d8feaa63e36b76fdaad77386f024f # v7.0.0
+        uses: actions/upload-artifact@v7
         with:
           name: openapi.spec
           path: openapi.yaml

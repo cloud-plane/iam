@@ -15,24 +15,24 @@ jobs:
       PR_EVENT: event.json
     steps:
       - name: Harden Runner
-        uses: step-security/harden-runner@aebdcf6156ab6691adf63218240e476564a1ed4c # v2.23.0
+        uses: step-security/harden-runner@v2
         with:
           egress-policy: audit
 
       - name: Download Benchmark Results
-        uses: dawidd6/action-download-artifact@eab87c9830c39eff17e5a6eadb20bfb4bc880477 # v27
+        uses: dawidd6/action-download-artifact@v27
         with:
           name: ${{ env.BENCHMARK_RESULTS }}
           run_id: ${{ github.event.workflow_run.id }}
 
       - name: Download PR Event
-        uses: dawidd6/action-download-artifact@eab87c9830c39eff17e5a6eadb20bfb4bc880477 # v27
+        uses: dawidd6/action-download-artifact@v27
         with:
           name: ${{ env.PR_EVENT }}
           run_id: ${{ github.event.workflow_run.id }}
 
       - name: Export PR Event Data
-        uses: actions/github-script@3a2844b7e9c422d3c10d287c895573f7108da1b3 # v9.0.0
+        uses: actions/github-script@v9
         with:
           script: |
             let fs = require('fs');
