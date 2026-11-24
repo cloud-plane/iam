@@ -14,7 +14,7 @@
 //! Token restriction: create.
 
 use axum::{Json, debug_handler, extract::State, http::StatusCode, response::IntoResponse};
-use serde_json::json;
+use openstack_keystone_core::policy::policy_object;
 use validator::Validate;
 
 use crate::api::auth::Auth;
@@ -54,10 +54,10 @@ pub(super) async fn create(
     req.validate()?;
     state
         .policy_enforcer
-        .enforce(
+        .enforce_serialized(
             "identity/token/token_restriction/create",
             &user_auth,
-            json!({"restriction": req.restriction}),
+            &policy_object!({"restriction": req.restriction}),
             None,
         )
         .await?;

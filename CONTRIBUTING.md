@@ -131,6 +131,31 @@ cargo nextest run --profile api -p test_api
 - Logs are preserved after test completion. Stop with `./tools/teardown-api.sh`.
   Full cleanup: `rm -rf /tmp/nextest/keystone /tmp/spire-ci-test-harness`.
 
+### Allocation profiling
+
+The hot paths of a request (token validation, the catalog, the conversions to
+the response and to the policy input) have allocation budgets that are checked
+by unit tests. They count the allocations of each stage with the counting
+allocator of `crates/alloc-profile`, with all dependencies mocked, so the
+figures are deterministic and need no database.
+
+```console
+cargo test -p openstack-keystone-core alloc_profile -- --nocapture
+cargo test -p openstack-keystone-token-driver-fernet --test alloc_profile -- --nocapture
+```
+
+- Every stage prints `allocs` (allocations), `bytes` (requested in total) and
+  `peak_live` (most memory live at once). The budgets are the measured value
+  plus about 10% of slack. A change that makes a stage more expensive fails its
+  test: reduce the copies, or re-measure and raise the budget on purpose.
+- Counters are per thread, so measure on the test thread (`#[tokio::test]` is a
+  current-thread runtime). A test installs `quiet_tracing()` so the figures do
+  not depend on the tracing subscriber of other tests.
+- The allocator is the only `unsafe` code of the harness and lives in
+  `crates/alloc-profile`, the one crate that does not inherit the workspace
+  `unsafe_code = "forbid"` lint. A test binary installs it with
+  `#[global_allocator] static A: CountingAlloc = CountingAlloc;`.
+
 ## Advanced Development Environments
 
 ### Skaffold + Kubernetes
@@ -318,6 +343,7 @@ review (`cargo vet diff` plus the checklist in the ADR) and, ideally, a
 | `crates/*-sql`                 | SQL-backed persistence drivers (e.g. `identity-sql`, `catalog-sql`) using Sea-ORM                                                                                                                   |
 | `crates/*-raft`                | Raft-backed persistence drivers for distributed storage                                                                                                                                             |
 | `crates/config`                | Configuration parsing                                                                                                                                                                               |
+| `crates/alloc-profile`         | Counting allocator and helpers of the allocation-budget tests (test-only, not published)                                                                                                            |
 | `crates/webauthn`              | WebAuthn/Passkey support extension                                                                                                                                                                  |
 | `policy/`                      | OPA Rego policy files                                                                                                                                                                               |
 | `doc/src/adr/`                 | Architecture Decision Records                                                                                                                                                                       |

@@ -19,6 +19,7 @@ use axum::{
     response::IntoResponse,
 };
 use openstack_keystone_api_types::v4::mapping::MappingRuleSet;
+use openstack_keystone_core::policy::policy_object;
 
 use crate::api::auth::Auth;
 use crate::api::error::KeystoneApiError;
@@ -62,11 +63,11 @@ pub(super) async fn remove(
     if let Some(current) = current {
         state
             .policy_enforcer
-            .enforce(
+            .enforce_serialized(
                 "identity/mapping/ruleset/delete",
                 &user_auth,
-                serde_json::json!({"mapping": null}),
-                Some(serde_json::json!({"mapping": MappingRuleSet::from(current.clone())})),
+                &policy_object!({"mapping": null}),
+                Some(&policy_object!({"mapping": MappingRuleSet::from(current.clone())})),
             )
             .await?;
 

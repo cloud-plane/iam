@@ -114,7 +114,7 @@ impl TryFrom<&ValidatedSecurityContext> for RevocationEventListParametersBuilder
                 }
             }
 
-            Ok(builder.to_owned())
+            Ok(builder)
         } else if let AuthenticationContext::OnBehalfOf {
             root_jti,
             auth_time,
@@ -142,7 +142,7 @@ impl TryFrom<&ValidatedSecurityContext> for RevocationEventListParametersBuilder
                     builder.role_refs(roles.iter());
                 }
             }
-            Ok(builder.to_owned())
+            Ok(builder)
         } else {
             Err(RevokeProviderError::SecurityContextHasNoToken)
         }

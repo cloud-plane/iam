@@ -22,7 +22,7 @@ use openstack_keystone_core_types::mapping::error::MappingProviderError;
 use openstack_keystone_core_types::scope::Scope;
 
 use crate::api::error::KeystoneApiError;
-use crate::api::types::{Catalog, CatalogService};
+use crate::api::types::Catalog;
 use crate::api::v4::auth::token::types::TokenResponse as KeystoneTokenResponse;
 use crate::auth::SecurityContext;
 use crate::keystone::ServiceState;
@@ -194,20 +194,13 @@ pub(super) async fn build_token_response(
     let mut api_token = KeystoneTokenResponse {
         token: TokenBuilder::try_from(&vsc)?.build()?,
     };
-    let catalog = Catalog(
+    let catalog = Catalog::from(
         state
             .provider
             .get_catalog_provider()
             .get_catalog(&ExecutionContext::internal(state), true)
             .await?
-            .into_iter()
-            .map(|(s, es)| CatalogService {
-                id: s.id.clone(),
-                name: s.name(),
-                r#type: s.r#type,
-                endpoints: es.into_iter().map(Into::into).collect(),
-            })
-            .collect::<Vec<_>>(),
+            .as_slice(),
     );
     api_token.token.catalog = Some(catalog);
 

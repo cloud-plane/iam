@@ -20,7 +20,7 @@ use axum::{
     http::StatusCode,
     response::IntoResponse,
 };
-use serde_json::json;
+use openstack_keystone_core::policy::policy_object;
 
 use openstack_keystone_api_types::v3::role::{ImplyGroup, RoleInferenceRules};
 
@@ -59,10 +59,10 @@ pub(super) async fn list(
     // Policy enforcement first
     state
         .policy_enforcer
-        .enforce(
+        .enforce_serialized(
             "identity/role/imply_rule/list",
             &user_auth,
-            json!({
+            &policy_object!({
                 "role_imply_rule": {
                     "prior_role_id": prior_role_id
                 }

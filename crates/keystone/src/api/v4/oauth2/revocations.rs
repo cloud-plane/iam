@@ -21,6 +21,7 @@ use axum::{
     http::StatusCode,
     response::IntoResponse,
 };
+use openstack_keystone_core::policy::policy_object;
 
 use openstack_keystone_api_types::v4::oauth2_revocation::{
     Oauth2RevocationRequest, Oauth2RevocationResponse,
@@ -84,10 +85,10 @@ pub(super) async fn create(
 
     state
         .policy_enforcer
-        .enforce(
+        .enforce_serialized(
             "identity/oauth2/revocation/create",
             &user_auth,
-            serde_json::json!({"revocation": req, "domain_id": domain_id}),
+            &policy_object!({"revocation": req, "domain_id": domain_id}),
             None,
         )
         .await?;

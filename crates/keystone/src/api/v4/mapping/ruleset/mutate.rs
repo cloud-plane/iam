@@ -19,7 +19,7 @@ use axum::{
     http::StatusCode,
     response::IntoResponse,
 };
-use serde_json::json;
+use openstack_keystone_core::policy::policy_object;
 
 use openstack_keystone_api_types::v4::mapping::{
     MappingRuleSet, MappingRuleSetResponse, RuleMutationsRequest,
@@ -75,11 +75,11 @@ pub(super) async fn mutate(
 
     state
         .policy_enforcer
-        .enforce(
+        .enforce_serialized(
             "identity/mapping/ruleset/update",
             &user_auth,
-            json!({"mapping": req}),
-            Some(json!({"mapping": MappingRuleSet::from(current)})),
+            &policy_object!({"mapping": req}),
+            Some(&policy_object!({"mapping": MappingRuleSet::from(current)})),
         )
         .await?;
 

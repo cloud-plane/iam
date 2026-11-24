@@ -14,7 +14,7 @@
 
 //! K8s auth instance: create.
 use axum::{Json, debug_handler, extract::State, http::StatusCode, response::IntoResponse};
-use serde_json::json;
+use openstack_keystone_core::policy::policy_object;
 use validator::Validate;
 
 use openstack_keystone_api_types::k8s_auth::{
@@ -54,10 +54,10 @@ pub(super) async fn create(
     req.validate()?;
     state
         .policy_enforcer
-        .enforce(
+        .enforce_serialized(
             "identity/k8s_auth/instance/create",
             &user_auth,
-            json!({"instance": req.instance}),
+            &policy_object!({"instance": req.instance}),
             None,
         )
         .await?;

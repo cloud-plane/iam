@@ -4928,6 +4928,7 @@ dependencies = [
  "color-eyre",
  "dashmap",
  "derive_builder",
+ "erased-serde",
  "eyre",
  "futures-util",
  "governor",
@@ -5024,6 +5025,10 @@ dependencies = [
  "uuid",
  "validator",
 ]
+
+[[package]]
+name = "openstack-keystone-alloc-profile"
+version = "0.1.0"
 
 [[package]]
 name = "openstack-keystone-api-key-driver-raft"
@@ -5273,6 +5278,7 @@ dependencies = [
  "dashmap",
  "data-encoding",
  "derive_builder",
+ "erased-serde",
  "eyre",
  "futures-util",
  "governor",
@@ -5281,6 +5287,7 @@ dependencies = [
  "ipnet",
  "jsonwebtoken",
  "mockall",
+ "openstack-keystone-alloc-profile",
  "openstack-keystone-api-types",
  "openstack-keystone-auth-plugin-core",
  "openstack-keystone-auth-plugin-runtime",
@@ -5728,6 +5735,7 @@ dependencies = [
  "arc-swap",
  "async-trait",
  "criterion",
+ "erased-serde",
  "eyre",
  "openstack-keystone-core",
  "regorus",
@@ -5957,6 +5965,7 @@ dependencies = [
  "inventory",
  "itertools 0.15.0",
  "nix",
+ "openstack-keystone-alloc-profile",
  "openstack-keystone-config",
  "openstack-keystone-core",
  "openstack-keystone-core-types",

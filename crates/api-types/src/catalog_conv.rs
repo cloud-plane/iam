@@ -19,11 +19,42 @@ use crate::catalog as api_types;
 impl From<provider_types::Endpoint> for api_types::Endpoint {
     fn from(value: provider_types::Endpoint) -> Self {
         Self {
+            id: value.id,
+            interface: value.interface,
+            url: value.url,
+            region: value.region_id.clone(),
+            region_id: value.region_id,
+        }
+    }
+}
+
+/// Copy only the fields the catalog carries out of a shared endpoint.
+impl From<&provider_types::Endpoint> for api_types::Endpoint {
+    fn from(value: &provider_types::Endpoint) -> Self {
+        Self {
             id: value.id.clone(),
             interface: value.interface.clone(),
             url: value.url.clone(),
             region: value.region_id.clone(),
             region_id: value.region_id.clone(),
         }
+    }
+}
+
+/// Build the catalog of a token from the (shared) list of services and their
+/// endpoints, copying only what the response carries.
+impl From<&[(provider_types::Service, Vec<provider_types::Endpoint>)]> for api_types::Catalog {
+    fn from(value: &[(provider_types::Service, Vec<provider_types::Endpoint>)]) -> Self {
+        Self(
+            value
+                .iter()
+                .map(|(service, endpoints)| api_types::CatalogService {
+                    id: service.id.clone(),
+                    name: service.name(),
+                    r#type: service.r#type.clone(),
+                    endpoints: endpoints.iter().map(Into::into).collect(),
+                })
+                .collect(),
+        )
     }
 }

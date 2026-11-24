@@ -19,7 +19,7 @@ use axum::{
     http::StatusCode,
     response::IntoResponse,
 };
-use serde_json::json;
+use openstack_keystone_core::policy::{PolicyObject, policy_object};
 use validator::Validate;
 
 use crate::api::auth::Auth;
@@ -68,15 +68,17 @@ pub(super) async fn update(
         .get_token_provider()
         .get_token_restriction(&ExecutionContext::from_auth(&state, &user_auth), &id, false)
         .await?;
-    let existing_restriction = current.as_ref().map(|c| json!({"restriction": c}));
+    let existing_restriction = current
+        .as_ref()
+        .map(|c| PolicyObject::single("restriction", c));
 
     state
         .policy_enforcer
-        .enforce(
+        .enforce_serialized(
             "identity/token/token_restriction/update",
             &user_auth,
-            json!({"restriction": req.restriction}),
-            existing_restriction,
+            &policy_object!({"restriction": req.restriction}),
+            existing_restriction.as_ref().map(|v| v as _),
         )
         .await?;
 

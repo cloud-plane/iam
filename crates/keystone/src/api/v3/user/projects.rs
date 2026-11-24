@@ -18,7 +18,7 @@ use axum::{
     http::StatusCode,
     response::IntoResponse,
 };
-use serde_json::json;
+use openstack_keystone_core::policy::policy_object;
 use std::collections::HashSet;
 
 use openstack_keystone_core::auth::ExecutionContext;
@@ -78,11 +78,11 @@ pub(super) async fn projects(
 
     state
         .policy_enforcer
-        .enforce(
+        .enforce_serialized(
             "identity/user/project/list",
             &user_auth,
-            serde_json::Value::Null,
-            Some(json!({"user": current})),
+            &serde_json::Value::Null,
+            Some(&policy_object!({"user": current})),
         )
         .await?;
     if current.is_none() {
@@ -139,11 +139,11 @@ pub(super) async fn projects(
             }
             match state
                 .policy_enforcer
-                .enforce(
+                .enforce_serialized(
                     "identity/resource/project/show",
                     &user_auth,
-                    serde_json::Value::Null,
-                    Some(json!({"project": &project})),
+                    &serde_json::Value::Null,
+                    Some(&policy_object!({"project": &project})),
                 )
                 .await
             {

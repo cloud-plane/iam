@@ -78,10 +78,10 @@ pub(super) async fn start(
     state
         .core
         .policy_enforcer
-        .enforce(
+        .enforce_serialized(
             "identity/user/passkey/register/start",
             &user_auth,
-            serde_json::to_value(&user)?,
+            &user,
             None,
         )
         .await?;

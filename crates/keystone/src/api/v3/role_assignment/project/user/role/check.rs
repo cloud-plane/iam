@@ -18,7 +18,7 @@ use axum::{
     http::StatusCode,
     response::IntoResponse,
 };
-use serde_json::json;
+use openstack_keystone_core::policy::policy_object;
 use tracing::info;
 
 use openstack_keystone_core_types::assignment::Assignment;
@@ -109,10 +109,10 @@ pub(super) async fn check(
 
     state
         .policy_enforcer
-        .enforce(
+        .enforce_serialized(
             "identity/project/user/role/check",
             &user_auth,
-            json!({"user": user, "role": role, "project": project}),
+            &policy_object!({"user": user, "role": role, "project": project}),
             None,
         )
         .await?;

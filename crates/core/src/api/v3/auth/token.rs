@@ -33,31 +33,28 @@ impl TryFrom<&ValidatedSecurityContext> for TokenBuilder {
             BuilderError::Validation("security context does not contain a FernetToken".to_string())
         })?;
 
-        let mut response = TokenBuilder::default();
-        response.issued_at(*fernet.issued_at());
-        response.expires_at(*fernet.expires_at());
-        response.audit_ids(ctx.audit_ids().to_vec());
-        {
-            let mut methods: Vec<String> = ctx.auth_methods().iter().cloned().collect();
-            methods.sort();
-            response.methods(methods);
+        let mut methods: Vec<String> = ctx.auth_methods().iter().cloned().collect();
+        methods.sort();
+        let response = TokenBuilder::default()
+            .issued_at(*fernet.issued_at())
+            .expires_at(*fernet.expires_at())
+            .audit_ids(ctx.audit_ids().to_vec())
+            .methods(methods);
+
+        let response = fill_identity_info(response, ctx)?;
+
+        match ctx.authorization() {
+            Some(authz) => fill_scope(response, authz),
+            None => Ok(response),
         }
-
-        fill_identity_info(&mut response, ctx)?;
-
-        if let Some(authz) = ctx.authorization() {
-            fill_scope(&mut response, authz)?;
-        }
-
-        Ok(response)
     }
 }
 
 /// Fill identity information in the Token response.
 fn fill_identity_info(
-    response: &mut TokenBuilder,
+    response: TokenBuilder,
     ctx: &SecurityContext,
-) -> Result<(), BuilderError> {
+) -> Result<TokenBuilder, BuilderError> {
     match &ctx.principal().identity {
         IdentityInfo::User(user) => {
             let mut user_builder = UserBuilder::default();
@@ -75,7 +72,7 @@ fn fill_identity_info(
                     BuilderError::Validation("user identity: user_domain not populated".to_string())
                 })?;
             user_builder.domain(user_domain);
-            response.user(user_builder.build()?);
+            Ok(response.user(user_builder.build()?))
         }
         IdentityInfo::Principal(principal) => {
             let mut user_builder = UserBuilder::default();
@@ -93,48 +90,39 @@ fn fill_identity_info(
                     BuilderError::Validation("principal identity: domain not populated".to_string())
                 })?;
             user_builder.domain(identity_domain);
-            response.user(user_builder.build()?);
+            Ok(response.user(user_builder.build()?))
         }
     }
-    Ok(())
 }
 
 /// Fill the scope information in the Token response.
-fn fill_scope(response: &mut TokenBuilder, authz: &AuthzInfo) -> Result<(), BuilderError> {
-    match &authz.scope {
+fn fill_scope(response: TokenBuilder, authz: &AuthzInfo) -> Result<TokenBuilder, BuilderError> {
+    let response = match &authz.scope {
         ScopeInfo::Domain(core_domain) => {
             let api_domain: api_scope::Domain = core_domain.clone().into();
-            response.domain(api_domain);
+            response.domain(api_domain)
         }
         ScopeInfo::Project {
             project,
             project_domain,
-        } => {
-            let api_project = api_scope::Project {
-                id: project.id.clone(),
-                name: project.name.clone(),
-                domain: project_domain.into(),
-            };
-            response.project(api_project);
-        }
-        ScopeInfo::System(_system_id) => {
-            response.system(System { all: true });
-        }
-        ScopeInfo::TrustProject(tpi) => {
-            let api_project = api_scope::Project {
+        } => response.project(api_scope::Project {
+            id: project.id.clone(),
+            name: project.name.clone(),
+            domain: project_domain.into(),
+        }),
+        ScopeInfo::System(_system_id) => response.system(System { all: true }),
+        ScopeInfo::TrustProject(tpi) => response
+            .project(api_scope::Project {
                 id: tpi.project.id.clone(),
                 name: tpi.project.name.clone(),
                 domain: tpi.project_domain.clone().into(),
-            };
-            response.project(api_project);
-            response.trust(&tpi.trust);
-        }
-        ScopeInfo::Unscoped => {}
-    }
+            })
+            .trust(&tpi.trust),
+        ScopeInfo::Unscoped => response,
+    };
 
-    if let Some(roles) = authz.effective_roles() {
-        response.roles(roles.iter().cloned().map(Into::into).collect::<Vec<_>>());
-    }
-
-    Ok(())
+    Ok(match authz.effective_roles() {
+        Some(roles) => response.roles(roles.iter().cloned().map(Into::into).collect::<Vec<_>>()),
+        None => response,
+    })
 }

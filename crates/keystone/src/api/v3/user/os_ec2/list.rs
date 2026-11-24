@@ -19,7 +19,7 @@ use axum::{
     http::StatusCode,
     response::IntoResponse,
 };
-use serde_json::json;
+use openstack_keystone_core::policy::policy_object;
 
 use super::types::Ec2CredentialList;
 use crate::api::auth::Auth;
@@ -45,10 +45,10 @@ pub(super) async fn list(
 ) -> Result<impl IntoResponse, KeystoneApiError> {
     state
         .policy_enforcer
-        .enforce(
+        .enforce_serialized(
             "identity/os_ec2/read_credential",
             &user_auth,
-            json!({"user_id": &user_id}),
+            &policy_object!({"user_id": &user_id}),
             None,
         )
         .await?;

@@ -18,7 +18,7 @@ use axum::{
     http::StatusCode,
     response::IntoResponse,
 };
-use serde_json::json;
+use openstack_keystone_core::policy::policy_object;
 
 use crate::api::auth::Auth;
 use crate::api::error::KeystoneApiError;
@@ -47,11 +47,11 @@ pub(super) async fn delete(
 
     state
         .policy_enforcer
-        .enforce(
+        .enforce_serialized(
             "identity/os_ec2/delete_credential",
             &user_auth,
-            serde_json::Value::Null,
-            Some(json!({
+            &serde_json::Value::Null,
+            Some(&policy_object!({
                 "user_id": &user_id,
                 "credential": current.as_ref().map(super::ec2_credential_policy_input),
             })),

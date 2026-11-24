@@ -62,12 +62,21 @@ pub enum TokenProviderDriver {
     Jws,
 }
 
+impl TokenProviderDriver {
+    /// The name of the driver as used in the configuration and as the metric
+    /// label.
+    #[must_use]
+    pub fn as_str(&self) -> &'static str {
+        match self {
+            Self::Fernet => "fernet",
+            Self::Jws => "jws",
+        }
+    }
+}
+
 impl fmt::Display for TokenProviderDriver {
     fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
-        match self {
-            Self::Fernet => write!(f, "fernet"),
-            Self::Jws => write!(f, "jws"),
-        }
+        f.write_str(self.as_str())
     }
 }
 

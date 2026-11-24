@@ -15,13 +15,19 @@ use std::sync::Arc;
 use std::time::SystemTime;
 
 use reqwest::{Client, Url};
-use serde_json::{Value, json};
+use serde_json::Value;
 use tracing::{Instrument, Level, debug};
 
 use openstack_keystone_core::auth::ValidatedSecurityContext;
 
 pub use openstack_keystone_core::api::auth::Auth;
 pub use openstack_keystone_core::policy::*;
+
+/// The body of the OPA data API request.
+#[derive(serde::Serialize)]
+struct OpaRequest<'a> {
+    input: PolicyInput<'a>,
+}
 
 /// Policy factory.
 pub struct HttpPolicyEnforcer {
@@ -82,18 +88,6 @@ impl HttpPolicyEnforcer {
 
 #[async_trait::async_trait]
 impl PolicyEnforcer for HttpPolicyEnforcer {
-    #[tracing::instrument(
-        name = "policy.enforce",
-        skip_all,
-        fields(
-            entrypoint = policy_name,
-            input,
-            result,
-            duration_ms
-        ),
-        err(Debug),
-        level = Level::DEBUG
-    )]
     /// Enforces a policy decision using OPA.
     ///
     /// # Parameters
@@ -114,6 +108,34 @@ impl PolicyEnforcer for HttpPolicyEnforcer {
         target: Value,
         existing: Option<Value>,
     ) -> Result<PolicyEvaluationResult, PolicyError> {
+        self.enforce_serialized(
+            policy_name,
+            credentials,
+            &target,
+            existing.as_ref().map(|v| v as _),
+        )
+        .await
+    }
+
+    #[tracing::instrument(
+        name = "policy.enforce",
+        skip_all,
+        fields(
+            entrypoint = policy_name,
+            input,
+            result,
+            duration_ms
+        ),
+        err(Debug),
+        level = Level::DEBUG
+    )]
+    async fn enforce_serialized(
+        &self,
+        policy_name: &'static str,
+        credentials: &ValidatedSecurityContext,
+        target: &(dyn erased_serde::Serialize + Send + Sync),
+        existing: Option<&(dyn erased_serde::Serialize + Send + Sync)>,
+    ) -> Result<PolicyEvaluationResult, PolicyError> {
         let start = SystemTime::now();
         let span = tracing::Span::current();
 
@@ -129,11 +151,11 @@ impl PolicyEnforcer for HttpPolicyEnforcer {
             if let Some(denial) = service_delegation_denial(policy_name, &creds) {
                 return Err(PolicyError::Forbidden(denial));
             }
-            let input = json!({
-                "credentials": creds,
-                "target": target,
-                "existing": existing.unwrap_or(Value::Null),
-            });
+            let input = PolicyInput {
+                credentials: &creds,
+                target,
+                existing,
+            };
 
             debug!("checking policy decision with OPA using http");
             let url = self.base_url.join(policy_name.as_ref())?;
@@ -142,7 +164,7 @@ impl PolicyEnforcer for HttpPolicyEnforcer {
             let res: PolicyEvaluationResult = async {
                 self.http_client
                     .post(url)
-                    .json(&json!({"input": input}))
+                    .json(&OpaRequest { input })
                     .send()
                     .await
                     .map_err(|e| PolicyError::IO(std::io::Error::other(e)))?
@@ -157,7 +179,10 @@ impl PolicyEnforcer for HttpPolicyEnforcer {
             ))
             .await?;
 
-            span.record("result", serde_json::to_string(&res)?);
+            // Serialising the result is only worth it when something records it.
+            if !span.is_disabled() {
+                span.record("result", serde_json::to_string(&res)?);
+            }
             debug!("authorized={}", res.allow());
             if !res.allow() {
                 return Err(PolicyError::Forbidden(res));

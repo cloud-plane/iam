@@ -19,6 +19,7 @@ use axum::{
     http::StatusCode,
     response::IntoResponse,
 };
+use openstack_keystone_core::policy::policy_object;
 
 use openstack_keystone_api_types::PaginationQuery;
 use openstack_keystone_api_types::v4::oauth2_client::{
@@ -71,10 +72,10 @@ pub(super) async fn list(
 ) -> Result<impl IntoResponse, KeystoneApiError> {
     state
         .policy_enforcer
-        .enforce(
+        .enforce_serialized(
             "identity/oauth2/client/list",
             &user_auth,
-            serde_json::json!({"domain_id": domain_id, "oauth2_client": query}),
+            &policy_object!({"domain_id": domain_id, "oauth2_client": query}),
             None,
         )
         .await?;

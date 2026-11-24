@@ -17,10 +17,10 @@
 //! `replace`; reuses the `identity/scim/group/update` OPA policy, same as
 //! `PUT`.
 
+use openstack_keystone_core::policy::policy_object;
 use std::collections::HashSet;
 
 use axum::{Json, extract::Path, extract::State, http::HeaderMap};
-use serde_json::json;
 
 use openstack_keystone_core::api::KeystoneApiError;
 use openstack_keystone_core::api::api_key_auth::ScimRealmAuth;
@@ -67,11 +67,11 @@ pub(super) async fn patch(
 
     state
         .policy_enforcer
-        .enforce(
+        .enforce_serialized(
             "identity/scim/group/update",
             &ctx,
-            serde_json::Value::Null,
-            Some(json!({"group": existing_group})),
+            &serde_json::Value::Null,
+            Some(&policy_object!({"group": existing_group})),
         )
         .await?;
 

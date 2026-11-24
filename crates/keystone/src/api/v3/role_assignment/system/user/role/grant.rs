@@ -18,7 +18,7 @@ use axum::{
     http::StatusCode,
     response::IntoResponse,
 };
-use serde_json::json;
+use openstack_keystone_core::policy::policy_object;
 use tracing::info;
 
 use openstack_keystone_core_types::assignment::AssignmentCreate;
@@ -71,12 +71,7 @@ pub(super) async fn grant(
 
     state
         .policy_enforcer
-        .enforce(
-            "identity/system/user/role/grant",
-            &user_auth,
-            json!({"user": policy_target(&user, &user_id), "role": policy_target(&role, &role_id)}),
-            None,
-        )
+        .enforce_serialized("identity/system/user/role/grant", &user_auth, &policy_object!({"user": policy_target(&user, &user_id), "role": policy_target(&role, &role_id)}), None)
         .await?;
 
     let user = user.ok_or_else(|| {

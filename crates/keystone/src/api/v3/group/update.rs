@@ -18,7 +18,7 @@ use axum::{
     http::StatusCode,
     response::IntoResponse,
 };
-use serde_json::json;
+use openstack_keystone_core::policy::{PolicyObject, policy_object};
 use validator::Validate;
 
 use super::types::{Group, GroupResponse, GroupUpdateRequest};
@@ -58,15 +58,15 @@ pub(super) async fn update(
         .get_group(&ExecutionContext::from_auth(&state, &user_auth), &group_id)
         .await?;
 
-    let existing_group = current.as_ref().map(|c| json!({"group": c}));
+    let existing_group = current.as_ref().map(|c| PolicyObject::single("group", c));
 
     state
         .policy_enforcer
-        .enforce(
+        .enforce_serialized(
             "identity/group/update",
             &user_auth,
-            json!({"group": req.group}),
-            existing_group,
+            &policy_object!({"group": req.group}),
+            existing_group.as_ref().map(|v| v as _),
         )
         .await?;
 

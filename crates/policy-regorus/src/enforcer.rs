@@ -18,12 +18,12 @@ use std::sync::Arc;
 use std::time::Instant;
 
 use arc_swap::ArcSwap;
-use serde_json::{Value, json};
+use serde_json::Value;
 use tracing::{Level, debug};
 
 use openstack_keystone_core::auth::ValidatedSecurityContext;
 use openstack_keystone_core::policy::{
-    Credentials, PolicyEnforcer, PolicyError, PolicyEvaluationResult, Violation,
+    Credentials, PolicyEnforcer, PolicyError, PolicyEvaluationResult, PolicyInput, Violation,
     service_delegation_denial,
 };
 
@@ -93,6 +93,27 @@ impl RegorusPolicyEnforcer {
                 format!("unknown policy {policy_name}"),
             ))
         })?;
+        evaluate_entrypoint(ep, regorus::Value::from(input))
+    }
+
+    /// Evaluate the policy for the OPA input document given as a JSON string.
+    ///
+    /// Parses straight into the `regorus` value, without a `serde_json::Value`
+    /// tree in between.
+    pub(crate) fn evaluate_json(
+        &self,
+        policy_name: &str,
+        input: &str,
+    ) -> Result<PolicyEvaluationResult, PolicyError> {
+        let set = self.policies.load();
+        let ep = set.entrypoints.get(policy_name).ok_or_else(|| {
+            PolicyError::IO(std::io::Error::new(
+                std::io::ErrorKind::NotFound,
+                format!("unknown policy {policy_name}"),
+            ))
+        })?;
+        let input = regorus::Value::from_json_str(input)
+            .map_err(|e| PolicyError::Compilation(eyre_report(e)))?;
         evaluate_entrypoint(ep, input)
     }
 }
@@ -112,9 +133,8 @@ fn eyre_report(e: impl std::fmt::Display) -> eyre::Report {
 
 fn evaluate_entrypoint(
     ep: &Entrypoint,
-    input: Value,
+    input: regorus::Value,
 ) -> Result<PolicyEvaluationResult, PolicyError> {
-    let input = regorus::Value::from(input);
     // `allow` is `default false`; anything but an explicit `true` is a deny.
     let allow = matches!(eval_rule(&ep.allow, &input)?, regorus::Value::Bool(true));
     let can_see_other_domain_resources = match &ep.can_see_other_domain_resources {
@@ -148,6 +168,22 @@ fn evaluate_entrypoint(
 
 #[async_trait::async_trait]
 impl PolicyEnforcer for RegorusPolicyEnforcer {
+    async fn enforce(
+        &self,
+        policy_name: &'static str,
+        credentials: &ValidatedSecurityContext,
+        target: Value,
+        existing: Option<Value>,
+    ) -> Result<PolicyEvaluationResult, PolicyError> {
+        self.enforce_serialized(
+            policy_name,
+            credentials,
+            &target,
+            existing.as_ref().map(|v| v as _),
+        )
+        .await
+    }
+
     #[tracing::instrument(
         name = "policy.enforce",
         skip_all,
@@ -155,12 +191,12 @@ impl PolicyEnforcer for RegorusPolicyEnforcer {
         err(Debug),
         level = Level::DEBUG
     )]
-    async fn enforce(
+    async fn enforce_serialized(
         &self,
         policy_name: &'static str,
         credentials: &ValidatedSecurityContext,
-        target: Value,
-        existing: Option<Value>,
+        target: &(dyn erased_serde::Serialize + Send + Sync),
+        existing: Option<&(dyn erased_serde::Serialize + Send + Sync)>,
     ) -> Result<PolicyEvaluationResult, PolicyError> {
         let start = Instant::now();
         let span = tracing::Span::current();
@@ -172,15 +208,18 @@ impl PolicyEnforcer for RegorusPolicyEnforcer {
             if let Some(denial) = service_delegation_denial(policy_name, &creds) {
                 return Err(PolicyError::Forbidden(denial));
             }
-            let input = json!({
-                "credentials": creds,
-                "target": target,
-                "existing": existing.unwrap_or(Value::Null),
-            });
+            let input = serde_json::to_string(&PolicyInput {
+                credentials: &creds,
+                target,
+                existing,
+            })?;
             debug!("checking policy decision with regorus");
             // Evaluation takes microseconds and is CPU bound: run it inline.
-            let res = self.evaluate(policy_name, input)?;
-            span.record("result", serde_json::to_string(&res)?);
+            let res = self.evaluate_json(policy_name, &input)?;
+            // Serialising the result is only worth it when something records it.
+            if !span.is_disabled() {
+                span.record("result", serde_json::to_string(&res)?);
+            }
             debug!("authorized={}", res.allow());
             if !res.allow() {
                 return Err(PolicyError::Forbidden(res));

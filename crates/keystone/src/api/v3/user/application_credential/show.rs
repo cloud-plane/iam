@@ -18,7 +18,7 @@ use axum::{
     http::StatusCode,
     response::IntoResponse,
 };
-use serde_json::json;
+use openstack_keystone_core::policy::policy_object;
 
 use super::types::application_credential::ApplicationCredentialResponse;
 use crate::api::auth::Auth;
@@ -59,11 +59,11 @@ pub(super) async fn show(
     // Policy check — uses stored object's real user_id
     state
         .policy_enforcer
-        .enforce(
+        .enforce_serialized(
             "identity/user/application_credential/show",
             &user_auth,
-            serde_json::Value::Null,
-            Some(json!({"application_credential": serde_json::to_value(&current)?})),
+            &serde_json::Value::Null,
+            Some(&policy_object!({"application_credential": serde_json::to_value(&current)?})),
         )
         .await?;
 

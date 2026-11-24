@@ -19,6 +19,7 @@ use axum::{
     http::StatusCode,
     response::IntoResponse,
 };
+use openstack_keystone_core::policy::policy_object;
 
 use openstack_keystone_api_types::PaginationQuery;
 use openstack_keystone_api_types::v4::api_key::{ApiKey, ApiKeyList, ApiKeyListParameters};
@@ -67,10 +68,10 @@ pub(super) async fn list(
 ) -> Result<impl IntoResponse, KeystoneApiError> {
     state
         .policy_enforcer
-        .enforce(
+        .enforce_serialized(
             "identity/api_key/list",
             &user_auth,
-            serde_json::json!({"api_key": query}),
+            &policy_object!({"api_key": query}),
             None,
         )
         .await?;

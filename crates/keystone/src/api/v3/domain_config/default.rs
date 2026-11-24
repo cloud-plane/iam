@@ -17,6 +17,7 @@
 //! Read-only, and served from the running service configuration rather than
 //! from storage.
 
+use openstack_keystone_core::policy::policy_object;
 use std::str::FromStr;
 
 use axum::{
@@ -91,10 +92,10 @@ pub(super) async fn show_group(
 
     state
         .policy_enforcer
-        .enforce(
+        .enforce_serialized(
             "identity/domain_config/get_default",
             &user_auth,
-            json!({"group": group.as_str()}),
+            &policy_object!({"group": group.as_str()}),
             None,
         )
         .await?;
@@ -132,10 +133,10 @@ pub(super) async fn show_option(
 
     state
         .policy_enforcer
-        .enforce(
+        .enforce_serialized(
             "identity/domain_config/get_default",
             &user_auth,
-            json!({"group": group.as_str(), "option": option}),
+            &policy_object!({"group": group.as_str(), "option": option}),
             None,
         )
         .await?;

@@ -19,7 +19,7 @@ use axum::{
     http::StatusCode,
     response::IntoResponse,
 };
-use serde_json::json;
+use openstack_keystone_core::policy::policy_object;
 
 use crate::api::auth::Auth;
 use crate::api::error::KeystoneApiError;
@@ -58,10 +58,10 @@ pub(super) async fn check(
     // Policy enforcement first
     state
         .policy_enforcer
-        .enforce(
+        .enforce_serialized(
             "identity/role/imply_rule/show",
             &user_auth,
-            json!({
+            &policy_object!({
                 "role_imply_rule": {
                     "prior_role_id": prior_role_id,
                     "implied_role_id": implied_role_id

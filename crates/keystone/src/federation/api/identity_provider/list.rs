@@ -19,7 +19,7 @@ use axum::{
     http::StatusCode,
     response::IntoResponse,
 };
-use serde_json::json;
+use openstack_keystone_core::policy::policy_object;
 use std::collections::HashSet;
 use validator::Validate;
 
@@ -68,10 +68,10 @@ pub(super) async fn list(
     query.validate()?;
     let res = state
         .policy_enforcer
-        .enforce(
+        .enforce_serialized(
             "identity/federation/identity_provider/list",
             &user_auth,
-            json!({"identity_provider": query}),
+            &policy_object!({"identity_provider": query}),
             None,
         )
         .await?;

@@ -17,7 +17,7 @@ use axum::{
     http::StatusCode,
     response::IntoResponse,
 };
-use serde_json::json;
+use openstack_keystone_core::policy::policy_object;
 
 use super::types::RegisteredLimit;
 use crate::api::auth::Auth;
@@ -60,11 +60,11 @@ pub(super) async fn delete(
 
     state
         .policy_enforcer
-        .enforce(
+        .enforce_serialized(
             "identity/registered_limit/delete",
             &user_auth,
-            serde_json::Value::Null,
-            Some(json!({"registered_limit": current})),
+            &serde_json::Value::Null,
+            Some(&policy_object!({"registered_limit": current})),
         )
         .await?;
 

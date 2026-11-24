@@ -18,7 +18,7 @@ use axum::{
     http::StatusCode,
     response::IntoResponse,
 };
-use serde_json::json;
+use openstack_keystone_core::policy::policy_object;
 use tracing::info;
 
 use openstack_keystone_core_types::assignment::AssignmentCreate;
@@ -84,12 +84,7 @@ pub(super) async fn grant(
     // unauthorized callers cannot probe for the existence of ids.
     state
         .policy_enforcer
-        .enforce(
-            "identity/project/group/role/grant",
-            &user_auth,
-            json!({"project": policy_target(&project, &project_id), "group": policy_target(&group, &group_id), "role": policy_target(&role, &role_id)}),
-            None,
-        )
+        .enforce_serialized("identity/project/group/role/grant", &user_auth, &policy_object!({"project": policy_target(&project, &project_id), "group": policy_target(&group, &group_id), "role": policy_target(&role, &role_id)}), None)
         .await?;
 
     let project = project.ok_or_else(|| {

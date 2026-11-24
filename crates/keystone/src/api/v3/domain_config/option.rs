@@ -14,6 +14,7 @@
 //! # Option-scoped domain configuration API
 
 use openstack_keystone_core::auth::ExecutionContext;
+use openstack_keystone_core::policy::policy_object;
 use std::str::FromStr;
 
 use axum::{
@@ -21,7 +22,6 @@ use axum::{
     http::StatusCode,
     response::IntoResponse,
 };
-use serde_json::json;
 
 use super::types::{DomainConfigRequest, DomainConfigResponse};
 use crate::api::auth::Auth;
@@ -54,10 +54,10 @@ pub(super) async fn show(
 
     state
         .policy_enforcer
-        .enforce(
+        .enforce_serialized(
             "identity/domain_config/show",
             &user_auth,
-            json!({"domain_id": domain_id, "group": group.as_str(), "option": option}),
+            &policy_object!({"domain_id": domain_id, "group": group.as_str(), "option": option}),
             None,
         )
         .await?;
@@ -119,10 +119,10 @@ pub(super) async fn update(
     // policy input (security model, invariant 6).
     state
         .policy_enforcer
-        .enforce(
+        .enforce_serialized(
             "identity/domain_config/update",
             &user_auth,
-            json!({"domain_id": domain_id, "group": group.as_str(), "option": option}),
+            &policy_object!({"domain_id": domain_id, "group": group.as_str(), "option": option}),
             None,
         )
         .await?;
@@ -165,10 +165,10 @@ pub(super) async fn remove(
 
     state
         .policy_enforcer
-        .enforce(
+        .enforce_serialized(
             "identity/domain_config/delete",
             &user_auth,
-            json!({"domain_id": domain_id, "group": group.as_str(), "option": option}),
+            &policy_object!({"domain_id": domain_id, "group": group.as_str(), "option": option}),
             None,
         )
         .await?;

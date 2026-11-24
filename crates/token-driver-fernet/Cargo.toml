@@ -37,6 +37,7 @@ validator = { workspace = true, features = ["derive"] }
 base64urlsafedata.workspace = true
 config.workspace = true
 criterion = { workspace = true, features = ["async_tokio"] }
+openstack-keystone-alloc-profile.workspace = true
 tempfile.workspace = true
 tokio = { workspace = true, features = ["macros", "rt-multi-thread"]}
 

@@ -17,7 +17,7 @@ use axum::{
     http::StatusCode,
     response::IntoResponse,
 };
-use serde_json::json;
+use openstack_keystone_core::policy::policy_object;
 use validator::Validate;
 
 use openstack_keystone_api_types::PaginationQuery;
@@ -74,11 +74,11 @@ pub(super) async fn list(
 
     state
         .policy_enforcer
-        .enforce(
+        .enforce_serialized(
             "identity/group/user/list",
             &user_auth,
-            serde_json::Value::Null,
-            Some(json!({"group": group})),
+            &serde_json::Value::Null,
+            Some(&policy_object!({"group": group})),
         )
         .await?;
     if group.is_none() {
@@ -119,11 +119,11 @@ pub(super) async fn list(
         },
         |item: User| async move {
             match enforcer
-                .enforce(
+                .enforce_serialized(
                     "identity/user/show",
                     auth,
-                    serde_json::Value::Null,
-                    Some(json!({"user": &item})),
+                    &serde_json::Value::Null,
+                    Some(&policy_object!({"user": &item})),
                 )
                 .await
             {

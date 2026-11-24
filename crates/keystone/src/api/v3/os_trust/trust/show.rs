@@ -18,7 +18,7 @@ use axum::{
     http::StatusCode,
     response::IntoResponse,
 };
-use serde_json::json;
+use openstack_keystone_core::policy::policy_object;
 
 use openstack_keystone_api_types::v3::trust::{Trust, TrustResponse};
 
@@ -55,11 +55,11 @@ pub(super) async fn show(
 
     state
         .policy_enforcer
-        .enforce(
+        .enforce_serialized(
             "identity/trust/show",
             &user_auth,
-            serde_json::Value::Null,
-            Some(json!({"trust": current})),
+            &serde_json::Value::Null,
+            Some(&policy_object!({"trust": current})),
         )
         .await?;
 

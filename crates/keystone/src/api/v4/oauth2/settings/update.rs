@@ -24,6 +24,7 @@ use axum::{
 use openstack_keystone_api_types::v4::oauth2_settings::{
     DpopMode, Oauth2DomainSettings, Oauth2DomainSettingsResponse, Oauth2DomainSettingsUpdateRequest,
 };
+use openstack_keystone_core::policy::policy_object;
 
 use crate::api::auth::Auth;
 use crate::api::error::KeystoneApiError;
@@ -70,15 +71,10 @@ pub(super) async fn update(
     let global = state.config_manager.config.read().await.oauth2.dpop;
     state
         .policy_enforcer
-        .enforce(
-            "identity/oauth2/settings/update",
-            &user_auth,
-            serde_json::json!({"oauth2_settings": {
+        .enforce_serialized("identity/oauth2/settings/update", &user_auth, &policy_object!({"oauth2_settings": {
                 "dpop": resulting,
                 "global_dpop": openstack_keystone_api_types::v4::oauth2_settings::DpopMode::from(global),
-            }}),
-            Some(serde_json::json!({"oauth2_settings": current})),
-        )
+            }}), Some(&policy_object!({"oauth2_settings": current})))
         .await?;
 
     // Only a change that switches DPoP on needs the server to be able to

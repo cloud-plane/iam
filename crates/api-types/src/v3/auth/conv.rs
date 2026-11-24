@@ -89,15 +89,15 @@ impl TryFrom<&openstack_keystone_core_types::token::FernetToken> for api_types::
     fn try_from(
         value: &openstack_keystone_core_types::token::FernetToken,
     ) -> Result<Self, Self::Error> {
-        let mut token = api_types::TokenBuilder::default();
-        token.user(
-            api_types::UserBuilder::default()
-                .id(value.user_id())
-                .build()?,
-        );
-        token.methods(value.methods().clone());
-        token.audit_ids(value.audit_ids().clone());
-        token.expires_at(*value.expires_at());
-        token.build()
+        api_types::TokenBuilder::default()
+            .user(
+                api_types::UserBuilder::default()
+                    .id(value.user_id())
+                    .build()?,
+            )
+            .methods(value.methods().clone())
+            .audit_ids(value.audit_ids().clone())
+            .expires_at(*value.expires_at())
+            .build()
     }
 }

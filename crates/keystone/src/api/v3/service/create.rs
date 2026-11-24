@@ -17,7 +17,7 @@ use axum::{
     http::StatusCode,
     response::IntoResponse,
 };
-use serde_json::json;
+use openstack_keystone_core::policy::policy_object;
 use validator::Validate;
 
 use super::types::{ServiceCreateRequest, ServiceResponse};
@@ -50,10 +50,10 @@ pub(super) async fn create(
 
     state
         .policy_enforcer
-        .enforce(
+        .enforce_serialized(
             "identity/service/create",
             &user_auth,
-            json!({"service": payload.service}),
+            &policy_object!({"service": payload.service}),
             None,
         )
         .await?;

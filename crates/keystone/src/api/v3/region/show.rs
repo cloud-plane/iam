@@ -18,7 +18,7 @@ use axum::{
     http::StatusCode,
     response::IntoResponse,
 };
-use serde_json::json;
+use openstack_keystone_core::policy::policy_object;
 
 use openstack_keystone_api_types::v3::region::{Region, RegionResponse};
 
@@ -55,11 +55,11 @@ pub(super) async fn show(
 
     state
         .policy_enforcer
-        .enforce(
+        .enforce_serialized(
             "identity/region/show",
             &user_auth,
-            serde_json::Value::Null,
-            Some(json!({"region": current})),
+            &serde_json::Value::Null,
+            Some(&policy_object!({"region": current})),
         )
         .await?;
 

@@ -18,7 +18,7 @@ use axum::{
     http::StatusCode,
     response::IntoResponse,
 };
-use serde_json::json;
+use openstack_keystone_core::policy::policy_object;
 use validator::Validate;
 
 use openstack_keystone_api_types::PaginationQuery;
@@ -54,10 +54,10 @@ pub(super) async fn list(
     query.validate()?;
     state
         .policy_enforcer
-        .enforce(
+        .enforce_serialized(
             "identity/user/list",
             &user_auth,
-            json!({"user": query}),
+            &policy_object!({"user": query}),
             None,
         )
         .await?;

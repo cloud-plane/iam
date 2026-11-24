@@ -18,12 +18,13 @@ use axum::{
     http::{HeaderMap, StatusCode},
     response::IntoResponse,
 };
-use serde_json::{Value, json, to_value};
+use serde_json::Value;
 use tracing::error;
 
 use openstack_keystone_api_types::v3::auth::token::TokenBuilder;
 use openstack_keystone_core::auth::ExecutionContext;
 
+use crate::api::v3::auth::token::types::ExistingToken;
 use crate::api::{auth::Auth, error::KeystoneApiError};
 use crate::keystone::ServiceState;
 
@@ -81,11 +82,11 @@ pub(super) async fn delete(
 
     state
         .policy_enforcer
-        .enforce(
+        .enforce_serialized(
             "identity/auth/token/revoke",
             &user_auth,
-            Value::Null,
-            Some(to_value(json!({"token": &token}))?),
+            &Value::Null,
+            Some(&ExistingToken { token: &token }),
         )
         .await?;
 

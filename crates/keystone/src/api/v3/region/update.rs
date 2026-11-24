@@ -18,7 +18,7 @@ use axum::{
     http::StatusCode,
     response::IntoResponse,
 };
-use serde_json::json;
+use openstack_keystone_core::policy::{PolicyObject, policy_object};
 use validator::Validate;
 
 use super::types::{Region, RegionResponse, RegionUpdateRequest};
@@ -59,15 +59,15 @@ pub(super) async fn update(
         .get_region(&ExecutionContext::from_auth(&state, &user_auth), &region_id)
         .await?;
 
-    let existing_region = current.as_ref().map(|c| json!({"region": c}));
+    let existing_region = current.as_ref().map(|c| PolicyObject::single("region", c));
 
     state
         .policy_enforcer
-        .enforce(
+        .enforce_serialized(
             "identity/region/update",
             &user_auth,
-            json!({"region": req.region}),
-            existing_region,
+            &policy_object!({"region": req.region}),
+            existing_region.as_ref().map(|v| v as _),
         )
         .await?;
 

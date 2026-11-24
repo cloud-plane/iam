@@ -19,7 +19,7 @@ use axum::{
     response::IntoResponse,
 };
 use openstack_keystone_core::auth::ExecutionContext;
-use serde_json::json;
+use openstack_keystone_core::policy::policy_object;
 
 use super::types::{DomainConfigRequest, DomainConfigResponse};
 use crate::api::auth::Auth;
@@ -56,10 +56,10 @@ pub(super) async fn create(
     let policy_config = serde_json::to_value(&config)?;
     state
         .policy_enforcer
-        .enforce(
+        .enforce_serialized(
             "identity/domain_config/create",
             &user_auth,
-            json!({"domain_id": domain_id, "config": policy_config}),
+            &policy_object!({"domain_id": domain_id, "config": policy_config}),
             None,
         )
         .await?;

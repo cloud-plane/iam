@@ -17,7 +17,8 @@
 //! alternate write mechanism for the same resource/authorization concern
 //! `PUT` already enforces, not a distinct one.
 
-use serde_json::{Value, json};
+use openstack_keystone_core::policy::policy_object;
+use serde_json::Value;
 
 use axum::{Json, extract::Path, extract::State, http::HeaderMap};
 
@@ -62,11 +63,11 @@ pub(super) async fn patch(
 
     state
         .policy_enforcer
-        .enforce(
+        .enforce_serialized(
             "identity/scim/user/update",
             &ctx,
-            serde_json::Value::Null,
-            Some(json!({"user": existing_user})),
+            &serde_json::Value::Null,
+            Some(&policy_object!({"user": existing_user})),
         )
         .await?;
 

@@ -18,6 +18,7 @@ use axum::{
     http::StatusCode,
     response::IntoResponse,
 };
+use openstack_keystone_core::policy::policy_object;
 use serde_json::json;
 use validator::Validate;
 
@@ -56,10 +57,10 @@ pub(super) async fn list(
     target["user_id"] = json!(user_id);
     state
         .policy_enforcer
-        .enforce(
+        .enforce_serialized(
             "identity/user/application_credential/list",
             &user_auth,
-            json!({"application_credential": target}),
+            &policy_object!({"application_credential": target}),
             None,
         )
         .await?;

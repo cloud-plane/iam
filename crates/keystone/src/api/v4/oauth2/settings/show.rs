@@ -21,6 +21,7 @@ use axum::{
 use openstack_keystone_api_types::v4::oauth2_settings::{
     Oauth2DomainSettings, Oauth2DomainSettingsResponse,
 };
+use openstack_keystone_core::policy::policy_object;
 
 use crate::api::auth::Auth;
 use crate::api::error::KeystoneApiError;
@@ -63,11 +64,11 @@ pub(super) async fn show(
 
     state
         .policy_enforcer
-        .enforce(
+        .enforce_serialized(
             "identity/oauth2/settings/show",
             &user_auth,
-            serde_json::Value::Null,
-            Some(serde_json::json!({"oauth2_settings": current})),
+            &serde_json::Value::Null,
+            Some(&policy_object!({"oauth2_settings": current})),
         )
         .await?;
 

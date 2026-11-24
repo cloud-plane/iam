@@ -13,3 +13,13 @@
 // SPDX-License-Identifier: Apache-2.0
 
 pub use openstack_keystone_api_types::v3::auth::token::*;
+
+/// The policy `existing` object of the token show and revoke policies.
+///
+/// Borrows the response token, so the policy input is serialized straight from
+/// it instead of from an intermediate JSON value tree.
+#[derive(serde::Serialize)]
+pub(super) struct ExistingToken<'a> {
+    /// The stored token.
+    pub token: &'a Token,
+}

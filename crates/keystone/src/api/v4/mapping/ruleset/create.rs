@@ -17,6 +17,7 @@ use axum::{Json, extract::State, http::StatusCode, response::IntoResponse};
 use openstack_keystone_api_types::v4::mapping::{
     MappingRuleSet, MappingRuleSetCreateRequest, MappingRuleSetResponse,
 };
+use openstack_keystone_core::policy::policy_object;
 use validator::Validate;
 
 use crate::api::auth::Auth;
@@ -51,10 +52,10 @@ pub(super) async fn create(
 
     state
         .policy_enforcer
-        .enforce(
+        .enforce_serialized(
             "identity/mapping/ruleset/create",
             &user_auth,
-            serde_json::json!({"mapping": req.mapping}),
+            &policy_object!({"mapping": req.mapping}),
             None,
         )
         .await?;

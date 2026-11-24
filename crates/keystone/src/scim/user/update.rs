@@ -15,7 +15,7 @@
 //! §3.C, §4, §5.E).
 
 use axum::{Json, extract::Path, extract::State, http::HeaderMap};
-use serde_json::json;
+use openstack_keystone_core::policy::policy_object;
 
 use openstack_keystone_core::api::api_key_auth::ScimRealmAuth;
 use openstack_keystone_core::auth::ExecutionContext;
@@ -53,11 +53,11 @@ pub(super) async fn update(
 
     state
         .policy_enforcer
-        .enforce(
+        .enforce_serialized(
             "identity/scim/user/update",
             &ctx,
-            json!({"user": {"user_name": req.user_name}}),
-            Some(json!({"user": existing_user})),
+            &policy_object!({"user": {"user_name": req.user_name}}),
+            Some(&policy_object!({"user": existing_user})),
         )
         .await?;
 

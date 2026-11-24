@@ -324,7 +324,7 @@ impl FernetTokenProvider {
                 other => Err(FernetDriverError::InvalidTokenType(other)),
             }?;
             token.set_issued_at(timestamp);
-            Ok(token.to_owned())
+            Ok(token)
         } else {
             Err(FernetDriverError::InvalidToken)
         }
@@ -523,21 +523,17 @@ impl TokenBackend for FernetTokenProvider {
     }
 }
 
-/// Decode the fernet payload as Base64_urlsafe.
-///
-/// # Parameters
-/// - `input`: The Base64 encoded input string.
-///
-/// # Returns
-/// A `Result` containing the decoded bytes if successful, or a
-/// `base64::DecodeError`.
-fn b64_decode_url(input: &str) -> std::result::Result<Vec<u8>, base64::DecodeError> {
-    base64::engine::general_purpose::URL_SAFE_NO_PAD.decode(input.trim_end_matches('='))
-}
+/// Number of base64 characters that encode the fernet version byte and the
+/// creation timestamp: the first 9 bytes of the token, which is exactly 12
+/// characters without padding.
+const FERNET_HEADER_B64_LEN: usize = 12;
 
 /// Get the fernet payload creation timestamp.
 ///
 /// Extract the payload creation timestamp in the UTC.
+///
+/// Only the header of the token is decoded. The integrity of the whole token
+/// is verified by the decryption, which this is called after.
 ///
 /// # Parameters
 /// - `payload`: The fernet token payload.
@@ -546,10 +542,16 @@ fn b64_decode_url(input: &str) -> std::result::Result<Vec<u8>, base64::DecodeErr
 /// A `Result` containing the `DateTime<Utc>` if successful, or a
 /// `FernetDriverError`.
 fn get_fernet_timestamp(payload: &str) -> Result<DateTime<Utc>, FernetDriverError> {
-    let data = b64_decode_url(payload)
+    let header = payload
+        .as_bytes()
+        .get(..FERNET_HEADER_B64_LEN)
+        .ok_or(FernetDriverError::FernetDecryption(fernet::DecryptionError))?;
+    let mut data = [0u8; FERNET_HEADER_B64_LEN];
+    let len = base64::engine::general_purpose::URL_SAFE_NO_PAD
+        .decode_slice(header, &mut data)
         .map_err(|_| FernetDriverError::FernetDecryption(fernet::DecryptionError))?;
 
-    let mut input = Cursor::new(data);
+    let mut input = Cursor::new(&data[..len]);
 
     match input.read_u8() {
         Ok(0x80) => {}

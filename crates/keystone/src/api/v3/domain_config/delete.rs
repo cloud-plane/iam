@@ -19,7 +19,7 @@ use axum::{
     response::IntoResponse,
 };
 use openstack_keystone_core::auth::ExecutionContext;
-use serde_json::json;
+use openstack_keystone_core::policy::policy_object;
 
 use crate::api::auth::Auth;
 use crate::api::error::KeystoneApiError;
@@ -44,10 +44,10 @@ pub(super) async fn remove(
 ) -> Result<impl IntoResponse, KeystoneApiError> {
     state
         .policy_enforcer
-        .enforce(
+        .enforce_serialized(
             "identity/domain_config/delete",
             &user_auth,
-            json!({"domain_id": domain_id}),
+            &policy_object!({"domain_id": domain_id}),
             None,
         )
         .await?;

@@ -19,7 +19,8 @@ use axum::{
     http::StatusCode,
     response::IntoResponse,
 };
-use serde_json::{Value, json};
+use openstack_keystone_core::policy::policy_object;
+use serde_json::Value;
 use tracing::info;
 
 use crate::api::auth::Auth;
@@ -102,11 +103,11 @@ pub(super) async fn revoke(
 
     state
         .policy_enforcer
-        .enforce(
+        .enforce_serialized(
             "identity/project/user/role/revoke",
             &user_auth,
-            Value::Null,
-            Some(json!({"user": user, "role": role, "project": project})),
+            &Value::Null,
+            Some(&policy_object!({"user": user, "role": role, "project": project})),
         )
         .await?;
 

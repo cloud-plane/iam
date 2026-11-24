@@ -19,6 +19,7 @@ use axum::{
     http::StatusCode,
     response::IntoResponse,
 };
+use openstack_keystone_core::policy::policy_object;
 use validator::Validate;
 
 use openstack_keystone_api_types::PaginationQuery;
@@ -74,10 +75,10 @@ pub(super) async fn list(
 
     state
         .policy_enforcer
-        .enforce(
+        .enforce_serialized(
             "identity/service_grant/list",
             &user_auth,
-            serde_json::json!({"service_grant": query}),
+            &policy_object!({"service_grant": query}),
             None,
         )
         .await?;
@@ -113,11 +114,11 @@ pub(super) async fn list(
         },
         |item: ServiceGrant| async move {
             match enforcer
-                .enforce(
+                .enforce_serialized(
                     "identity/service_grant/show",
                     auth,
-                    serde_json::json!({"service_grant": null}),
-                    Some(serde_json::json!({"service_grant": item})),
+                    &policy_object!({"service_grant": null}),
+                    Some(&policy_object!({"service_grant": item})),
                 )
                 .await
             {

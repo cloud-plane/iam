@@ -22,6 +22,7 @@ use axum::{
 use openstack_keystone_api_types::v4::mapping::{
     MappingRuleSet, MappingRuleSetResponse, MappingRuleSetUpdateRequest,
 };
+use openstack_keystone_core::policy::policy_object;
 use validator::Validate;
 
 use crate::api::auth::Auth;
@@ -73,11 +74,11 @@ pub(super) async fn update(
 
     state
         .policy_enforcer
-        .enforce(
+        .enforce_serialized(
             "identity/mapping/ruleset/update",
             &user_auth,
-            serde_json::json!({"mapping": req.mapping}),
-            Some(serde_json::json!({"mapping": MappingRuleSet::from(current.clone())})),
+            &policy_object!({"mapping": req.mapping}),
+            Some(&policy_object!({"mapping": MappingRuleSet::from(current.clone())})),
         )
         .await?;
 

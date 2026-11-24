@@ -23,6 +23,7 @@ use axum::{
     http::StatusCode,
     response::IntoResponse,
 };
+use openstack_keystone_core::policy::policy_object;
 use serde::Deserialize;
 
 use openstack_keystone_api_types::v4::api_key::{ApiKey, ApiKeyResponse};
@@ -77,11 +78,11 @@ pub(super) async fn show(
 
     state
         .policy_enforcer
-        .enforce(
+        .enforce_serialized(
             "identity/api_key/show",
             &user_auth,
-            serde_json::json!({"api_key": null}),
-            Some(serde_json::json!({"api_key": ApiKey::from(current.clone())})),
+            &policy_object!({"api_key": null}),
+            Some(&policy_object!({"api_key": ApiKey::from(current.clone())})),
         )
         .await?;
 

@@ -18,7 +18,7 @@ use axum::{
     http::StatusCode,
     response::IntoResponse,
 };
-use serde_json::json;
+use openstack_keystone_core::policy::{PolicyObject, policy_object};
 use validator::Validate;
 
 use super::types::{Endpoint, EndpointResponse, EndpointUpdateRequest};
@@ -61,15 +61,17 @@ pub(super) async fn update(
         .get_endpoint(&exec, &endpoint_id)
         .await?;
 
-    let existing_endpoint = current.as_ref().map(|c| json!({"endpoint": c}));
+    let existing_endpoint = current
+        .as_ref()
+        .map(|c| PolicyObject::single("endpoint", c));
 
     state
         .policy_enforcer
-        .enforce(
+        .enforce_serialized(
             "identity/endpoint/update",
             &user_auth,
-            json!({"endpoint": req.endpoint}),
-            existing_endpoint,
+            &policy_object!({"endpoint": req.endpoint}),
+            existing_endpoint.as_ref().map(|v| v as _),
         )
         .await?;
 

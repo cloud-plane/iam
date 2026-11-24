@@ -74,10 +74,10 @@ pub(super) async fn finish(
     state
         .core
         .policy_enforcer
-        .enforce(
+        .enforce_serialized(
             "identity/user/passkey/register/finish",
             &user_auth,
-            serde_json::to_value(&user)?,
+            &user,
             None,
         )
         .await?;

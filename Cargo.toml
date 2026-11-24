@@ -1,5 +1,6 @@
 [workspace]
 members = [
+  "crates/alloc-profile",
   "crates/api-key-driver-raft",
   "crates/api-types",
   "crates/cadf",
@@ -98,6 +99,7 @@ base64urlsafedata = "0.6"
 bcrypt = { version = "0.19" }
 byteorder = { version = "1.5" }
 bytes = { version = "1.12" }
+cadf = { version = "0.1.0", path = "crates/cadf" }
 chrono = { version = "0.4", default-features = false }
 clap = { version = "4.6" }
 color-eyre = { version = "0.6" }
@@ -107,6 +109,7 @@ cryptoki = "0.12"
 dashmap = "6.2"
 data-encoding = "2"
 derive_builder = { version = "0.20" }
+erased-serde = { version = "0.4" }
 extism = { version = "1.30" }
 eyre = { version = "0.6" }
 fernet = { version = "0.2", default-features = false }
@@ -130,9 +133,9 @@ mockall = { version = "0.15" }
 nix = { version = "0.31", default-features = false }
 notify = { version = "9.0" }
 openraft = { version = "0.10" }
+openstack-keystone-alloc-profile = { version = "0.1.0", path = "crates/alloc-profile" }
 openstack-keystone-api-key-driver-raft = { version = "0.1", path = "crates/api-key-driver-raft/" }
 openstack-keystone-api-types = { version = "0.1", features = ["openapi", "validate", "conv"], path = "crates/api-types" }
-cadf = { version = "0.1.0", path = "crates/cadf" }
 openstack-keystone-appcred-driver-sql = { version = "0.1", path = "crates/appcred-driver-sql/" }
 openstack-keystone-assignment-driver-openfga = { version = "0.1", path = "crates/assignment-driver-openfga/" }
 openstack-keystone-assignment-driver-sql = { version = "0.1", path = "crates/assignment-driver-sql/" }
@@ -152,9 +155,6 @@ openstack-keystone-common = { version = "0.1.0", path = "crates/common" }
 openstack-keystone-storage-api = { version = "0.1.0", path = "crates/storage-api" }
 openstack-keystone-storage-crypto = { version = "0.1.0", path = "crates/storage-crypto" }
 openstack-keystone-storage-crypto-pkcs11 = { version = "0.1.0", path = "crates/storage-crypto-pkcs11" }
-opentelemetry = { version = "0.33", default-features = false }
-opentelemetry-otlp = { version = "0.33", default-features = false }
-opentelemetry_sdk = { version = "0.33", default-features = false }
 openstack-keystone-telemetry = { version = "0.1.0", path = "crates/telemetry" }
 openstack-keystone-tls-provider = { version = "0.1.0", path = "crates/tls-provider" }
 openstack-keystone-storage-crypto-transit = { version = "0.1.0", path = "crates/storage-crypto-transit" }
@@ -186,6 +186,9 @@ openstack-keystone-token-driver-jws = { version = "0.1.0", path = "crates/token-
 openstack-keystone-token-restriction-driver-sql = { version = "0.1", path = "crates/token-restriction-driver-sql/" }
 openstack-keystone-trust-driver-sql = { version = "0.1", path = "crates/trust-driver-sql/" }
 openstack-keystone-webauthn = { version = "0.1", path = "crates/webauthn/"}
+opentelemetry = { version = "0.33", default-features = false }
+opentelemetry-otlp = { version = "0.33", default-features = false }
+opentelemetry_sdk = { version = "0.33", default-features = false }
 p256 = { version = "0.14", default-features = false, features = ["alloc"] }
 percent-encoding = { version = "2.3" }
 pem = "4"

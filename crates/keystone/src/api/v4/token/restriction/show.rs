@@ -19,7 +19,7 @@ use axum::{
     http::StatusCode,
     response::IntoResponse,
 };
-use serde_json::json;
+use openstack_keystone_core::policy::policy_object;
 
 use crate::api::auth::Auth;
 use crate::api::error::KeystoneApiError;
@@ -70,11 +70,11 @@ pub(super) async fn show(
     let existing = TokenRestriction::from(current.clone());
     state
         .policy_enforcer
-        .enforce(
+        .enforce_serialized(
             "identity/token/token_restriction/show",
             &user_auth,
-            serde_json::Value::Null,
-            Some(json!({"restriction": existing})),
+            &serde_json::Value::Null,
+            Some(&policy_object!({"restriction": existing})),
         )
         .await?;
     Ok((

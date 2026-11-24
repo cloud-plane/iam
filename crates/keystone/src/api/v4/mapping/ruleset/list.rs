@@ -19,7 +19,7 @@ use axum::{
     http::StatusCode,
     response::IntoResponse,
 };
-use serde_json::json;
+use openstack_keystone_core::policy::policy_object;
 
 use openstack_keystone_api_types::PaginationQuery;
 use openstack_keystone_api_types::v4::mapping::{
@@ -67,10 +67,10 @@ pub(super) async fn list(
 ) -> Result<impl IntoResponse, KeystoneApiError> {
     let res = state
         .policy_enforcer
-        .enforce(
+        .enforce_serialized(
             "identity/mapping/ruleset/list",
             &user_auth,
-            json!({"mapping": query}),
+            &policy_object!({"mapping": query}),
             None,
         )
         .await?;

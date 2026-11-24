@@ -19,7 +19,7 @@ use axum::{
     http::StatusCode,
     response::IntoResponse,
 };
-use serde_json::json;
+use openstack_keystone_core::policy::{PolicyObject, policy_object};
 use validator::Validate;
 
 use super::types::{Project, ProjectResponse, ProjectUpdateRequest};
@@ -60,15 +60,15 @@ pub(super) async fn update(
         )
         .await?;
 
-    let existing_project = current.as_ref().map(|c| json!({"project": c}));
+    let existing_project = current.as_ref().map(|c| PolicyObject::single("project", c));
 
     state
         .policy_enforcer
-        .enforce(
+        .enforce_serialized(
             "identity/resource/project/update",
             &user_auth,
-            json!({"project": req.project}),
-            existing_project,
+            &policy_object!({"project": req.project}),
+            existing_project.as_ref().map(|v| v as _),
         )
         .await?;
 

@@ -19,8 +19,8 @@ use axum::{
     http::StatusCode,
     response::IntoResponse,
 };
+use openstack_keystone_core::policy::policy_object;
 
-use serde_json::json;
 use tracing::info;
 
 use openstack_keystone_api_types::v3::role_assignment::{Role, RoleAssignmentRoleList};
@@ -104,10 +104,10 @@ pub(super) async fn list(
 
     state
         .policy_enforcer
-        .enforce(
+        .enforce_serialized(
             "identity/project/user/role/list",
             &user_auth,
-            json!({"user": user, "project": project}),
+            &policy_object!({"user": user, "project": project}),
             None,
         )
         .await?;

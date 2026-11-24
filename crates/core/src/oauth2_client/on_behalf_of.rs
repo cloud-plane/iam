@@ -790,6 +790,8 @@ mod tests {
     };
     use openstack_keystone_core_types::trust::Trust;
 
+    use std::sync::Arc;
+
     use super::*;
     use crate::assignment::MockAssignmentProvider;
     use crate::identity::MockIdentityProvider;
@@ -1060,7 +1062,7 @@ mod tests {
         let issued_at = Utc::now() - Duration::minutes(5);
         let state = state(
             Some(subject_vsc(
-                AuthenticationContext::Token(token(issued_at)),
+                AuthenticationContext::Token(Arc::new(token(issued_at))),
                 issued_at,
                 "d1",
             )),
@@ -1171,7 +1173,7 @@ mod tests {
         let rescoped = token_expiring(Utc::now(), parent_issued_at + Duration::hours(1));
         let state = state(
             Some(subject_vsc_with_token(
-                AuthenticationContext::Token(rescoped.clone()),
+                AuthenticationContext::Token(Arc::new(rescoped.clone())),
                 rescoped,
                 "d1",
             )),

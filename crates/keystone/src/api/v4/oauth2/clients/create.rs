@@ -22,6 +22,7 @@ use axum::{
 use openstack_keystone_api_types::v4::oauth2_client::{
     OAuth2Client, OAuth2ClientCreateRequest, OAuth2ClientCreateResponse,
 };
+use openstack_keystone_core::policy::policy_object;
 use validator::Validate;
 
 use crate::api::auth::Auth;
@@ -60,10 +61,10 @@ pub(super) async fn create(
 
     state
         .policy_enforcer
-        .enforce(
+        .enforce_serialized(
             "identity/oauth2/client/create",
             &user_auth,
-            serde_json::json!({"oauth2_client": req.oauth2_client, "domain_id": domain_id}),
+            &policy_object!({"oauth2_client": req.oauth2_client, "domain_id": domain_id}),
             None,
         )
         .await?;

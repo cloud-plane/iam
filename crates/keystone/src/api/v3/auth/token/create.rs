@@ -35,7 +35,7 @@ use openstack_keystone_core_types::scope::{Project as ScopeProject, Scope as Pro
 use crate::api::common::PeerAddr;
 use crate::api::v3::auth::token::common::{authenticate_request, enforce_mfa_rules};
 use crate::api::v3::auth::token::types::{AuthRequest, CreateTokenParameters, TokenResponse};
-use crate::api::{Catalog, CatalogService, error::KeystoneApiError};
+use crate::api::{Catalog, error::KeystoneApiError};
 use crate::audit::{
     CorrelationId, build_initiator_from_principal, build_initiator_from_vsc,
     build_initiator_unknown, emit_perimeter_authenticate_event, perimeter_outcome,
@@ -171,20 +171,13 @@ async fn create_inner(
         if query.nocatalog.is_some_and(|x| x) {
             return Ok::<_, KeystoneApiError>(None);
         }
-        Ok(Some(Catalog(
+        Ok(Some(Catalog::from(
             state
                 .provider
                 .get_catalog_provider()
                 .get_catalog(&exec, true)
                 .await?
-                .into_iter()
-                .map(|(s, es)| CatalogService {
-                    id: s.id.clone(),
-                    name: s.name(),
-                    r#type: s.r#type,
-                    endpoints: es.into_iter().map(Into::into).collect(),
-                })
-                .collect::<Vec<_>>(),
+                .as_slice(),
         )))
     };
     let vsc_fut = async {
@@ -512,7 +505,7 @@ mod tests {
             .returning(|_| Ok("token".to_string()));
         catalog_mock
             .expect_get_catalog()
-            .returning(|_, _| Ok(Vec::new()));
+            .returning(|_, _| Ok(std::sync::Arc::new(Vec::new())));
 
         let provider = Provider::mocked_builder()
             .mock_assignment(assignment_mock)
@@ -1454,7 +1447,7 @@ mod tests {
         let mut catalog_mock = MockCatalogProvider::default();
         catalog_mock
             .expect_get_catalog()
-            .returning(|_, _| Ok(Vec::new()));
+            .returning(|_, _| Ok(std::sync::Arc::new(Vec::new())));
 
         let auth = AuthenticationResultBuilder::default()
             .context(AuthenticationContext::ApplicationCredential {
@@ -1833,7 +1826,7 @@ mod tests {
         let mut catalog_mock = MockCatalogProvider::default();
         catalog_mock
             .expect_get_catalog()
-            .returning(|_, _| Ok(Vec::new()));
+            .returning(|_, _| Ok(std::sync::Arc::new(Vec::new())));
 
         let mut resource_mock = MockResourceProvider::default();
         resource_mock.expect_get_project().returning(move |_, _| {
@@ -2344,7 +2337,7 @@ mod auth_plugin_http_tests {
         let mut catalog_mock = MockCatalogProvider::default();
         catalog_mock
             .expect_get_catalog()
-            .returning(|_, _| Ok(Vec::new()));
+            .returning(|_, _| Ok(std::sync::Arc::new(Vec::new())));
         (token_mock, catalog_mock)
     }
 

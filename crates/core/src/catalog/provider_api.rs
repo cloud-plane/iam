@@ -12,12 +12,14 @@
 //
 // SPDX-License-Identifier: Apache-2.0
 
+use std::sync::Arc;
+
 use async_trait::async_trait;
 
 use openstack_keystone_core_types::catalog::*;
 
 use crate::auth::ExecutionContext;
-use crate::catalog::CatalogProviderError;
+use crate::catalog::{CatalogEntries, CatalogProviderError};
 
 #[async_trait]
 pub trait CatalogApi: Send + Sync {
@@ -209,13 +211,15 @@ pub trait CatalogApi: Send + Sync {
     /// - `enabled`: Whether to return only enabled services.
     ///
     /// # Returns
-    /// A `Result` containing a vector of tuples of `Service` and its associated
-    /// `Endpoint`s, or a `CatalogProviderError`.
+    /// A `Result` containing the shared list of tuples of `Service` and its
+    /// associated `Endpoint`s, or a `CatalogProviderError`. The list is shared
+    /// with the provider (and with every other caller) instead of being copied
+    /// for each request: callers read it and copy only what they need.
     async fn get_catalog<'a>(
         &self,
         exec: &ExecutionContext<'a>,
         enabled: bool,
-    ) -> Result<Vec<(Service, Vec<Endpoint>)>, CatalogProviderError>;
+    ) -> Result<Arc<CatalogEntries>, CatalogProviderError>;
 
     /// Get single endpoint by ID.
     ///

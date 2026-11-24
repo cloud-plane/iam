@@ -19,7 +19,7 @@ use axum::{
     http::StatusCode,
     response::IntoResponse,
 };
-use serde_json::json;
+use openstack_keystone_core::policy::policy_object;
 
 use cadf::{Outcome, OutcomeReason};
 use openstack_keystone_core::auth::ExecutionContext;
@@ -63,10 +63,10 @@ pub(super) async fn oauth2_consent_delete(
 ) -> Result<impl IntoResponse, KeystoneApiError> {
     state
         .policy_enforcer
-        .enforce(
+        .enforce_serialized(
             "identity/oauth2/consent/delete",
             &user_auth,
-            json!({"user_id": &user_id, "client_id": &client_id}),
+            &policy_object!({"user_id": &user_id, "client_id": &client_id}),
             None,
         )
         .await?;

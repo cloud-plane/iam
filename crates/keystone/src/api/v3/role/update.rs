@@ -20,7 +20,7 @@ use axum::{
     http::StatusCode,
     response::IntoResponse,
 };
-use serde_json::json;
+use openstack_keystone_core::policy::{PolicyObject, policy_object};
 use validator::Validate;
 
 use super::types::{Role, RoleResponse, RoleUpdateRequest};
@@ -60,15 +60,15 @@ pub(super) async fn update(
         .get_role(&ExecutionContext::from_auth(&state, &user_auth), &role_id)
         .await?;
 
-    let existing_role = current.as_ref().map(|c| json!({"role": c}));
+    let existing_role = current.as_ref().map(|c| PolicyObject::single("role", c));
 
     state
         .policy_enforcer
-        .enforce(
+        .enforce_serialized(
             "identity/role/update",
             &user_auth,
-            json!({"role": req.role}),
-            existing_role,
+            &policy_object!({"role": req.role}),
+            existing_role.as_ref().map(|v| v as _),
         )
         .await?;
 

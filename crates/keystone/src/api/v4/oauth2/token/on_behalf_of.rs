@@ -385,7 +385,9 @@ mod tests {
             ..Default::default()
         };
         let sc = SecurityContext::test_build()
-            .authentication_context(AuthenticationContext::Token(token.clone()))
+            .authentication_context(AuthenticationContext::Token(std::sync::Arc::new(
+                token.clone(),
+            )))
             .principal(PrincipalInfo {
                 identity: IdentityInfo::User(
                     UserIdentityInfoBuilder::default()

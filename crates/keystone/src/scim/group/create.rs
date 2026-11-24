@@ -14,7 +14,7 @@
 //! `POST /SCIM/v2/{domain_id}/Groups` (ADR 0024 §3.C, §3.D, §4, §7, §11).
 
 use axum::{Json, extract::State, http::HeaderMap, http::StatusCode};
-use serde_json::json;
+use openstack_keystone_core::policy::policy_object;
 
 use openstack_keystone_core::api::KeystoneApiError;
 use openstack_keystone_core::api::api_key_auth::ScimRealmAuth;
@@ -74,10 +74,10 @@ pub(super) async fn create(
 
     state
         .policy_enforcer
-        .enforce(
+        .enforce_serialized(
             "identity/scim/group/create",
             &ctx,
-            json!({"group": {"domain_id": realm.domain_id}}),
+            &policy_object!({"group": {"domain_id": realm.domain_id}}),
             None,
         )
         .await?;

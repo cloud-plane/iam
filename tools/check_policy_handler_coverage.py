@@ -80,7 +80,7 @@ ALLOWLIST_NO_ENFORCE = {
     CRATES_ROOT / "keystone/src/api/v3/auth/token/create.rs",
 }
 
-ENFORCE_CALL_RE = re.compile(r"\.enforce\(\s*\"([\w/]+)\"")
+ENFORCE_CALL_RE = re.compile(r"\.enforce(?:_serialized)?\(\s*\"([\w/]+)\"")
 PACKAGE_RE = re.compile(r"^package\s+([\w.]+)", re.MULTILINE)
 DEFAULT_ALLOW_RE = re.compile(r"^default\s+allow\b", re.MULTILINE)
 TEST_MOD_PATH_RE = re.compile(r'#\[path\s*=\s*"([^"]+tests\.rs)"\]')

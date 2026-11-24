@@ -38,6 +38,7 @@ pub mod hook;
 mod provider_api;
 pub mod service;
 
+pub use cache::CatalogEntries;
 pub use error::CatalogProviderError;
 pub use hook::CatalogHook;
 pub use provider_api::CatalogApi;

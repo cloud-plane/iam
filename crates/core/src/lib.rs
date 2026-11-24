@@ -132,6 +132,9 @@ pub mod spiffe_key;
 pub mod token;
 pub mod trust;
 
+#[cfg(test)]
+mod alloc_profile;
+
 #[cfg(any(test, feature = "mock"))]
 pub mod mocks;
 

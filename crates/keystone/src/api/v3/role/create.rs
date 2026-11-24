@@ -17,7 +17,7 @@ use axum::{
     http::StatusCode,
     response::IntoResponse,
 };
-use serde_json::json;
+use openstack_keystone_core::policy::policy_object;
 use validator::Validate;
 
 use super::types::{RoleCreateRequest, RoleResponse};
@@ -50,10 +50,10 @@ pub(super) async fn create(
 
     state
         .policy_enforcer
-        .enforce(
+        .enforce_serialized(
             "identity/role/create",
             &user_auth,
-            json!({"role": payload.role}),
+            &policy_object!({"role": payload.role}),
             None,
         )
         .await?;

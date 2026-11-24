@@ -21,6 +21,7 @@ use axum::{
     http::StatusCode,
     response::IntoResponse,
 };
+use openstack_keystone_core::policy::policy_object;
 
 use openstack_keystone_api_types::v4::scim_realm::ScimRealm;
 use openstack_keystone_core::auth::ExecutionContext;
@@ -91,11 +92,11 @@ pub(super) async fn purge(
 
     state
         .policy_enforcer
-        .enforce(
+        .enforce_serialized(
             "identity/scim_realm/purge",
             &user_auth,
-            serde_json::Value::Null,
-            Some(serde_json::json!({"scim_realm": ScimRealm::from(current)})),
+            &serde_json::Value::Null,
+            Some(&policy_object!({"scim_realm": ScimRealm::from(current)})),
         )
         .await?;
 

@@ -17,7 +17,7 @@ use axum::{
     http::StatusCode,
     response::IntoResponse,
 };
-use serde_json::json;
+use openstack_keystone_core::policy::policy_object;
 
 use super::types::{Group, GroupResponse};
 use crate::api::auth::Auth;
@@ -51,11 +51,11 @@ pub async fn show(
         .await?;
     state
         .policy_enforcer
-        .enforce(
+        .enforce_serialized(
             "identity/group/show",
             &user_auth,
-            serde_json::Value::Null,
-            Some(json!({"group": current})),
+            &serde_json::Value::Null,
+            Some(&policy_object!({"group": current})),
         )
         .await?;
 
