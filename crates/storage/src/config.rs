@@ -32,6 +32,9 @@ use validator::Validate;
 
 use oslo_config::{TlsConfiguration, csv, option_u32_from_str_or_int};
 
+/// Longest SVID, kind or domain id of a feed grant, in bytes.
+pub const FEED_GRANT_MAX_FIELD: usize = 2048;
+
 /// Raft cluster configuration.
 #[derive(Debug, Deserialize, Clone, Validate)]
 #[validate(schema(function = "validate_kek_selection"))]

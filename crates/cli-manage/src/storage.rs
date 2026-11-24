@@ -41,6 +41,7 @@ mod clear_quarantine;
 mod confirm_rotate_dek;
 mod confirm_sites;
 mod demote;
+mod feed_grants;
 mod init;
 mod join;
 mod list_dek_local_emergency_candidates;
@@ -61,6 +62,7 @@ use crate::storage::clear_quarantine::ClearQuarantineCommand;
 use crate::storage::confirm_rotate_dek::ConfirmRotateDekCommand;
 use crate::storage::confirm_sites::ConfirmSitesCommand;
 use crate::storage::demote::DemoteCommand;
+use crate::storage::feed_grants::FeedGrantsCommand;
 use crate::storage::init::InitCommand;
 use crate::storage::join::JoinCommand;
 use crate::storage::list_dek_local_emergency_candidates::ListDekLocalEmergencyCandidatesCommand;
@@ -94,6 +96,7 @@ impl PerformAction for StorageCommand {
             StorageCommands::ConfirmRotateDek(e) => e.take_action(config).await,
             StorageCommands::ConfirmSites(e) => e.take_action(config).await,
             StorageCommands::Demote(e) => e.take_action(config).await,
+            StorageCommands::FeedGrants(e) => e.take_action(config).await,
             StorageCommands::Init(e) => e.take_action(config).await,
             StorageCommands::Join(e) => e.take_action(config).await,
             StorageCommands::ListPeers(e) => e.take_action(config).await,
@@ -118,6 +121,7 @@ enum StorageCommands {
     ConfirmRotateDek(ConfirmRotateDekCommand),
     ConfirmSites(ConfirmSitesCommand),
     Demote(DemoteCommand),
+    FeedGrants(FeedGrantsCommand),
     Init(InitCommand),
     Join(JoinCommand),
     ListPeers(ListPeersCommand),

@@ -338,8 +338,9 @@ service ClusterAdminService {
   // end within one poll of it. Operator role.
   rpc RevokeFeedGrant(FeedGrantRequest) returns (AdminResponse) {}
 
-  // ListFeedGrants lists the grants of one subscriber, or of all. Operator
-  // role.
+  // ListFeedGrants lists the grants of one subscriber, or of all. Leader
+  // only, after a linearizable read, so a list sees every grant already
+  // committed. Operator role.
   rpc ListFeedGrants(ListFeedGrantsRequest) returns (ListFeedGrantsResponse) {}
 
   // RotateDekLocalEmergency stages a node-local, quorum-bypass DEK rotation
