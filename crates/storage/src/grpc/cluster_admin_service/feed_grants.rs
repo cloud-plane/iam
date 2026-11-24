@@ -20,8 +20,7 @@
 
 use super::*;
 
-/// Longest SVID, kind or domain id accepted.
-const MAX_FIELD: usize = 2048;
+use crate::config::FEED_GRANT_MAX_FIELD as MAX_FIELD;
 
 fn field(name: &str, value: &str) -> Result<(), Status> {
     if value.is_empty() || value.len() > MAX_FIELD || value.contains('\0') {
@@ -103,6 +102,14 @@ impl ClusterAdminServiceImpl {
         request: Request<pb::raft::ListFeedGrantsRequest>,
     ) -> Result<Response<pb::raft::ListFeedGrantsResponse>, Status> {
         require_operator(&request, &self.authz)?;
+        self.ensure_leader()?;
+        // The leader check reads cached metrics, so a deposed leader still
+        // passes it. A ReadIndex read confirms the leadership and that the
+        // applied state includes every grant already committed.
+        self.raft_node
+            .ensure_linearizable(openraft::ReadPolicy::ReadIndex)
+            .await
+            .map_err(|e| Status::unavailable(format!("not linearizable leader: {e}")))?;
         let svid = request.into_inner().svid;
         let grants = self
             .sm

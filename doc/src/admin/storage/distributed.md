@@ -1703,6 +1703,29 @@ RevokeFeedGrant  { svid, kind, domain? }   # removes exactly that grant
 ListFeedGrants   { svid? }
 ```
 
+`keystone-manage storage feed-grants` wraps them in three subcommands:
+
+```text
+feed-grants list   [--svid <id>]
+feed-grants set    --svid <id> --kind <kind> (--domain <id> | --all-domains)
+feed-grants revoke --svid <id> --kind <kind> (--domain <id> | --all-domains)
+```
+
+`list` prints a table, for one subscriber or, without `--svid`, for every one;
+it runs on the leader after a linearizable read, so it shows every grant already
+committed, and a follower answers it with a redirect to the leader. `revoke`
+removes exactly the grant `set` added and fails if there is none; the check and
+the revoke are two calls, so two operators revoking the same grant at once can
+both see success. `set` warns when the kind is not in this host's `feed_kinds`
+(skipped with `--cluster-addr`, as that config is node-local). `--svid` must be
+a full `spiffe://` ID and no value may be empty. Each subcommand contacts
+`--cluster-addr` first (default: this host's `node_cluster_addr`) and follows
+the redirect to the leader.
+
+A grant alone does not let a subscriber in: its SPIFFE ID also needs a `peers`
+entry with the `feed-consumer` role, or the source rejects the subscription
+whatever grants exist.
+
 All three are `ClusterAdminService` RPCs for the operator role, and the two
 writes are audited (`FEED_GRANT_SET`, `FEED_GRANT_REVOKED`). Grants add up: a
 grant for every domain covers its kind whatever domain grants exist beside it. A
