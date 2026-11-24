@@ -1055,7 +1055,7 @@ dependencies = [
  "async-trait",
  "aws-lc-rs",
  "chrono",
- "nix",
+ "nix 0.32.0",
  "openstack-keystone-telemetry",
  "openstack-keystone-tls-provider",
  "rcgen",
@@ -4306,7 +4306,7 @@ version = "1.2.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "f3d0581a75c45969c63afd2bb87b1d8b25cfcc556c7a918cf9bb13b0fe8d2381"
 dependencies = [
- "nix",
+ "nix 0.31.4",
  "serde",
  "windows-sys 0.61.2",
 ]
@@ -4568,9 +4568,22 @@ dependencies = [
 
 [[package]]
 name = "nix"
-version = "0.31.3"
+version = "0.31.4"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "cf20d2fde8ff38632c426f1165ed7436270b44f199fc55284c38276f9db47c3d"
+checksum = "2bc81ce8148d3b4f3274da811f11cdd824ae661ee4ef732cdb229825cf5be7f7"
+dependencies = [
+ "bitflags 2.13.2",
+ "cfg-if",
+ "cfg_aliases",
+ "libc",
+ "memoffset",
+]
+
+[[package]]
+name = "nix"
+version = "0.32.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "77730ed34f01f4990cb2ea67fec715ecebc6fab9a6396cf83c5529b13f581bdc"
 dependencies = [
  "bitflags 2.13.2",
  "cfg-if",
@@ -4941,7 +4954,7 @@ dependencies = [
  "ipnet",
  "jsonwebtoken",
  "minijinja",
- "nix",
+ "nix 0.32.0",
  "openstack-keystone-api-key-driver-raft",
  "openstack-keystone-api-types",
  "openstack-keystone-appcred-driver-sql",
@@ -5388,7 +5401,7 @@ dependencies = [
  "http",
  "http-serde",
  "hyper-util",
- "nix",
+ "nix 0.32.0",
  "openraft",
  "openstack-keystone-common",
  "openstack-keystone-config",
@@ -5596,7 +5609,7 @@ dependencies = [
  "chrono",
  "fernet",
  "jsonwebtoken",
- "nix",
+ "nix 0.32.0",
  "notify",
  "openstack-keystone-jwt-crypto",
  "pem",
@@ -5857,7 +5870,7 @@ version = "0.1.0"
 dependencies = [
  "async-trait",
  "aws-lc-rs",
- "nix",
+ "nix 0.32.0",
  "openstack-keystone-storage-crypto",
  "ring",
  "rsa 0.9.10",
@@ -5964,7 +5977,7 @@ dependencies = [
  "fernet",
  "inventory",
  "itertools 0.15.0",
- "nix",
+ "nix 0.32.0",
  "openstack-keystone-alloc-profile",
  "openstack-keystone-config",
  "openstack-keystone-core",
@@ -11892,7 +11905,7 @@ dependencies = [
  "flate2",
  "indexmap 2.14.2",
  "memchr",
- "nix",
+ "nix 0.31.4",
  "typed-path",
  "zopfli",
 ]
