@@ -128,7 +128,7 @@ ldap3 = { version = "0.12", default-features = false }
 minijinja = { version = "3", features = ["serde"] }
 mockall = { version = "0.15" }
 nix = { version = "0.31", default-features = false }
-notify = { version = "8.2" }
+notify = { version = "9.0" }
 openraft = { version = "0.10" }
 openstack-keystone-api-key-driver-raft = { version = "0.1", path = "crates/api-key-driver-raft/" }
 openstack-keystone-api-types = { version = "0.1", features = ["openapi", "validate", "conv"], path = "crates/api-types" }
