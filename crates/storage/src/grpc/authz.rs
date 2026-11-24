@@ -63,9 +63,9 @@ impl PeerRole {
 const NODE_ROLE: &str = "node";
 
 /// Roles that only an explicit per-SVID binding can grant (never a path
-/// segment), besides the node and operator roles. None of them is authorised
-/// on any RPC yet: a peer that holds one is denied everywhere until an RPC
-/// lists it explicitly.
+/// segment), besides the node and operator roles. Only `FeedConsumer` is
+/// authorised on an RPC so far (the change feed); a peer holding any other is
+/// denied everywhere until an RPC lists it explicitly.
 const EXTRA_ROLES: [PeerRole; 6] = [
     PeerRole::Voter,
     PeerRole::Learner,
