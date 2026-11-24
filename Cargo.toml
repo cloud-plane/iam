@@ -130,7 +130,7 @@ log = { version = "0.4" }
 ldap3 = { version = "0.12", default-features = false }
 minijinja = { version = "3", features = ["serde"] }
 mockall = { version = "0.15" }
-nix = { version = "0.31", default-features = false }
+nix = { version = "0.32", default-features = false }
 notify = { version = "9.0" }
 openraft = { version = "0.10" }
 openstack-keystone-alloc-profile = { version = "0.1.0", path = "crates/alloc-profile" }
