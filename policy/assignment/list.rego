@@ -4,7 +4,6 @@
 package identity.assignment.list
 
 import data.common.assignment
-import data.common.identity
 
 # List role assignments.
 #

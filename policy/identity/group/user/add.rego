@@ -2,7 +2,7 @@
 # description: Policy for adding a user to a group
 package identity.group.user.add
 
-import data.common.identity
+import data.common.identity_domain
 
 # Adding a user to a group.
 #
@@ -18,13 +18,13 @@ allow if {
 
 allow if {
 	"manager" in input.credentials.roles
-	identity.membership_domains_match_domain_scope
+	identity_domain.membership_domains_match_domain_scope
 }
 
 violation contains {"field": "domain_id", "msg": "adding a user to a group in a domain different to the domain scope requires `admin` role."} if {
 	not "admin" in input.credentials.roles
 	"manager" in input.credentials.roles
-	not identity.membership_domains_match_domain_scope
+	not identity_domain.membership_domains_match_domain_scope
 }
 
 violation contains {"field": "domain_id", "msg": "adding a user to a group requires a manager role with the domain scope."} if {

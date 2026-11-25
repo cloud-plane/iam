@@ -2,8 +2,6 @@
 # description: Shared predicates for OAuth2 client (relying party) policies (ADR 0026 §5)
 package common.client
 
-import data.common.identity
-
 # Resolve domain_id from target or existing depending on operation.
 # Create/List: domain_id is a top-level input.target field (from the URL
 # path, ADR 0026 §5), not nested under input.target.oauth2_client.

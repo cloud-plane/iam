@@ -3,8 +3,6 @@
 # description: Policy for fetching a single legacy policy document
 package identity.policy.show
 
-import data.common.identity
-
 # Show policy (legacy `GET /v3/policies/{policy_id}`).
 #
 # Also re-checked per item by the list handler (security model I8), so a

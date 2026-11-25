@@ -3,8 +3,6 @@
 # description: Policy for creating role
 package identity.role.create
 
-import data.common.identity
-
 # Create role.
 #
 # The `input.target.role` is the new role object (RoleCreate):

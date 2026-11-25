@@ -3,8 +3,6 @@
 # description: Policy for listing catalog endpoints
 package identity.endpoint.list
 
-import data.common.identity
-
 # List endpoints.
 #
 # The `input.target.endpoint` contains query parameters (EndpointListParameters):

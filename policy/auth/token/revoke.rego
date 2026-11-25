@@ -2,7 +2,7 @@
 # description: Policy for revoking authentication tokens
 package identity.auth.token.revoke
 
-import data.common.identity
+import data.common.identity_token
 
 # Revoke authentication tokens.
 #
@@ -30,5 +30,5 @@ allow if {
 # METADATA
 # description: Token owner can revoke own token
 allow if {
-	identity.token_subject
+	identity_token.token_subject
 }

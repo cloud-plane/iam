@@ -101,11 +101,16 @@ fn test_evaluate_json_matches_evaluate() {
             .evaluate_json("identity/role/show", &input.to_string())
             .unwrap();
         assert_eq!(by_value.allow(), by_json.allow(), "{input}");
-        assert_eq!(
-            format!("{:?}", by_value.violations),
-            format!("{:?}", by_json.violations),
-            "{input}"
-        );
+        // The production path skips `violation` for an allow.
+        if !by_value.allow() {
+            assert_eq!(
+                format!("{:?}", by_value.violations),
+                format!("{:?}", by_json.violations),
+                "{input}"
+            );
+        } else {
+            assert!(by_json.violations.is_none(), "{input}");
+        }
     }
 }
 

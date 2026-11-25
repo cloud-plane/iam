@@ -3,8 +3,6 @@
 # description: Policy for updating a catalog endpoint
 package identity.endpoint.update
 
-import data.common.identity
-
 # Update endpoint.
 #
 # The `input.target.endpoint` contains the fields to change (EndpointUpdate):

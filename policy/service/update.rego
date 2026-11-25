@@ -3,8 +3,6 @@
 # description: Policy for updating a catalog service
 package identity.service.update
 
-import data.common.identity
-
 # Update service.
 #
 # The `input.target.service` contains the fields to change (ServiceUpdate):

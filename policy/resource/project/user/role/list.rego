@@ -3,7 +3,6 @@
 package identity.project.user.role.list
 
 import data.common.assignment
-import data.common.identity
 
 # List direct (non-effective) user roles on the project.
 #

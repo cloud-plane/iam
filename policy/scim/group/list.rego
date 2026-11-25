@@ -2,7 +2,7 @@
 # description: Policy for listing SCIM-provisioned groups (ADR 0024 §3, §8)
 package identity.scim.group.list
 
-import data.common.identity
+import data.common.identity_domain
 
 # List SCIM-provisioned groups owned by the realm.
 #
@@ -22,22 +22,22 @@ allow if {
 
 allow if {
 	"manager" in input.credentials.roles
-	identity.domain_matches_domain_scope
+	identity_domain.domain_matches_domain_scope
 }
 
 allow if {
 	"scim_provisioner" in input.credentials.roles
-	identity.domain_matches_domain_scope
+	identity_domain.domain_matches_domain_scope
 }
 
 violation contains {"field": "domain_id", "msg": "listing SCIM groups in a domain different to the domain scope requires `admin` role."} if {
 	not "admin" in input.credentials.roles
-	not identity.domain_matches_domain_scope
+	not identity_domain.domain_matches_domain_scope
 }
 
 violation contains {"field": "roles", "msg": "listing SCIM groups requires a scim_provisioner or manager role with the domain scope."} if {
 	not "admin" in input.credentials.roles
 	not "manager" in input.credentials.roles
 	not "scim_provisioner" in input.credentials.roles
-	identity.domain_matches_domain_scope
+	identity_domain.domain_matches_domain_scope
 }

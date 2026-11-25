@@ -2,7 +2,7 @@
 # description: Policy for viewing k8s auth instance details
 package identity.k8s_auth.instance.show
 
-import data.common.identity
+import data.common.identity_domain
 
 # Show k8s auth instance.
 #
@@ -24,16 +24,16 @@ allow if {
 }
 
 allow if {
-	identity.own_target
+	identity_domain.own_target
 	"reader" in input.credentials.roles
 }
 
 violation contains {"field": "domain_id", "msg": "showing k8s_auth instance for other domain requires `admin` role."} if {
-	identity.foreign_target
+	identity_domain.foreign_target
 	not "admin" in input.credentials.roles
 }
 
 violation contains {"field": "role", "msg": "showing k8s_auth instance requires `reader` role."} if {
-	identity.own_target
+	identity_domain.own_target
 	not "member" in input.credentials.roles
 }

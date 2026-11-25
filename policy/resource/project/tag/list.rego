@@ -2,7 +2,7 @@
 # description: Policy for listing project tags
 package identity.resource.project.tag.list
 
-import data.common.identity
+import data.common.identity_domain
 import data.common.tag as tag
 
 # Listing the tags of a project.
@@ -29,7 +29,7 @@ allow if {
 
 allow if {
 	"reader" in input.credentials.roles
-	identity.domain_matches_domain_scope
+	identity_domain.domain_matches_domain_scope
 }
 
 # A caller scoped to the project itself may read its tags.
@@ -40,5 +40,5 @@ allow if {
 violation contains {"field": "domain_id", "msg": "listing the tags of a project requires system admin or `reader` role with system scope or domain scope."} if {
 	not input.credentials.is_admin
 	not "reader" in input.credentials.roles
-	identity.domain_matches_domain_scope
+	identity_domain.domain_matches_domain_scope
 }

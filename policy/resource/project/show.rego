@@ -2,7 +2,7 @@
 # description: Policy for showing project details
 package identity.resource.project.show
 
-import data.common.identity
+import data.common.identity_domain
 
 # Show a project.
 #
@@ -33,17 +33,17 @@ allow if {
 
 allow if {
 	"reader" in input.credentials.roles
-	identity.domain_matches_domain_scope
+	identity_domain.domain_matches_domain_scope
 }
 
 violation contains {"field": "domain_id", "msg": "showing a project in a domain different from the domain scope requires system admin."} if {
 	not input.credentials.is_admin
 	"reader" in input.credentials.roles
-	not identity.domain_matches_domain_scope
+	not identity_domain.domain_matches_domain_scope
 }
 
 violation contains {"field": "domain_id", "msg": "showing a project requires system admin or `reader` role with system scope or domain scope."} if {
 	not input.credentials.is_admin
 	not "reader" in input.credentials.roles
-	identity.domain_matches_domain_scope
+	identity_domain.domain_matches_domain_scope
 }

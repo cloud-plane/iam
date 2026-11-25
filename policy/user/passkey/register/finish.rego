@@ -2,8 +2,6 @@
 # description: Policy for finishing passkey registration
 package identity.user.passkey.register.finish
 
-import data.common.identity
-
 # Finish registering a passkey for the user
 #
 # The `input.target.user` is the user object (User):

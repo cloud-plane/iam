@@ -3,8 +3,6 @@
 # description: Policy for deleting a role imply rule
 package identity.role.imply_rule.delete
 
-import data.common.identity
-
 # Delete role imply rule.
 #
 # The `input.existing.role_imply_rule` is the stored rule object (RoleImply):

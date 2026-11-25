@@ -2,8 +2,6 @@
 # description: Policy for starting passkey registration
 package identity.user.passkey.register.start
 
-import data.common.identity
-
 # Start registering a passkey for the user
 #
 # The `input.target.user` is the user object (User):

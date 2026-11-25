@@ -3,8 +3,6 @@
 # description: Policy for listing role imply rules
 package identity.role.imply_rule.list
 
-import data.common.identity
-
 # List role imply rules.
 #
 # The `input.target` is null (no filters)

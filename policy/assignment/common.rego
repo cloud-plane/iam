@@ -2,7 +2,7 @@
 # description: Common policies for identity assignments
 package common.assignment
 
-import data.common.identity
+import data.common.identity_role
 
 # description: current domain scope matches the domain_id of the project, or the user and of
 # the role (or it is a global role)
@@ -13,7 +13,7 @@ project_user_role_domain_matches if {
 	input.target.user.domain_id != null
 	input.credentials.domain_id == input.target.user.domain_id
 	input.credentials.domain_id == input.target.project.domain_id
-	identity.own_role_or_global_role
+	identity_role.own_role_or_global_role
 }
 
 project_user_role_domain_matches if {
@@ -21,7 +21,7 @@ project_user_role_domain_matches if {
 	input.existing.user.domain_id != null
 	input.credentials.domain_id == input.existing.user.domain_id
 	input.credentials.domain_id == input.existing.project.domain_id
-	identity.own_role_or_global_role
+	identity_role.own_role_or_global_role
 }
 
 # description: Ensure that the domain_id of the target project is matching the current
@@ -31,13 +31,13 @@ project_user_role_domain_matches if {
 project_role_domain_matches if {
 	input.target.project.domain_id != null
 	input.credentials.domain_id == input.target.project.domain_id
-	identity.own_role_or_global_role
+	identity_role.own_role_or_global_role
 }
 
 project_role_domain_matches if {
 	input.existing.project.domain_id != null
 	input.credentials.domain_id == input.existing.project.domain_id
-	identity.own_role_or_global_role
+	identity_role.own_role_or_global_role
 }
 
 # description: Ensure that if a domain_id is explicitly provided, it matches the scope
@@ -101,13 +101,13 @@ is_scoped_to_token_domain if {
 domain_role_domain_matches if {
 	input.target.domain.id != null
 	input.credentials.domain_id == input.target.domain.id
-	identity.own_role_or_global_role
+	identity_role.own_role_or_global_role
 }
 
 domain_role_domain_matches if {
 	input.existing.domain.id != null
 	input.credentials.domain_id == input.existing.domain.id
-	identity.own_role_or_global_role
+	identity_role.own_role_or_global_role
 }
 
 # description: current domain scope matches the domain of the target domain,

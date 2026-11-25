@@ -3,7 +3,7 @@
 # description: Policy for fetching a single role
 package identity.role.show
 
-import data.common.identity
+import data.common.identity_role
 
 # Show role.
 #
@@ -31,5 +31,5 @@ allow if {
 # description: "`Manager` is allowed for global roles and roles belonging to the scope domain."
 allow if {
 	"manager" in input.credentials.roles
-	identity.own_role_or_global_role
+	identity_role.own_role_or_global_role
 }

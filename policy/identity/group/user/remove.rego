@@ -2,7 +2,7 @@
 # description: Policy for removing a user from a group
 package identity.group.user.remove
 
-import data.common.identity
+import data.common.identity_domain
 
 # Removing a user from a group.
 #
@@ -18,13 +18,13 @@ allow if {
 
 allow if {
 	"manager" in input.credentials.roles
-	identity.membership_domains_match_domain_scope
+	identity_domain.membership_domains_match_domain_scope
 }
 
 violation contains {"field": "domain_id", "msg": "removing a user from a group in a domain different to the domain scope requires `admin` role."} if {
 	not "admin" in input.credentials.roles
 	"manager" in input.credentials.roles
-	not identity.membership_domains_match_domain_scope
+	not identity_domain.membership_domains_match_domain_scope
 }
 
 violation contains {"field": "domain_id", "msg": "removing a user from a group requires a manager role with the domain scope."} if {

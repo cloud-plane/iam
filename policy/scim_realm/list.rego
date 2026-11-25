@@ -2,7 +2,7 @@
 # description: Policy for listing SCIM realms (ADR 0024 §2.A)
 package identity.scim_realm.list
 
-import data.common.identity
+import data.common.identity_domain
 
 # List SCIM realms.
 #
@@ -24,17 +24,17 @@ allow if {
 
 allow if {
 	"manager" in input.credentials.roles
-	identity.domain_matches_domain_scope
+	identity_domain.domain_matches_domain_scope
 }
 
 violation contains {"field": "domain_id", "msg": "listing SCIM realms in a domain different to the domain scope requires `admin` role."} if {
 	not "admin" in input.credentials.roles
 	"manager" in input.credentials.roles
-	not identity.domain_matches_domain_scope
+	not identity_domain.domain_matches_domain_scope
 }
 
 violation contains {"field": "domain_id", "msg": "listing SCIM realms requires a manager role with the domain scope."} if {
 	not "admin" in input.credentials.roles
 	not "manager" in input.credentials.roles
-	identity.domain_matches_domain_scope
+	identity_domain.domain_matches_domain_scope
 }

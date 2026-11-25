@@ -3,8 +3,6 @@
 # description: Policy for deleting a catalog endpoint
 package identity.endpoint.delete
 
-import data.common.identity
-
 # Delete endpoint.
 #
 # The `input.existing.endpoint` is the stored endpoint object (Endpoint):

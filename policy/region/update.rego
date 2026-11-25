@@ -3,8 +3,6 @@
 # description: Policy for updating a catalog region
 package identity.region.update
 
-import data.common.identity
-
 # Update region.
 #
 # The `input.target.region` contains the fields to change (RegionUpdate):

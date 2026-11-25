@@ -32,6 +32,9 @@
 //! * OPA returns the whole package document (`allow`, `violation`,
 //!   `can_see_other_domain_resources`). regorus can only compile a rule path,
 //!   so each of the three rules is compiled and evaluated separately.
+//!   The production path ([`RegorusPolicyEnforcer::evaluate_json`]) skips
+//!   `violation` for an allow, as nothing reads it; `evaluate` keeps the
+//!   whole document for `tools/policy-diff.py`.
 //! * The compiled set sits in an [`ArcSwap`], so
 //!   [`RegorusPolicyEnforcer::reload`] can atomically replace the policies
 //!   while in-flight evaluations finish on the old set. Keystone calls it on

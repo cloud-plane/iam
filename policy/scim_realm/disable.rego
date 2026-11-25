@@ -3,7 +3,7 @@
 #   toggle (ADR 0024 §2.B, the Realm Activation Gate)
 package identity.scim_realm.disable
 
-import data.common.identity
+import data.common.identity_domain
 
 # Update (including enable/disable) a SCIM realm.
 #
@@ -25,7 +25,7 @@ allow if {
 
 allow if {
 	"manager" in input.credentials.roles
-	identity.domain_matches_domain_scope
+	identity_domain.domain_matches_domain_scope
 }
 
 violation contains {"field": "domain_id", "msg": "updating a SCIM realm in a domain different to the domain scope requires `admin` role."} if {
@@ -37,5 +37,5 @@ violation contains {"field": "domain_id", "msg": "updating a SCIM realm in a dom
 violation contains {"field": "domain_id", "msg": "updating a SCIM realm requires a manager role with the domain scope."} if {
 	not "admin" in input.credentials.roles
 	not "manager" in input.credentials.roles
-	identity.domain_matches_domain_scope
+	identity_domain.domain_matches_domain_scope
 }

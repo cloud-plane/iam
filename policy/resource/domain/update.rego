@@ -2,8 +2,6 @@
 # description: Policy for updating domains
 package identity.resource.domain.update
 
-import data.common.identity
-
 # Update a domain.
 #
 # The `input.target.domain` is the update patch (DomainUpdate):
