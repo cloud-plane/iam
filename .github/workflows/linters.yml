@@ -26,11 +26,11 @@ jobs:
     steps:
 
       - name: Harden Runner
-        uses: step-security/harden-runner@aebdcf6156ab6691adf63218240e476564a1ed4c # v2.23.0
+        uses: step-security/harden-runner@v2
         with:
           egress-policy: audit
 
-      - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
+      - uses: actions/checkout@v7
 
       - name: Install build dependencies
         run: |
@@ -41,13 +41,13 @@ jobs:
           sudo apt-get install -y protobuf-compiler libtss2-dev pkg-config
 
       - name: Install Rust ${{ env.rust_min }}
-        uses: dtolnay/rust-toolchain@683b588c487a69d01f6c6ddf40f036ff682cc2c8 # stable
+        uses: dtolnay/rust-toolchain@master
         with:
           toolchain: ${{ env.rust_min }}
           components: rustfmt, clippy
 
       - name: Install cargo-binstall
-        uses: taiki-e/install-action@8cca0918f8471c33515202b73f56ab27f2bed283 # v2.87.29
+        uses: taiki-e/install-action@v2
         with:
           tool: cargo-binstall
 
@@ -65,7 +65,7 @@ jobs:
           --message-format=json | ${CARGO_HOME}/bin/clippy-sarif | tee rust-clippy-results.sarif | ${CARGO_HOME}/bin/sarif-fmt
 
       - name: Upload analysis results to GitHub
-        uses: github/codeql-action/upload-sarif@6f2ac81f5cd81fe351a197ba0b00d91d03cd2aee # v4.39.0
+        uses: github/codeql-action/upload-sarif@v4
         if: github.event_name != 'merge_group'
         with:
           sarif_file: rust-clippy-results.sarif
@@ -76,15 +76,15 @@ jobs:
     runs-on: ubuntu-latest
     steps:
     - name: Harden Runner
-      uses: step-security/harden-runner@aebdcf6156ab6691adf63218240e476564a1ed4c # v2.23.0
+      uses: step-security/harden-runner@v2
       with:
         egress-policy: audit
 
     - name: Checkout Actions Repository
-      uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
+      uses: actions/checkout@v7
 
     - name: Check spelling of file.txt
-      uses: crate-ci/typos@4c8b7f51ca60df14e3c5ca82770dfbbe6c3dae85 # v1.52.0
+      uses: crate-ci/typos@v1
       with:
         config: typos.toml
 
@@ -93,12 +93,12 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - name: Harden Runner
-        uses: step-security/harden-runner@aebdcf6156ab6691adf63218240e476564a1ed4c # v2.23.0
+        uses: step-security/harden-runner@v2
         with:
           egress-policy: audit
 
       - name: Checkout repository
-        uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
+        uses: actions/checkout@v7
 
       - name: Check for dev-mode flags
         run: tools/check_no_dev_mode.sh
@@ -108,15 +108,15 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - name: Harden Runner
-        uses: step-security/harden-runner@aebdcf6156ab6691adf63218240e476564a1ed4c # v2.23.0
+        uses: step-security/harden-runner@v2
         with:
           egress-policy: audit
 
       - name: Checkout repository
-        uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
+        uses: actions/checkout@v7
 
       - name: Setup OPA
-        uses: open-policy-agent/setup-opa@b2b258e089860efaadaaf71bf6e3aecb4a3eeff1 # v2.4.0
+        uses: open-policy-agent/setup-opa@v2
         with:
           version: 1.6.0
 
@@ -129,19 +129,43 @@ jobs:
     steps:
 
     - name: Harden Runner
-      uses: step-security/harden-runner@aebdcf6156ab6691adf63218240e476564a1ed4c # v2.23.0
+      uses: step-security/harden-runner@v2
       with:
         egress-policy: audit
 
     - name: Checkout Actions Repository
-      uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
+      uses: actions/checkout@v7
       with:
         fetch-depth: 0
 
     - name: Lint Commits
-      uses: crate-ci/committed@15229711f8f597474c0b636f327cde5969f9a529 # v1.1.7
+      uses: crate-ci/committed@v1.1.7
       if: github.event_name != 'merge_group'
       with:
         # committed's default range (HEAD~..HEAD^2) assumes a 2-parent PR merge
         # commit, which doesn't exist on the merge queue's single-commit ref.
         commits: ${{ github.event_name == 'merge_group' && 'HEAD~1..HEAD' || 'HEAD~..HEAD^2' }}
+
+  actions-lock:
+    name: Verify Actions Lockfile
+    runs-on: ubuntu-latest
+    steps:
+
+    - name: Harden Runner
+      uses: step-security/harden-runner@v2
+      with:
+        egress-policy: audit
+
+    - name: Checkout Actions Repository
+      uses: actions/checkout@v7
+
+    - name: Install gh-actions-lock extension
+      run: gh extension install github/gh-actions-lock --pin v0.5.1
+
+    - name: Verify Actions Lockfile
+      # Fails if .github/workflows/actions.lock is out of sync with the
+      # workflows or pins a commit the runner would reject (moved or
+      # unreachable ref, repository identity change).
+      env:
+        GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+      run: gh actions-lock --verify

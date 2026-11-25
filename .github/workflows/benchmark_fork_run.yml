@@ -15,7 +15,7 @@ jobs:
     name: Run Fork PR Benchmarks
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
+      - uses: actions/checkout@v7
 
       - name: Install protobuf-compiler
         run: |
@@ -23,13 +23,13 @@ jobs:
           sudo apt-get install -y protobuf-compiler libtss2-dev pkg-config
 
       - name: Install Rust
-        uses: dtolnay/rust-toolchain@683b588c487a69d01f6c6ddf40f036ff682cc2c8 # stable
+        uses: dtolnay/rust-toolchain@master
         with:
           toolchain: stable
           targets: ${{ matrix.target }}
 
       - name: Rust Cache
-        uses: swatinem/rust-cache@c19371144df3bb44fab255c43d04cbc2ab54d1c4 # v2.9.1
+        uses: swatinem/rust-cache@v2
         with:
           save-if: ${{ github.ref == 'refs/heads/main' }}
 
@@ -40,13 +40,13 @@ jobs:
           cargo bench --features bench_internals > benchmark_results.log
 
       - name: Upload Benchmark Results
-        uses: actions/upload-artifact@bbbca2ddaa5d8feaa63e36b76fdaad77386f024f # v7.0.0
+        uses: actions/upload-artifact@v7
         with:
           name: benchmark_results.log
           path: ./benchmark_results.log
 
       - name: Upload GitHub Pull Request Event
-        uses: actions/upload-artifact@bbbca2ddaa5d8feaa63e36b76fdaad77386f024f # v7.0.0
+        uses: actions/upload-artifact@v7
         with:
           name: event.json
           path: ${{ github.event_path }}

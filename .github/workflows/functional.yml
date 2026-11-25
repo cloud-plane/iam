@@ -33,12 +33,12 @@ jobs:
       raft_kek: ${{ github.event_name != 'pull_request' || steps.filter.outputs.raft_kek == 'true' }}
     steps:
       - name: Harden Runner
-        uses: step-security/harden-runner@aebdcf6156ab6691adf63218240e476564a1ed4c # v2.23.0
+        uses: step-security/harden-runner@v2
         with:
           egress-policy: audit
 
-      - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
-      - uses: dorny/paths-filter@7b450fff21473bca461d4b92ce414b9d0420d706 # v4.0.2
+      - uses: actions/checkout@v7
+      - uses: dorny/paths-filter@v4
         id: filter
         with:
           filters: |
@@ -74,15 +74,15 @@ jobs:
       contents: read
     steps:
 
-      - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
+      - uses: actions/checkout@v7
 
       - name: Rust Cache
-        uses: swatinem/rust-cache@c19371144df3bb44fab255c43d04cbc2ab54d1c4 # v2.9.1
+        uses: swatinem/rust-cache@v2
         with:
           save-if: ${{ github.ref == 'refs/heads/main' }}
 
       - name: Install Rust
-        uses: dtolnay/rust-toolchain@683b588c487a69d01f6c6ddf40f036ff682cc2c8 # stable
+        uses: dtolnay/rust-toolchain@master
         with:
           toolchain: stable
 
@@ -98,7 +98,7 @@ jobs:
         run: mv target/release/keystone* ./
 
       - name: Upload built binaries
-        uses: actions/upload-artifact@bbbca2ddaa5d8feaa63e36b76fdaad77386f024f # v7.0.0
+        uses: actions/upload-artifact@v7
         with:
           name: keystone
           path: |
@@ -128,9 +128,108 @@ jobs:
           - 5432:5432
         options: --health-cmd pg_isready --health-interval 10s --health-timeout 5s --health-retries 5
     steps:
-      - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
+      - uses: actions/checkout@v7
 
-      - uses: ./.github/actions/deploy_keystone
+      - name: Install Rust
+        uses: dtolnay/rust-toolchain@master
+        with:
+          toolchain: stable
+
+      - name: Install protobuf-compiler
+        run: |
+          sudo apt update
+          sudo apt install -y protobuf-compiler
+
+      - name: Fetch pre-built artifacts
+        uses: actions/download-artifact@v8
+        with:
+          name: keystone
+
+      - name: Install osc
+        run: curl --proto '=https' --tlsv1.2 -LsSf https://github.com/gtema/openstack/releases/latest/download/openstack_cli-installer.sh | sh
+
+      - name: Fix keystone permissions
+        run: chmod u+x keystone keystone-manage
+
+      - name: Prepare keystone config file
+        run: |
+          mkdir -p etc
+          mkdir -p etc/fernet-keys
+          cat <<EOF > etc/keystone.conf
+          [DEFAULT]
+          debug = true
+          use_stderr = true
+
+          [auth]
+          methods = password,token,openid,application_credential,x509
+          [database]
+          connection = postgresql://keystone:1234@postgres:5432/keystone
+          [fernet_receipts]
+          key_repository = $(pwd)/etc/fernet-keys
+          [fernet_tokens]
+          key_repository = $(pwd)/etc/fernet-keys
+          [webauthn]
+          enabled = true
+          driver = sql
+          relying_party_id = local
+          relying_party_origin = https://keystone.local
+          [audit]
+          spool_dir = /tmp/keystone/audit
+          [api_policy]
+          engine = regorus
+          regorus_policies_path = $(pwd)/policy
+          EOF
+          cat etc/keystone.conf
+          echo "2Rlc-npWYOGqqG1zM-bmfBj2apLacLXhIbBsdyqQ0zg=" > etc/fernet-keys/0
+          echo "sQyQVikArus5DRomTHCLPEIJO2yYkeB5nDdaasIKHVQ=" > etc/fernet-keys/1
+
+      - name: Start keystone
+        run: |
+          network=$(docker network ls --filter name=github_network_ -q | head -n 1)
+          docker run -d \
+            --network "$network" \
+            -p 5001:5001 \
+            -e OS_KEYSTONE_CONFIG_DIR="${{ github.workspace }}/etc" \
+            -v $PWD/etc:/etc/keystone:rw -v $PWD/etc:$PWD/etc \
+            --name keystone \
+            ghcr.io/cloud-plane/iam/py-keystone:main
+
+      - name: Add postgres container address to /etc/hosts
+        run: |
+          sudo echo "127.0.0.1 postgres localhost" | sudo tee -a /etc/hosts
+
+      - name: Prepare clouds.yaml
+        run: |
+          mkdir -p ~/.config/openstack
+          cat <<EOF > ~/.config/openstack/clouds.yaml
+          clouds:
+            admin:
+              auth:
+                auth_url: http://localhost:5001
+                username: admin
+                password: password
+                project_name: admin
+                user_domain_id: default
+                project_domain_id: default
+
+            admin-rust:
+              auth:
+                auth_url: http://localhost:8080
+                username: admin
+                password: password
+                project_name: admin
+                user_domain_id: default
+                project_domain_id: default
+          EOF
+
+      - name: Wait for py-keystone to bootstrap
+        run: sleep 5
+
+      - name: Apply Rust keystone DB changes
+        run: ./keystone-manage -c ${{ github.workspace }}/etc/keystone.conf db up
+
+      - name: Start rust keystone
+        run: ./keystone -c ${{ github.workspace }}/etc/keystone.conf -vv > rust.log 2>&1 &
 
       - name: Wait for py-keystone to bootstrap
         run: sleep 5
@@ -184,7 +283,7 @@ jobs:
       id-token: write # Required for GitHub OIDC JWT (github federation test)
     steps:
 
-      - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
+      - uses: actions/checkout@v7
 
       - name: Start Local Registry
         run: |
@@ -223,7 +322,7 @@ jobs:
         run: curl -v http://localhost:5000/v2/
 
       - name: Set up Docker Buildx
-        uses: docker/setup-buildx-action@f87e5991a6d7451dcb8d9637bfbc97413f497069 # v4.4.1
+        uses: docker/setup-buildx-action@v4
         with:
           driver: docker-container
 
@@ -232,7 +331,7 @@ jobs:
       # GHCR, so they import the cache only.
       - name: Log in to GHCR for the build cache
         if: github.event.pull_request.head.repo.fork != true
-        uses: docker/login-action@8aa5831fb8d48d8f76594c7ddde61ae58019f550  # v4.8.0
+        uses: docker/login-action@v4
         with:
           registry: ${{ env.REGISTRY }}
           username: ${{ github.actor }}
@@ -275,7 +374,7 @@ jobs:
       # tests/loadtest is a standalone crate (excluded from the root
       # workspace) with its own Cargo.lock and target dir.
       - name: Rust Cache
-        uses: swatinem/rust-cache@c19371144df3bb44fab255c43d04cbc2ab54d1c4 # v2.9.1
+        uses: swatinem/rust-cache@v2
         with:
           workspaces: tests/loadtest
           save-if: ${{ github.ref == 'refs/heads/main' }}
@@ -332,7 +431,7 @@ jobs:
 
       - name: Upload loadtest report
         if: always()
-        uses: actions/upload-artifact@bbbca2ddaa5d8feaa63e36b76fdaad77386f024f # v7.0.0
+        uses: actions/upload-artifact@v7
         with:
           name: loadtest-report
           path: tests/loadtest/reports/
@@ -363,7 +462,7 @@ jobs:
 
       - name: Upload tempest results log
         if: always() && steps.tempest_verify.outcome != 'skipped'
-        uses: actions/upload-artifact@bbbca2ddaa5d8feaa63e36b76fdaad77386f024f # v7.0.0
+        uses: actions/upload-artifact@v7
         with:
           name: tempest-identity-results
           path: tempest-results.log
@@ -489,7 +588,7 @@ jobs:
       contents: read
     steps:
 
-      - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
+      - uses: actions/checkout@v7
 
       - name: Start Local Registry
         run: |
@@ -576,7 +675,7 @@ jobs:
       pull-requests: write
     steps:
       - name: Fetch pre-built artifacts
-        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v5.0.0
+        uses: actions/download-artifact@v8
         with:
           name: loadtest-report
 
@@ -590,7 +689,7 @@ jobs:
 
       - name: Post Loadtest results to PR
         if: github.event_name == 'pull_request'
-        uses: marocchino/sticky-pull-request-comment@5770ad5eb8f42dd2c4f34da00c94c5381e49af88 # v3.0.5
+        uses: marocchino/sticky-pull-request-comment@v3
         with:
           header: loadtest
           message: |
@@ -609,7 +708,7 @@ jobs:
       pull-requests: write
     steps:
       - name: Fetch tempest results
-        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v5.0.0
+        uses: actions/download-artifact@v8
         with:
           name: tempest-identity-results
 
@@ -641,7 +740,7 @@ jobs:
           } >> "$GITHUB_OUTPUT"
 
       - name: Post tempest results to PR
-        uses: marocchino/sticky-pull-request-comment@5770ad5eb8f42dd2c4f34da00c94c5381e49af88 # v3.0.5
+        uses: marocchino/sticky-pull-request-comment@v3
         with:
           header: tempest
           message: |
