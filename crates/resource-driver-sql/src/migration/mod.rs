@@ -16,10 +16,12 @@
 use sea_orm_migration::prelude::*;
 
 mod m20261120_000003_project_table_watermark;
+mod m20261125_000011_project_parent_id_index;
 
 /// The ordered list of migrations.
 pub fn migrations() -> Vec<Box<dyn MigrationTrait>> {
-    vec![Box::new(
-        m20261120_000003_project_table_watermark::Migration,
-    )]
+    vec![
+        Box::new(m20261120_000003_project_table_watermark::Migration),
+        Box::new(m20261125_000011_project_parent_id_index::Migration),
+    ]
 }
