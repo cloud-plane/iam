@@ -159,8 +159,8 @@ async fn mount_extensions(mut app: Router, startup: &Startup) -> Result<Router, 
 ///
 /// The `ServiceBuilder` runs top-to-bottom; it stays a local rather than a
 /// named return type because the composed tower type is effectively
-/// unwriteable.
-fn apply_middleware(
+/// unwriteable. Public for `benches/middleware.rs`.
+pub fn apply_middleware(
     app: Router,
     state: &ServiceState,
     span_options: Option<Arc<RequestSpanOptions>>,
@@ -259,7 +259,7 @@ fn apply_middleware(
 /// `[interface_metrics] http_requests_enabled` is set, returning the shared
 /// [`HttpMetrics`] handle for the metrics listener, which wraps its own routes
 /// with it.
-async fn attach_http_metrics(
+pub async fn attach_http_metrics(
     mut app: Router,
     state: &ServiceState,
 ) -> (Router, Option<Arc<HttpMetrics>>) {

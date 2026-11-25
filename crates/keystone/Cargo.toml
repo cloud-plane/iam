@@ -122,6 +122,7 @@ validator = { workspace = true, features = ["derive"] }
 toml = { version = "1.1", default-features = false, features = ["parse", "serde"] }
 
 [dev-dependencies]
+criterion = { workspace = true, features = ["async_tokio"] }
 cadf = { workspace = true, features = ["testing"] }
 http-body-util.workspace = true
 httpmock = { workspace = true, features = ["http2"] }
@@ -131,12 +132,16 @@ openstack-keystone-distributed-storage = { workspace = true, features = ["mock"]
 openstack-keystone-telemetry = { workspace = true, features = ["golden"] }
 rcgen.workspace = true
 rstest.workspace = true
-secrecy = { workspace = true, features = ["serde"] }
 sea-orm = { workspace = true, features = ["sqlx-sqlite"] }
+secrecy = { workspace = true, features = ["serde"] }
 tempfile.workspace = true
 tokio = { workspace = true, features = ["process", "macros"] }
 tracing-test = { workspace = true, features = ["no-env-filter"] }
 url.workspace = true
+
+[[bench]]
+name = "middleware"
+harness = false
 
 [features]
 default = ["mysql", "postgres"]

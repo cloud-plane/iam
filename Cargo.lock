@@ -4939,6 +4939,7 @@ dependencies = [
  "chrono",
  "clap",
  "color-eyre",
+ "criterion",
  "dashmap",
  "derive_builder",
  "erased-serde",
