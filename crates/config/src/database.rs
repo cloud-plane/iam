@@ -17,9 +17,10 @@ use oslo_config::{ConfigError, ConfigSection, LoadCtx};
 use secrecy::{ExposeSecret, SecretString};
 use serde::Deserialize;
 use std::path::PathBuf;
+use validator::Validate;
 
 /// Database configuration.
-#[derive(Debug, Default, Deserialize, Clone)]
+#[derive(Debug, Deserialize, Clone, Validate)]
 pub struct DatabaseSection {
     /// Database URL.
     pub connection: SecretString,
@@ -61,9 +62,250 @@ pub struct DatabaseSection {
     /// per-connection. See `db_spiffe`'s module doc for the full disclosure.
     #[serde(default)]
     pub spiffe_managed: bool,
+
+    /// Interval in milliseconds between two polls of the `table_version`
+    /// watermark table. Defaults to 1000; `0` disables the poller, and with
+    /// it every projection cache of the SQL drivers (all reads go to the
+    /// database).
+    ///
+    /// The SQL drivers of the identity and resource providers keep a
+    /// version counter per table in `table_version`, bumped by database
+    /// triggers, and cache small non-secret projections (user options,
+    /// password expiry, project domain and parents) validated against the
+    /// counters. Readers that tolerate staleness use the polled counters
+    /// (a change made by another process is noticed within one interval);
+    /// linearizable readers read the counters with one query first. When a
+    /// poll fails, or the triggers are not installed, every read goes to
+    /// the database. Requires a SQL backend with the watermark triggers
+    /// installed (`keystone-manage db sync` or `db up`).
+    #[serde(default = "default_table_watermark_interval_ms")]
+    pub table_watermark_interval_ms: u64,
+
+    /// How stale (in milliseconds) the non-secret projections the SQL
+    /// drivers cache may be for the reads of the token validation path
+    /// (the options and the password expiry of the user, the domain of a
+    /// project). `0` (default) disables the projections that tolerate
+    /// staleness: every read goes to the database. Without the watermark
+    /// poller (`table_watermark_interval_ms = 0`) a projection that
+    /// tolerates staleness is served by the age of the entry alone, up to
+    /// this value.
+    ///
+    /// The projections are validated against the table watermarks (see
+    /// `table_watermark_interval_ms`). A value below the watermark poll
+    /// interval cannot be guaranteed and results in a database read, as
+    /// does an unhealthy poller. Authentication, password verification and
+    /// every write path always read the database. The value must not
+    /// exceed 300000 (5 minutes).
+    #[serde(default)]
+    #[validate(range(max = 300_000))]
+    pub projection_max_staleness_ms: u64,
+
+    /// Upper bound, in MiB, of the memory of all the projection caches of
+    /// the SQL drivers together (like `memcached -m`). The budget is split
+    /// among the individual caches by the `projection_cache_weight_*`
+    /// options, and every entry is charged its approximate size. When a
+    /// cache is full expired entries are dropped first, then arbitrary
+    /// ones. The budget applies to every driver instance: with several
+    /// named SQL drivers each one gets the share of its own caches.
+    /// Defaults to 64, at most 16384; `0` disables the projection caches.
+    #[serde(default = "default_projection_cache_max_memory_mib")]
+    #[validate(range(max = 16_384))]
+    pub projection_cache_max_memory_mib: u64,
+
+    /// Maximum age, in milliseconds, of an entry of the projection caches,
+    /// whatever the watermarks and the staleness of the reader say. Bounds
+    /// the damage of a missed invalidation (e.g. a cascade delete on
+    /// MySQL, which fires no triggers). Defaults to 300000 (5 minutes), at
+    /// most 86400000 (a day); `0` disables the projection caches.
+    #[serde(default = "default_projection_cache_ttl_ms")]
+    #[validate(range(max = 86_400_000))]
+    pub projection_cache_ttl_ms: u64,
+
+    /// How long, in milliseconds, an entry is trusted by a reader that
+    /// accepts any staleness when there is no watermark poller to say that
+    /// it is outdated. Defaults to 60000, between 1 and 3600000.
+    #[serde(default = "default_projection_any_ttl_without_poller_ms")]
+    #[validate(range(min = 1, max = 3_600_000))]
+    pub projection_any_ttl_without_poller_ms: u64,
+
+    /// Share of the user options cache in the projection memory budget.
+    /// The share of a cache is its weight divided by the sum of all the
+    /// `projection_cache_weight_*` options; `0` gives the cache no memory
+    /// (disabled). At most 1000.
+    #[serde(default = "default_weight_2")]
+    #[validate(range(max = 1000))]
+    pub projection_cache_weight_user_options: u32,
+
+    /// Share of the password expiry cache, see
+    /// `projection_cache_weight_user_options`.
+    #[serde(default = "default_weight_1")]
+    #[validate(range(max = 1000))]
+    pub projection_cache_weight_password_expiry: u32,
+
+    /// Share of the cache of the domain of a project, see
+    /// `projection_cache_weight_user_options`.
+    #[serde(default = "default_weight_1")]
+    #[validate(range(max = 1000))]
+    pub projection_cache_weight_project_domain: u32,
+
+    /// Share of the cache of the domain of a user, see
+    /// `projection_cache_weight_user_options`.
+    #[serde(default = "default_weight_1")]
+    #[validate(range(max = 1000))]
+    pub projection_cache_weight_user_domain: u32,
+
+    /// Share of the cache of the parents of a project, see
+    /// `projection_cache_weight_user_options`.
+    #[serde(default = "default_weight_2")]
+    #[validate(range(max = 1000))]
+    pub projection_cache_weight_project_parents: u32,
+
+    /// Share of the project reference cache, see
+    /// `projection_cache_weight_user_options`.
+    #[serde(default = "default_weight_2")]
+    #[validate(range(max = 1000))]
+    pub projection_cache_weight_project_ref: u32,
+
+    /// Share of the domain reference cache, see
+    /// `projection_cache_weight_user_options`.
+    #[serde(default = "default_weight_1")]
+    #[validate(range(max = 1000))]
+    pub projection_cache_weight_domain_ref: u32,
+
+    /// Share of the cache of the groups of a user, see
+    /// `projection_cache_weight_user_options`.
+    #[serde(default = "default_weight_2")]
+    #[validate(range(max = 1000))]
+    pub projection_cache_weight_user_groups: u32,
+
+    /// Share of the role assignments cache, see
+    /// `projection_cache_weight_user_options`.
+    #[serde(default = "default_weight_4")]
+    #[validate(range(max = 1000))]
+    pub projection_cache_weight_assignments: u32,
+
+    /// Share of the cache of the user record, see
+    /// `projection_cache_weight_user_options`.
+    #[serde(default = "default_weight_2")]
+    #[validate(range(max = 1000))]
+    pub projection_cache_weight_user: u32,
+
+    /// Share of the cache of the local user row, see
+    /// `projection_cache_weight_user_options`.
+    #[serde(default = "default_weight_1")]
+    #[validate(range(max = 1000))]
+    pub projection_cache_weight_local_user: u32,
+
+    /// Share of the cache of the token revocation check, see
+    /// `projection_cache_weight_user_options`.
+    #[serde(default = "default_weight_2")]
+    #[validate(range(max = 1000))]
+    pub projection_cache_weight_revocation: u32,
+
+    /// Share of the cache of the role names, see
+    /// `projection_cache_weight_user_options`.
+    #[serde(default = "default_weight_1")]
+    #[validate(range(max = 1000))]
+    pub projection_cache_weight_role_names: u32,
+
+    /// Share of the cache of the resolved role inference, see
+    /// `projection_cache_weight_user_options`.
+    #[serde(default = "default_weight_1")]
+    #[validate(range(max = 1000))]
+    pub projection_cache_weight_role_inference: u32,
+
+    /// Share of the service catalog cache, see
+    /// `projection_cache_weight_user_options`.
+    #[serde(default = "default_weight_1")]
+    #[validate(range(max = 1000))]
+    pub projection_cache_weight_catalog: u32,
+}
+
+fn default_projection_cache_max_memory_mib() -> u64 {
+    64
+}
+
+fn default_table_watermark_interval_ms() -> u64 {
+    1_000
+}
+
+fn default_projection_cache_ttl_ms() -> u64 {
+    300_000
+}
+
+fn default_projection_any_ttl_without_poller_ms() -> u64 {
+    60_000
+}
+
+fn default_weight_1() -> u32 {
+    1
+}
+
+fn default_weight_2() -> u32 {
+    2
+}
+
+fn default_weight_4() -> u32 {
+    4
+}
+
+impl Default for DatabaseSection {
+    fn default() -> Self {
+        Self {
+            connection: SecretString::default(),
+            connection_debug: 0,
+            max_pool_size: None,
+            tls: TlsConfiguration::default(),
+            spiffe_managed: false,
+            table_watermark_interval_ms: default_table_watermark_interval_ms(),
+            projection_max_staleness_ms: 0,
+            projection_cache_max_memory_mib: default_projection_cache_max_memory_mib(),
+            projection_cache_ttl_ms: default_projection_cache_ttl_ms(),
+            projection_any_ttl_without_poller_ms: default_projection_any_ttl_without_poller_ms(),
+            projection_cache_weight_user_options: default_weight_2(),
+            projection_cache_weight_password_expiry: default_weight_1(),
+            projection_cache_weight_project_domain: default_weight_1(),
+            projection_cache_weight_user_domain: default_weight_1(),
+            projection_cache_weight_project_parents: default_weight_2(),
+            projection_cache_weight_project_ref: default_weight_2(),
+            projection_cache_weight_domain_ref: default_weight_1(),
+            projection_cache_weight_user_groups: default_weight_2(),
+            projection_cache_weight_assignments: default_weight_4(),
+            projection_cache_weight_user: default_weight_2(),
+            projection_cache_weight_local_user: default_weight_1(),
+            projection_cache_weight_revocation: default_weight_2(),
+            projection_cache_weight_role_names: default_weight_1(),
+            projection_cache_weight_role_inference: default_weight_1(),
+            projection_cache_weight_catalog: default_weight_1(),
+        }
+    }
 }
 
 impl DatabaseSection {
+    /// The sum of the `projection_cache_weight_*` options.
+    pub fn projection_cache_weight_total(&self) -> u64 {
+        [
+            self.projection_cache_weight_user_options,
+            self.projection_cache_weight_password_expiry,
+            self.projection_cache_weight_project_domain,
+            self.projection_cache_weight_user_domain,
+            self.projection_cache_weight_project_parents,
+            self.projection_cache_weight_project_ref,
+            self.projection_cache_weight_domain_ref,
+            self.projection_cache_weight_user_groups,
+            self.projection_cache_weight_assignments,
+            self.projection_cache_weight_user,
+            self.projection_cache_weight_local_user,
+            self.projection_cache_weight_revocation,
+            self.projection_cache_weight_role_names,
+            self.projection_cache_weight_role_inference,
+            self.projection_cache_weight_catalog,
+        ]
+        .into_iter()
+        .map(u64::from)
+        .sum()
+    }
+
     /// Whether SQL query logging should be enabled for the configured
     /// `connection_debug` verbosity.
     pub fn sqlx_logging_enabled(&self) -> bool {
@@ -309,5 +551,59 @@ mod tests {
             ..Default::default()
         };
         assert_eq!("", sot.get_connection().expose_secret());
+    }
+}
+
+#[cfg(test)]
+mod projection_tests {
+    use validator::Validate;
+
+    use super::*;
+
+    #[test]
+    fn defaults_are_valid() {
+        let db = DatabaseSection::default();
+        assert!(db.validate().is_ok());
+        assert_eq!(db.projection_cache_max_memory_mib, 64);
+        assert_eq!(db.projection_cache_ttl_ms, 300_000);
+        assert_eq!(db.table_watermark_interval_ms, 1_000);
+        assert_eq!(db.projection_any_ttl_without_poller_ms, 60_000);
+        assert_eq!(db.projection_cache_weight_total(), 24);
+    }
+
+    #[test]
+    fn caps_are_enforced() {
+        let ok = DatabaseSection::default();
+        for broken in [
+            DatabaseSection {
+                projection_max_staleness_ms: 300_001,
+                ..ok.clone()
+            },
+            DatabaseSection {
+                projection_cache_max_memory_mib: 16_385,
+                ..ok.clone()
+            },
+            DatabaseSection {
+                projection_cache_ttl_ms: 86_400_001,
+                ..ok.clone()
+            },
+            DatabaseSection {
+                projection_any_ttl_without_poller_ms: 0,
+                ..ok.clone()
+            },
+            DatabaseSection {
+                projection_cache_weight_revocation: 1001,
+                ..ok.clone()
+            },
+        ] {
+            assert!(broken.validate().is_err(), "{broken:?}");
+        }
+        let edge = DatabaseSection {
+            projection_max_staleness_ms: 300_000,
+            projection_cache_max_memory_mib: 0,
+            projection_cache_weight_user: 0,
+            ..ok
+        };
+        assert!(edge.validate().is_ok());
     }
 }

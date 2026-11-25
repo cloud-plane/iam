@@ -13,11 +13,28 @@
 // SPDX-License-Identifier: Apache-2.0
 use serde::Deserialize;
 
-use crate::common::default_sql_driver;
+use crate::common::{default_cache_time, default_sql_driver, default_true};
 
 /// Revoke provider configuration.
 #[derive(Debug, Deserialize, Clone)]
 pub struct RevokeProvider {
+    /// Maximum age of an entry of the revocation check cache of the SQL
+    /// driver, in seconds. Caps `[database] projection_cache_ttl_ms`, the
+    /// smaller one wins; `0` disables the caches. A change of the tables is
+    /// noticed through the watermarks before this time. Only effective when
+    /// `caching` is enabled.
+    #[serde(default = "default_cache_time")]
+    pub cache_time: u64,
+
+    /// Toggle for caching of the token revocation check.
+    ///
+    /// When enabled the SQL driver caches the answer of the check in
+    /// memory, within the `[database] projection_cache_*` limits. The check
+    /// is linearizable: the answer is kept only while the revocation tables
+    /// are unchanged, as told by the table version watermarks.
+    #[serde(default = "default_true")]
+    pub caching: bool,
+
     /// Entry point for the token revocation backend driver in the
     /// `keystone.revoke` namespace. Keystone only provides a `sql` driver.
     #[serde(default = "default_sql_driver")]
@@ -31,6 +48,8 @@ pub struct RevokeProvider {
 impl Default for RevokeProvider {
     fn default() -> Self {
         Self {
+            cache_time: default_cache_time(),
+            caching: default_true(),
             driver: default_sql_driver(),
             expiration_buffer: default_expiration_buffer(),
         }

@@ -13,23 +13,28 @@
 // SPDX-License-Identifier: Apache-2.0
 //! # OpenStack Keystone SQL driver for the role provider
 use std::collections::HashSet;
-use std::sync::Arc;
+use std::sync::{Arc, OnceLock};
 
 use async_trait::async_trait;
 
 use sea_orm::{DatabaseConnection, Schema};
 
+use openstack_keystone_config::Config;
 use openstack_keystone_core::keystone::ServiceState;
 use openstack_keystone_core::plugin_manager::BackendRegistration;
 use openstack_keystone_core::role::RoleProviderError;
 use openstack_keystone_core::role::backend::RoleBackend;
+use openstack_keystone_core::table_watermark;
 use openstack_keystone_core::{
     SqlDriver, SqlDriverRegistration, db::create_table, error::DatabaseError,
 };
+use openstack_keystone_core_types::freshness::Freshness;
 use openstack_keystone_core_types::role::*;
 
+mod cache;
 pub mod entity;
 mod implied_role;
+mod migration;
 mod role;
 mod role_option;
 #[cfg(test)]
@@ -37,7 +42,23 @@ mod sqlite_tests;
 //mod role_imply;
 
 #[derive(Default)]
-pub struct SqlBackend {}
+pub struct SqlBackend {
+    /// Per driver instance: it belongs to the connection it reads through.
+    caches: OnceLock<cache::RoleCaches>,
+}
+
+impl SqlBackend {
+    /// A backend whose projection caches follow the configuration.
+    fn new(config: &Config) -> Self {
+        Self {
+            caches: OnceLock::from(cache::RoleCaches::new(config)),
+        }
+    }
+
+    fn caches(&self) -> &cache::RoleCaches {
+        self.caches.get_or_init(cache::RoleCaches::default)
+    }
+}
 
 /// Linkage anchor — see ADR-0018. Referenced by the `keystone` crate's
 /// `build.rs`-generated `_ANCHORS` static so the linker extracts `.rlib`
@@ -46,7 +67,9 @@ pub struct SqlBackend {}
 pub fn anchor() {}
 
 // Submit the plugin to the registry at compile-time
-static PLUGIN: SqlBackend = SqlBackend {};
+static PLUGIN: SqlBackend = SqlBackend {
+    caches: OnceLock::new(),
+};
 inventory::submit! {
     SqlDriverRegistration { driver: &PLUGIN }
 }
@@ -54,9 +77,10 @@ inventory::submit! {
     BackendRegistration::<dyn RoleBackend> {
         name: "sql",
         selected: |_| true,
-        build: |_cfg| Box::pin(async {
-            Ok(Arc::new(SqlBackend::default()) as Arc<dyn RoleBackend>)
-        }),
+        build: |cfg| {
+            let backend = SqlBackend::new(cfg.core);
+            Box::pin(async move { Ok(Arc::new(backend) as Arc<dyn RoleBackend>) })
+        },
     }
 }
 
@@ -122,7 +146,9 @@ impl RoleBackend for SqlBackend {
         state: &ServiceState,
         params: RoleCreate,
     ) -> Result<Role, RoleProviderError> {
-        Ok(role::create(&state.db.connection(), params).await?)
+        let role = role::create(&state.db.connection(), params).await?;
+        self.caches().invalidate_role(&role.id);
+        Ok(role)
     }
 
     /// Create a role imply rule.
@@ -141,7 +167,11 @@ impl RoleBackend for SqlBackend {
         prior_role_id: &'a str,
         implied_role_id: &'a str,
     ) -> Result<RoleImply, RoleProviderError> {
-        Ok(implied_role::create(&state.db.connection(), prior_role_id, implied_role_id).await?)
+        let rule =
+            implied_role::create(&state.db.connection(), prior_role_id, implied_role_id).await;
+        // Whatever the outcome, the next read must look at the tables.
+        self.caches().invalidate_inference();
+        Ok(rule?)
     }
 
     /// Check if a role imply rule exists.
@@ -176,7 +206,9 @@ impl RoleBackend for SqlBackend {
         role_id: &'a str,
         role: RoleUpdate,
     ) -> Result<Role, RoleProviderError> {
-        Ok(role::update(&state.db.connection(), role_id, role).await?)
+        let role = role::update(&state.db.connection(), role_id, role).await;
+        self.caches().invalidate_role(role_id);
+        Ok(role?)
     }
 
     /// Delete a role by the ID.
@@ -193,7 +225,9 @@ impl RoleBackend for SqlBackend {
         state: &ServiceState,
         id: &'a str,
     ) -> Result<(), RoleProviderError> {
-        Ok(role::delete(&state.db.connection(), id).await?)
+        let deleted = role::delete(&state.db.connection(), id).await;
+        self.caches().invalidate_role(id);
+        Ok(deleted?)
     }
 
     /// Delete a role imply rule.
@@ -212,7 +246,10 @@ impl RoleBackend for SqlBackend {
         prior_role_id: &'a str,
         implied_role_id: &'a str,
     ) -> Result<(), RoleProviderError> {
-        Ok(implied_role::delete(&state.db.connection(), prior_role_id, implied_role_id).await?)
+        let deleted =
+            implied_role::delete(&state.db.connection(), prior_role_id, implied_role_id).await;
+        self.caches().invalidate_inference();
+        Ok(deleted?)
     }
 
     /// Expand implied roles.
@@ -236,6 +273,35 @@ impl RoleBackend for SqlBackend {
         roles: &mut Vec<RoleRef>,
     ) -> Result<(), RoleProviderError> {
         expand_implied_roles(&state.db.connection(), roles).await
+    }
+
+    /// Get the resolved role inference.
+    ///
+    /// The closure of every role is computed when the rules are loaded and
+    /// kept while the `role` and `implied_role` tables are unchanged.
+    ///
+    /// # Parameters
+    /// - `state`: The service state.
+    #[tracing::instrument(name = "driver.sql.role.get_role_inference", level = "debug", skip_all)]
+    async fn get_role_inference(
+        &self,
+        state: &ServiceState,
+    ) -> Result<Arc<RoleInference>, RoleProviderError> {
+        let db = state.db.connection();
+        let watermarks = state.db.watermarks();
+        self.caches()
+            .inference
+            .get_or_load(
+                &watermarks,
+                &db,
+                cache::INFERENCE_KEY,
+                Freshness::Linearizable,
+                || async {
+                    let rules = implied_role::list(&db).await?;
+                    Ok(Arc::new(RoleInference::from_rules(&rules)))
+                },
+            )
+            .await
     }
 
     /// Get single role by ID.
@@ -343,10 +409,49 @@ impl RoleBackend for SqlBackend {
         state: &ServiceState,
         params: &RoleListParameters,
     ) -> Result<Vec<Role>, RoleProviderError> {
+        let db = state.db.connection();
+        // The lookup of the names of the assigned roles (every token
+        // validation): served from the cache, the roles it does not know are
+        // read with one query.
+        if let Some(ids) = &params.ids
+            && params.skip_options
+            && params.domain_id.is_none()
+            && params.name.is_none()
+            && params.pagination == Default::default()
+        {
+            let watermarks = state.db.watermarks();
+            return self
+                .caches()
+                .names
+                .get_or_load_many(
+                    &watermarks,
+                    &db,
+                    ids,
+                    Freshness::Linearizable,
+                    |missing| async {
+                        let roles = role::list(
+                            &db,
+                            &RoleListParameters {
+                                ids: Some(missing),
+                                skip_options: true,
+                                ..Default::default()
+                            },
+                        )
+                        .await?;
+                        Ok::<_, RoleProviderError>(
+                            roles
+                                .into_iter()
+                                .map(|role| (role.id.clone(), role))
+                                .collect(),
+                        )
+                    },
+                )
+                .await;
+        }
         // TODO: Add possibility to list roles with expansion and filter (e.g.,
         // token_restriction has list of roles that need to be returned
         // resolved)
-        Ok(role::list(&state.db.connection(), params).await?)
+        Ok(role::list(&db, params).await?)
     }
 }
 
@@ -368,7 +473,12 @@ impl SqlDriver for SqlBackend {
         create_table(connection, schema, crate::entity::prelude::Role).await?;
         create_table(connection, schema, crate::entity::prelude::RoleOption).await?;
         create_table(connection, schema, crate::entity::prelude::ImpliedRole).await?;
+        table_watermark::install(connection, table_watermark::ROLE_TABLES).await?;
         Ok(())
+    }
+
+    fn migrations(&self) -> Vec<Box<dyn sea_orm_migration::MigrationTrait>> {
+        crate::migration::migrations()
     }
 }
 

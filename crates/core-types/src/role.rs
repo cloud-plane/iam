@@ -12,7 +12,9 @@
 // SPDX-License-Identifier: Apache-2.0
 //! # Role provider core types
 mod error;
+mod inference;
 mod role;
 
 pub use error::*;
+pub use inference::*;
 pub use role::*;

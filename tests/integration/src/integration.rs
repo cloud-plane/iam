@@ -39,11 +39,14 @@ mod oauth2_token_exchange;
 mod oauth2_token_verify;
 mod on_behalf_of;
 mod policy_store;
+mod projection_cache;
 mod resource;
 mod revoke;
 mod role;
+mod role_catalog_cache;
 mod scim_realm;
 mod service_grant;
+mod table_watermark;
 mod token;
 mod trust;
 

@@ -13,7 +13,7 @@
 // SPDX-License-Identifier: Apache-2.0
 //! # OpenStack Keystone SQL driver for the revocation event provider
 
-use std::sync::Arc;
+use std::sync::{Arc, OnceLock};
 
 use async_trait::async_trait;
 use chrono::{DateTime, Utc};
@@ -26,14 +26,17 @@ use openstack_keystone_core::error::DbContextExt;
 use openstack_keystone_core::keystone::ServiceState;
 use openstack_keystone_core::plugin_manager::BackendRegistration;
 use openstack_keystone_core::revoke::{RevokeProviderError, backend::RevokeBackend};
+use openstack_keystone_core::table_watermark;
 use openstack_keystone_core::{
     SqlDriver, SqlDriverRegistration, db::create_table, error::DatabaseError,
 };
+use openstack_keystone_core_types::freshness::Freshness;
 use openstack_keystone_core_types::revoke::*;
 use openstack_keystone_core_types::token::FernetToken;
 
 use crate::entity::revocation_event as db_revocation_event;
 
+mod cache;
 mod cleanup;
 mod create;
 pub mod entity;
@@ -44,8 +47,32 @@ pub mod migration;
 mod sqlite_tests;
 
 /// Sql Database revocation backend.
-#[derive(Default)]
-pub struct SqlBackend {}
+pub struct SqlBackend {
+    /// Answers of the revocation check, validated against the table
+    /// watermarks.
+    caches: OnceLock<cache::RevokeCaches>,
+}
+
+impl Default for SqlBackend {
+    fn default() -> Self {
+        Self {
+            caches: OnceLock::new(),
+        }
+    }
+}
+
+impl SqlBackend {
+    /// A backend whose projection caches follow the configuration.
+    fn new(config: &openstack_keystone_config::Config) -> Self {
+        Self {
+            caches: OnceLock::from(cache::RevokeCaches::new(config)),
+        }
+    }
+
+    fn caches(&self) -> &cache::RevokeCaches {
+        self.caches.get_or_init(cache::RevokeCaches::default)
+    }
+}
 
 /// Linkage anchor — see ADR-0018. Referenced by the `keystone` crate's
 /// `build.rs`-generated `_ANCHORS` static so the linker extracts `.rlib`
@@ -54,7 +81,9 @@ pub struct SqlBackend {}
 pub fn anchor() {}
 
 // Submit the plugin to the registry at compile-time
-static PLUGIN: SqlBackend = SqlBackend {};
+static PLUGIN: SqlBackend = SqlBackend {
+    caches: OnceLock::new(),
+};
 inventory::submit! {
     SqlDriverRegistration { driver: &PLUGIN }
 }
@@ -62,9 +91,10 @@ inventory::submit! {
     BackendRegistration::<dyn RevokeBackend> {
         name: "sql",
         selected: |_| true,
-        build: |_cfg| Box::pin(async {
-            Ok(Arc::new(SqlBackend::default()) as Arc<dyn RevokeBackend>)
-        }),
+        build: |cfg| {
+            let backend = SqlBackend::new(cfg.core);
+            Box::pin(async move { Ok(Arc::new(backend) as Arc<dyn RevokeBackend>) })
+        },
     }
 }
 
@@ -115,7 +145,9 @@ impl RevokeBackend for SqlBackend {
         state: &ServiceState,
         event: RevocationEventCreate,
     ) -> Result<RevocationEvent, RevokeProviderError> {
-        Ok(create::create(&state.db.connection(), event).await?)
+        let result = create::create(&state.db.connection(), event).await;
+        self.caches().invalidate();
+        Ok(result?)
     }
 
     /// Delete the revocation events revoked before the given moment.
@@ -164,7 +196,20 @@ impl RevokeBackend for SqlBackend {
             RevocationEventListParametersBuilder::try_from(token_security_context)?;
 
         let params = params_builder.build()?;
-        list::exists(&state.db.connection(), &params).await
+        // Always linearizable: a revocation must be honoured by the next
+        // check. The counter sync is shared by the request.
+        let db = state.db.connection();
+        let watermarks = state.db.watermarks();
+        self.caches()
+            .revoked
+            .get_or_load(
+                &watermarks,
+                &db,
+                &cache::key(&params),
+                Freshness::Linearizable,
+                || list::exists(&db, &params),
+            )
+            .await
     }
 
     /// Revoke the token.
@@ -184,9 +229,9 @@ impl RevokeBackend for SqlBackend {
         state: &ServiceState,
         token: &FernetToken,
     ) -> Result<(), RevokeProviderError> {
-        Ok(create::create(&state.db.connection(), token.try_into()?)
-            .await
-            .map(|_| ())?)
+        let result = create::create(&state.db.connection(), token.try_into()?).await;
+        self.caches().invalidate();
+        Ok(result.map(|_| ())?)
     }
 }
 
@@ -209,6 +254,7 @@ impl SqlDriver for SqlBackend {
         indexes::ensure(&SchemaManager::new(connection))
             .await
             .context("creating the revocation_event indexes")?;
+        table_watermark::install(connection, table_watermark::REVOCATION_TABLES).await?;
         Ok(())
     }
 

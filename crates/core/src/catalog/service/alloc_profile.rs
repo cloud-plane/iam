@@ -19,7 +19,6 @@
 
 use std::collections::HashMap;
 use std::sync::Arc;
-use std::time::Duration;
 
 use serde_json::json;
 use uuid::Uuid;
@@ -69,18 +68,19 @@ fn sample_catalog() -> Vec<(Service, Vec<Endpoint>)> {
 #[tokio::test]
 async fn alloc_profile_get_catalog_cache_hit() {
     let _quiet = quiet_tracing();
+    // The driver cache holds one shared catalog and hands it out.
+    let shared = Arc::new(sample_catalog());
     let mut backend = MockCatalogBackend::default();
     backend
         .expect_get_catalog()
-        .returning(|_, _| Ok(sample_catalog()));
+        .returning(move |_, _| Ok(shared.clone()));
     let service = CatalogService {
         backend_driver: Arc::new(backend),
-        cache: CatalogCache::new(Duration::from_secs(600)),
     };
     let state = get_mocked_state(None, None).await;
     let exec = ExecutionContext::internal(&state);
 
-    // The first call loads and caches the catalog, the second one is a hit.
+    // The driver keeps the catalog: the service hands the shared value over.
     service.get_catalog(&exec, true).await.unwrap();
     let (catalog, stats) = measure_async(service.get_catalog(&exec, true)).await;
     let catalog = catalog.unwrap();

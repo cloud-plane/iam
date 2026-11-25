@@ -12,6 +12,8 @@
 //
 // SPDX-License-Identifier: Apache-2.0
 
+use std::sync::Arc;
+
 use async_trait::async_trait;
 
 use openstack_keystone_core_types::role::*;
@@ -106,6 +108,21 @@ pub trait RoleBackend: Send + Sync {
         state: &ServiceState,
         roles: &mut Vec<RoleRef>,
     ) -> Result<(), RoleProviderError>;
+
+    /// Get the resolved role inference.
+    ///
+    /// The default resolves the complete rule table on every call; a driver
+    /// that can tell when the rules change keeps the result.
+    ///
+    /// # Arguments
+    /// * `state` - The current service state.
+    async fn get_role_inference(
+        &self,
+        state: &ServiceState,
+    ) -> Result<Arc<RoleInference>, RoleProviderError> {
+        let rules = self.list_role_imply_rules(state).await?;
+        Ok(Arc::new(RoleInference::from_rules(&rules)))
+    }
 
     /// Get single role by ID.
     ///

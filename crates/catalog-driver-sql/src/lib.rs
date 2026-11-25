@@ -13,22 +13,25 @@
 // SPDX-License-Identifier: Apache-2.0
 //! # OpenStack Keystone SQL driver for the catalog provider
 
-use std::sync::Arc;
+use std::sync::{Arc, OnceLock};
 
 use async_trait::async_trait;
 use sea_orm::entity::*;
 use sea_orm::query::*;
 use sea_orm::{DatabaseConnection, Schema};
 
-use openstack_keystone_core::catalog::CatalogProviderError;
+use openstack_keystone_config::Config;
 use openstack_keystone_core::catalog::backend::CatalogBackend;
+use openstack_keystone_core::catalog::{CatalogEntries, CatalogProviderError};
 use openstack_keystone_core::error::DbContextExt;
 use openstack_keystone_core::keystone::ServiceState;
 use openstack_keystone_core::plugin_manager::BackendRegistration;
+use openstack_keystone_core::table_watermark;
 use openstack_keystone_core::{
     SqlDriver, SqlDriverRegistration, db::create_table, error::DatabaseError,
 };
 use openstack_keystone_core_types::catalog::*;
+use openstack_keystone_core_types::freshness::Freshness;
 
 use crate::entity::{
     endpoint as db_endpoint,
@@ -36,16 +39,34 @@ use crate::entity::{
     service as db_service,
 };
 
+mod cache;
 mod endpoint;
 mod endpoint_group;
 pub mod entity;
+mod migration;
 mod project_endpoint;
 mod project_endpoint_group;
 mod region;
 mod service;
 
 #[derive(Default)]
-pub struct SqlBackend {}
+pub struct SqlBackend {
+    /// Per driver instance: it belongs to the connection it reads through.
+    caches: OnceLock<cache::CatalogCaches>,
+}
+
+impl SqlBackend {
+    /// A backend whose projection cache follows the configuration.
+    fn new(config: &Config) -> Self {
+        Self {
+            caches: OnceLock::from(cache::CatalogCaches::new(config)),
+        }
+    }
+
+    fn caches(&self) -> &cache::CatalogCaches {
+        self.caches.get_or_init(cache::CatalogCaches::default)
+    }
+}
 
 /// Linkage anchor — see ADR-0018. Referenced by the `keystone` crate's
 /// `build.rs`-generated `_ANCHORS` static so the linker extracts `.rlib`
@@ -54,7 +75,9 @@ pub struct SqlBackend {}
 pub fn anchor() {}
 
 // Submit the plugin to the registry at compile-time
-static PLUGIN: SqlBackend = SqlBackend {};
+static PLUGIN: SqlBackend = SqlBackend {
+    caches: OnceLock::new(),
+};
 inventory::submit! {
     SqlDriverRegistration { driver: &PLUGIN }
 }
@@ -62,9 +85,10 @@ inventory::submit! {
     BackendRegistration::<dyn CatalogBackend> {
         name: "sql",
         selected: |_| true,
-        build: |_cfg| Box::pin(async {
-            Ok(Arc::new(SqlBackend::default()) as Arc<dyn CatalogBackend>)
-        }),
+        build: |cfg| {
+            let backend = SqlBackend::new(cfg.core);
+            Box::pin(async move { Ok(Arc::new(backend) as Arc<dyn CatalogBackend>) })
+        },
     }
 }
 
@@ -135,7 +159,10 @@ impl CatalogBackend for SqlBackend {
         state: &ServiceState,
         endpoint_data: EndpointCreate,
     ) -> Result<Endpoint, CatalogProviderError> {
-        Ok(endpoint::create(&state.db.connection(), endpoint_data).await?)
+        let result = endpoint::create(&state.db.connection(), endpoint_data).await;
+        // Whatever the outcome, the next read must look at the tables.
+        self.caches().invalidate();
+        Ok(result?)
     }
 
     /// Create a new endpoint group.
@@ -184,7 +211,10 @@ impl CatalogBackend for SqlBackend {
         state: &ServiceState,
         service_data: ServiceCreate,
     ) -> Result<Service, CatalogProviderError> {
-        Ok(service::create(&state.db.connection(), service_data).await?)
+        let result = service::create(&state.db.connection(), service_data).await;
+        // Whatever the outcome, the next read must look at the tables.
+        self.caches().invalidate();
+        Ok(result?)
     }
 
     /// Delete an endpoint by ID.
@@ -201,7 +231,10 @@ impl CatalogBackend for SqlBackend {
         state: &ServiceState,
         id: &'a str,
     ) -> Result<(), CatalogProviderError> {
-        Ok(endpoint::delete(&state.db.connection(), id).await?)
+        let result = endpoint::delete(&state.db.connection(), id).await;
+        // Whatever the outcome, the next read must look at the tables.
+        self.caches().invalidate();
+        Ok(result?)
     }
 
     /// Delete an endpoint group by ID.
@@ -245,7 +278,10 @@ impl CatalogBackend for SqlBackend {
         state: &ServiceState,
         id: &'a str,
     ) -> Result<(), CatalogProviderError> {
-        Ok(service::delete(&state.db.connection(), id).await?)
+        let result = service::delete(&state.db.connection(), id).await;
+        // Whatever the outcome, the next read must look at the tables.
+        self.caches().invalidate();
+        Ok(result?)
     }
 
     /// Get the catalog (services with endpoints).
@@ -262,8 +298,23 @@ impl CatalogBackend for SqlBackend {
         &self,
         state: &ServiceState,
         enabled: bool,
-    ) -> Result<Vec<(Service, Vec<Endpoint>)>, CatalogProviderError> {
-        Ok(get_catalog(&state.db.connection(), enabled).await?)
+    ) -> Result<Arc<CatalogEntries>, CatalogProviderError> {
+        let db = state.db.connection();
+        let watermarks = state.db.watermarks();
+        let catalog = self
+            .caches()
+            .catalog
+            .get_or_load(
+                &watermarks,
+                &db,
+                cache::key(enabled),
+                Freshness::Linearizable,
+                || async {
+                    Ok::<_, CatalogProviderError>(Arc::new(get_catalog(&db, enabled).await?))
+                },
+            )
+            .await?;
+        Ok(catalog)
     }
 
     /// Get a single endpoint by ID.
@@ -460,7 +511,10 @@ impl CatalogBackend for SqlBackend {
         id: &'a str,
         endpoint_data: EndpointUpdate,
     ) -> Result<Endpoint, CatalogProviderError> {
-        Ok(endpoint::update(&state.db.connection(), id, endpoint_data).await?)
+        let result = endpoint::update(&state.db.connection(), id, endpoint_data).await;
+        // Whatever the outcome, the next read must look at the tables.
+        self.caches().invalidate();
+        Ok(result?)
     }
 
     /// Update an existing endpoint group.
@@ -510,7 +564,10 @@ impl CatalogBackend for SqlBackend {
         id: &'a str,
         service_data: ServiceUpdate,
     ) -> Result<Service, CatalogProviderError> {
-        Ok(service::update(&state.db.connection(), id, service_data).await?)
+        let result = service::update(&state.db.connection(), id, service_data).await;
+        // Whatever the outcome, the next read must look at the tables.
+        self.caches().invalidate();
+        Ok(result?)
     }
 }
 
@@ -564,7 +621,12 @@ impl SqlDriver for SqlBackend {
             crate::entity::prelude::ProjectEndpointGroup,
         )
         .await?;
+        table_watermark::install(connection, table_watermark::CATALOG_TABLES).await?;
         Ok(())
+    }
+
+    fn migrations(&self) -> Vec<Box<dyn sea_orm_migration::MigrationTrait>> {
+        crate::migration::migrations()
     }
 }
 

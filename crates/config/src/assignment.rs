@@ -16,12 +16,29 @@ use std::collections::{HashMap, HashSet};
 use oslo_config::ParsedSection;
 use serde::{Deserialize, Deserializer};
 
-use crate::common::default_sql_driver;
+use crate::common::{default_cache_time, default_sql_driver, default_true};
 use crate::pagination::ListLimitConfig;
 
 /// Assignment Provider.
 #[derive(Debug, Deserialize, Clone)]
 pub struct AssignmentProvider {
+    /// Maximum age of an entry of the assignment cache of the SQL
+    /// driver, in seconds. Caps `[database] projection_cache_ttl_ms`, the
+    /// smaller one wins; `0` disables the caches. A change of the tables is
+    /// noticed through the watermarks before this time. Only effective when
+    /// `caching` is enabled.
+    #[serde(default = "default_cache_time")]
+    pub cache_time: u64,
+
+    /// Toggle for assignment caching.
+    ///
+    /// When enabled the SQL driver caches fetched and resolved assignments in
+    /// memory, within the `[database] projection_cache_*` limits. The cache
+    /// is kept while the `assignment`, `system_assignment`, `implied_role`
+    /// tables are unchanged, as told by the table version watermarks.
+    #[serde(default = "default_true")]
+    pub caching: bool,
+
     /// Assignment provider driver. The global default: serves `system`
     /// targets, every unconfigured domain and every resolution fallback
     /// (ADR 0034 §4).
@@ -55,11 +72,13 @@ pub struct AssignmentProvider {
 impl Default for AssignmentProvider {
     fn default() -> Self {
         Self {
+            backends: HashMap::new(),
+            cache_time: default_cache_time(),
+            caching: default_true(),
+            domains: HashMap::new(),
+            domain_specific_drivers_enabled: false,
             driver: default_sql_driver(),
             list_limit: ListLimitConfig::default(),
-            domain_specific_drivers_enabled: false,
-            backends: HashMap::new(),
-            domains: HashMap::new(),
         }
     }
 }

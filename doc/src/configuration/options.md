@@ -10,7 +10,7 @@ feature guide for constraints and safe production values.
 | Section                | Options                                                                                                                                                         |
 | ---------------------- | --------------------------------------------------------------------------------------------------------------------------------------------------------------- |
 | `[DEFAULT]`            | `debug`, `log_dir`, `public_endpoint`, `use_stderr`, `use_journal`, `log_rotation_type`, `log_rotate_interval`, `log_rotate_interval_type`, `max_logfile_count` |
-| `[database]`           | `connection`, `connection_debug`, `max_pool_size`                                                                                                               |
+| `[database]`           | `connection`, `connection_debug`, `max_pool_size`, `table_watermark_interval_ms`, `projection_max_staleness_ms`, `projection_cache_max_memory_mib`, `projection_cache_ttl_ms`, `projection_any_ttl_without_poller_ms`, `projection_cache_weight_*`                                                 |
 | `[interface_public]`   | `tcp_address`, listener `type`, and listener-specific TLS/SPIFFE fields                                                                                         |
 | `[interface_internal]` | `tcp_address`, listener `type`, `trust_domains`, optional `svid_path` (SVID the listener presents), and TLS content/file fields                                 |
 | `[interface_admin]`    | `socket_path`, `trust_domains`, `peer_uid`, `peer_gid`, `admin_svid`, optional `svid_path`                                                                      |
@@ -85,6 +85,14 @@ See [Fernet tokens](../admin/tokens/fernet.md) and
 | `[revoke]`            | `driver`, `expiration_buffer`                                                                                                                                                                                                                   |
 | `[idmapping]`         | `driver`                                                                                                                                                                                                                                        |
 | `[token_restriction]` | `driver`                                                                                                                                                                                                                                        |
+
+The provider caches (`caching`, `cache_time`) are projection caches of the SQL
+drivers, validated against the table watermarks. Reads that must be current
+use them only when `[database] table_watermark_interval_ms` is greater than
+`0` (default `1000`); with `0` the poller is off and those reads, and the
+caches of the immutable project facts, go to the database. Without the watermark
+triggers installed (`keystone-manage db sync`) a poll fails and every read goes
+to the database as well. `[identity] caching` now defaults to `true`.
 
 OPA policy is enabled by default. See
 [API policy enforcement](../admin/policy.md).

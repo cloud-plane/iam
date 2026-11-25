@@ -13,30 +13,36 @@
 // SPDX-License-Identifier: Apache-2.0
 //! # OpenStack Keystone SQL driver for the identity provider
 use std::collections::HashSet;
-use std::sync::Arc;
+use std::sync::{Arc, OnceLock};
 
 use async_trait::async_trait;
 use chrono::{DateTime, Utc};
 use sea_orm::{DatabaseConnection, Schema, sea_query::Index};
 use secrecy::SecretString;
 
+use openstack_keystone_config::Config;
 use openstack_keystone_core::auth::AuthenticationResult;
 use openstack_keystone_core::identity::IdentityProviderError;
 use openstack_keystone_core::identity::backend::IdentityBackend;
 use openstack_keystone_core::keystone::ServiceState;
 use openstack_keystone_core::plugin_manager::BackendRegistration;
+use openstack_keystone_core::table_watermark;
 use openstack_keystone_core::{
     SqlDriver, SqlDriverRegistration,
     db::{create_index, create_table},
     error::DatabaseError,
 };
+use openstack_keystone_core_types::auth::IdentityInfo;
+use openstack_keystone_core_types::freshness::Freshness;
 use openstack_keystone_core_types::identity::*;
 
 mod authenticate;
+pub mod cache;
 pub mod entity;
 mod federated_user;
 mod group;
 mod local_user;
+pub mod migration;
 mod nonlocal_user;
 mod password;
 mod user;
@@ -44,7 +50,25 @@ mod user_group;
 mod user_option;
 
 #[derive(Default)]
-pub struct SqlBackend {}
+pub struct SqlBackend {
+    /// Projections of the users that readers tolerating some staleness may
+    /// be served from. Per driver instance: it belongs to the connection the
+    /// instance reads through.
+    caches: OnceLock<cache::UserCaches>,
+}
+
+impl SqlBackend {
+    /// A backend whose projection caches follow the configuration.
+    fn new(config: &Config) -> Self {
+        Self {
+            caches: OnceLock::from(cache::UserCaches::new(config)),
+        }
+    }
+
+    fn caches(&self) -> &cache::UserCaches {
+        self.caches.get_or_init(cache::UserCaches::default)
+    }
+}
 
 /// Linkage anchor — see ADR-0018. Referenced by the `keystone` crate's
 /// `build.rs`-generated `_ANCHORS` static so the linker extracts `.rlib`
@@ -53,7 +77,9 @@ pub struct SqlBackend {}
 pub fn anchor() {}
 
 // Submit the plugin to the registry at compile-time
-static PLUGIN: SqlBackend = SqlBackend {};
+static PLUGIN: SqlBackend = SqlBackend {
+    caches: OnceLock::new(),
+};
 inventory::submit! {
     SqlDriverRegistration { driver: &PLUGIN }
 }
@@ -61,9 +87,10 @@ inventory::submit! {
     BackendRegistration::<dyn IdentityBackend> {
         name: "sql",
         selected: |_| true,
-        build: |_cfg| Box::pin(async {
-            Ok(Arc::new(SqlBackend::default()) as Arc<dyn IdentityBackend>)
-        }),
+        build: |cfg| {
+            let backend = SqlBackend::new(cfg.core);
+            Box::pin(async move { Ok(Arc::new(backend) as Arc<dyn IdentityBackend>) })
+        },
     }
 }
 
@@ -185,7 +212,19 @@ impl IdentityBackend for SqlBackend {
         auth: &UserPasswordAuthRequest,
     ) -> Result<AuthenticationResult, IdentityProviderError> {
         let config = state.config_manager.config.read().await;
-        Ok(authenticate::authenticate_by_password(&config, &state.db.connection(), auth).await?)
+        let result =
+            authenticate::authenticate_by_password(&config, &state.db.connection(), auth).await;
+        // A successful authentication may rehash and store the password of
+        // that user, which the invalidation covers. A failed login only
+        // rewrites the counters of the local user row: that moves the
+        // `local_user` watermark (the cached local users are dropped, and
+        // only those) but invalidates nothing per user.
+        if let Ok(auth_result) = &result
+            && let IdentityInfo::User(info) = &auth_result.principal.identity
+        {
+            self.caches().invalidate_user(&info.user_id);
+        }
+        Ok(result?)
     }
 
     /// Cheaply resolve a user reference to the canonical user ID, verifying
@@ -276,7 +315,11 @@ impl IdentityBackend for SqlBackend {
         user: UserCreate,
     ) -> Result<UserResponse, IdentityProviderError> {
         let config = state.config_manager.config.read().await;
-        Ok(user::create(&config, &state.db.connection(), user).await?)
+        let result = user::create(&config, &state.db.connection(), user).await;
+        if let Ok(created) = &result {
+            self.caches().invalidate_user(&created.id);
+        }
+        Ok(result?)
     }
 
     /// Delete group.
@@ -310,7 +353,9 @@ impl IdentityBackend for SqlBackend {
         state: &ServiceState,
         user_id: &'a str,
     ) -> Result<(), IdentityProviderError> {
-        Ok(user::delete(&state.db.connection(), user_id).await?)
+        let result = user::delete(&state.db.connection(), user_id).await;
+        self.caches().invalidate_user(user_id);
+        Ok(result?)
     }
 
     /// Get single group by ID.
@@ -346,8 +391,8 @@ impl IdentityBackend for SqlBackend {
         state: &ServiceState,
         user_id: &'a str,
     ) -> Result<Option<UserResponse>, IdentityProviderError> {
-        let config = state.config_manager.config.read().await;
-        Ok(user::get(&config, &state.db.connection(), user_id).await?)
+        self.get_user_with_freshness(state, user_id, Freshness::Linearizable)
+            .await
     }
 
     /// Get the minimal user data required to authorize a request.
@@ -361,8 +406,69 @@ impl IdentityBackend for SqlBackend {
         state: &ServiceState,
         user_id: &'a str,
     ) -> Result<Option<UserCore>, IdentityProviderError> {
+        self.get_user_core_with_freshness(state, user_id, Freshness::Linearizable)
+            .await
+    }
+
+    /// Get single user by ID, serving the user options and the password
+    /// expiry from the projection caches when `freshness` allows it.
+    ///
+    /// The `user` row and the local user are always read, the password hash
+    /// is never loaded.
+    ///
+    /// # Parameters
+    /// - `state`: The service state.
+    /// - `user_id`: The ID of the user to retrieve.
+    /// - `freshness`: How stale the cacheable projections may be.
+    #[tracing::instrument(name = "driver.sql.identity.get_user_with_freshness", level = "debug", skip_all, fields(user_id = %user_id, freshness = ?freshness))]
+    async fn get_user_with_freshness<'a>(
+        &self,
+        state: &ServiceState,
+        user_id: &'a str,
+        freshness: Freshness,
+    ) -> Result<Option<UserResponse>, IdentityProviderError> {
         let config = state.config_manager.config.read().await;
-        Ok(user::get_core(&config, &state.db.connection(), user_id).await?)
+        let watermarks = state.db.watermarks();
+        Ok(user::get_with_projections(
+            &config,
+            &state.db.connection(),
+            Some(user::Projections {
+                caches: self.caches(),
+                watermarks: &watermarks,
+                freshness,
+            }),
+            user_id,
+        )
+        .await?)
+    }
+
+    /// Get the minimal user data required to authorize a request, serving
+    /// the user options from the projection cache when `freshness` allows it.
+    ///
+    /// # Parameters
+    /// - `state`: The service state.
+    /// - `user_id`: The ID of the user to retrieve.
+    /// - `freshness`: How stale the cacheable projections may be.
+    #[tracing::instrument(name = "driver.sql.identity.get_user_core_with_freshness", level = "debug", skip_all, fields(user_id = %user_id, freshness = ?freshness))]
+    async fn get_user_core_with_freshness<'a>(
+        &self,
+        state: &ServiceState,
+        user_id: &'a str,
+        freshness: Freshness,
+    ) -> Result<Option<UserCore>, IdentityProviderError> {
+        let config = state.config_manager.config.read().await;
+        let watermarks = state.db.watermarks();
+        Ok(user::get_core_with_projections(
+            &config,
+            &state.db.connection(),
+            Some(user::Projections {
+                caches: self.caches(),
+                watermarks: &watermarks,
+                freshness,
+            }),
+            user_id,
+        )
+        .await?)
     }
 
     /// Get single user by ID.
@@ -379,7 +485,21 @@ impl IdentityBackend for SqlBackend {
         state: &ServiceState,
         user_id: &'a str,
     ) -> Result<String, IdentityProviderError> {
-        Ok(user::get_user_domain_id(&state.db.connection(), user_id).await?)
+        let db = state.db.connection();
+        // The domain of a user never changes while the row exists. A missing
+        // user is never cached, so a user created later under the same ID is
+        // found.
+        self.caches()
+            .domain_id
+            .get_or_load_some_immutable(&state.db.watermarks(), user_id, || async {
+                match user::get_user_domain_id(&db, user_id).await {
+                    Ok(domain_id) => Ok(Some(domain_id)),
+                    Err(IdentityProviderError::UserNotFound(_)) => Ok(None),
+                    Err(err) => Err(err),
+                }
+            })
+            .await?
+            .ok_or_else(|| IdentityProviderError::UserNotFound(user_id.to_string()))
     }
 
     /// Find the `user_id` of any user in `domain_id` whose name matches
@@ -464,7 +584,27 @@ impl IdentityBackend for SqlBackend {
             .await
             .federation
             .get_expiring_user_group_membership_cutof_datetime();
-        Ok(user_group::list_user_groups(&state.db.connection(), user_id, &cutoff_time).await?)
+        // Linearizable: the cache is served only after a counter sync, so a
+        // membership change is visible to the next read. A user with
+        // expiring memberships is read through: its groups depend on the
+        // clock.
+        let db = state.db.connection();
+        let watermarks = state.db.watermarks();
+        Ok(self
+            .caches()
+            .groups
+            .get_or_load_if(
+                &watermarks,
+                &db,
+                user_id,
+                Freshness::Linearizable,
+                || async {
+                    let groups = user_group::list_user_groups(&db, user_id, &cutoff_time).await?;
+                    let keep = !user_group::has_expiring_memberships(&db, user_id).await?;
+                    Ok::<_, IdentityProviderError>((groups, keep))
+                },
+            )
+            .await?)
     }
 
     /// List the IDs of users that are members of a group.
@@ -707,7 +847,9 @@ impl IdentityBackend for SqlBackend {
         user: UserUpdate,
     ) -> Result<UserResponse, IdentityProviderError> {
         let config = state.config_manager.config.read().await;
-        Ok(user::update(&config, &state.db.connection(), user_id, user).await?)
+        let result = user::update(&config, &state.db.connection(), user_id, user).await;
+        self.caches().invalidate_user(user_id);
+        Ok(result?)
     }
 
     /// Update user password.
@@ -729,14 +871,16 @@ impl IdentityBackend for SqlBackend {
         new_password: SecretString,
     ) -> Result<(), IdentityProviderError> {
         let config = state.config_manager.config.read().await;
-        local_user::update_password(
+        let result = local_user::update_password(
             &state.db.connection(),
             &config,
             user_id,
             original_password,
             new_password,
         )
-        .await
+        .await;
+        self.caches().invalidate_user(user_id);
+        result
     }
 }
 
@@ -786,7 +930,14 @@ impl SqlDriver for SqlBackend {
         )
         .await?;
 
+        table_watermark::install(connection, table_watermark::IDENTITY_TABLES).await?;
+
         Ok(())
+    }
+
+    /// Return the ordered list of database migrations for this driver.
+    fn migrations(&self) -> Vec<Box<dyn sea_orm_migration::MigrationTrait>> {
+        crate::migration::migrations()
     }
 }
 

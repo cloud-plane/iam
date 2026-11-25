@@ -12,6 +12,8 @@
 //
 // SPDX-License-Identifier: Apache-2.0
 
+use std::sync::Arc;
+
 use async_trait::async_trait;
 
 use openstack_keystone_core_types::role::*;
@@ -109,6 +111,17 @@ pub trait RoleApi: Send + Sync {
         ctx: &ExecutionContext<'a>,
         roles: &mut Vec<RoleRef>,
     ) -> Result<(), RoleProviderError>;
+
+    /// Get the resolved role inference: the roles every role implies,
+    /// directly or not.
+    ///
+    /// The result is shared and kept until the roles or the imply rules
+    /// change, so callers resolve the implied roles of a request with a
+    /// lookup instead of walking the rule graph.
+    async fn get_role_inference<'a>(
+        &self,
+        ctx: &ExecutionContext<'a>,
+    ) -> Result<Arc<RoleInference>, RoleProviderError>;
 
     /// Get a single role.
     ///

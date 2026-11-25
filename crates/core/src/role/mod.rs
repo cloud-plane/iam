@@ -34,7 +34,6 @@
 //! resources each role grants access.
 
 pub mod backend;
-mod cache;
 pub mod error;
 pub mod hook;
 mod provider_api;

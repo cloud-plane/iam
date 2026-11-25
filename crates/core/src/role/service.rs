@@ -13,7 +13,6 @@
 // SPDX-License-Identifier: Apache-2.0
 //! # Role provider
 use std::sync::Arc;
-use std::time::Duration;
 
 use async_trait::async_trait;
 use uuid::Uuid;
@@ -27,7 +26,6 @@ use crate::auth::ExecutionContext;
 use crate::events::AuditDispatchError;
 use crate::plugin_manager::PluginManagerApi;
 use crate::request_cache::{cache_get, cache_remove, cache_set};
-use crate::role::cache::RoleCache;
 use crate::role::{RoleApi, RoleProviderError, backend::RoleBackend};
 
 /// Request-cache namespace for [`Role`] lookups by `role_id`.
@@ -62,14 +60,20 @@ const ROLE_NAME_CACHE_NS: &str = "role.name";
 const ROLE_IMPLY_ALL_CACHE_NS: &str = "role.imply_all";
 /// Key of the complete rule table in [`ROLE_IMPLY_ALL_CACHE_NS`].
 const ROLE_IMPLY_ALL_CACHE_KEY: &str = "all";
+/// Request-cache namespace for the resolved role inference (an
+/// `Arc<RoleInference>` under [`ROLE_IMPLY_ALL_CACHE_KEY`]). Resolving it is
+/// done by the driver once per version of the rules; this only saves a
+/// backend call for the drivers that resolve it on every call.
+const ROLE_INFERENCE_CACHE_NS: &str = "role.inference";
 
 /// Role provider service.
 ///
-/// Besides the per-request cache the service keeps a process-wide TTL cache
-/// ([`RoleCache`], `[role] cache_time`) of the roles and the imply rules.
+/// The service keeps only the per-request cache. What outlives a request (the
+/// names of the roles and the resolved role inference) is cached by the
+/// driver, which knows the tables it combined and is told by the table
+/// watermarks when they change.
 pub struct RoleService {
     backend_driver: Arc<dyn RoleBackend>,
-    cache: RoleCache,
 }
 
 impl RoleService {
@@ -85,15 +89,7 @@ impl RoleService {
         let backend_driver = plugin_manager
             .get_role_backend(config.role.driver.clone())?
             .clone();
-        let cache = RoleCache::new(if config.role.caching {
-            Duration::from_secs(config.role.cache_time)
-        } else {
-            Duration::ZERO
-        });
-        Ok(Self {
-            backend_driver,
-            cache,
-        })
+        Ok(Self { backend_driver })
     }
 
     /// Reject the operation when the role is currently immutable and the
@@ -208,11 +204,7 @@ impl RoleApi for RoleService {
                     },
                 ),
                 operation: async {
-                    // Invalidate right after the commit so that a late audit failure cannot
-                    // leave a committed change hidden behind the cache.
-                    let result = backend_driver.create_role_imply_rule(state, prior_role_id, implied_role_id).await;
-                    self.cache.invalidate();
-                    result
+                    backend_driver.create_role_imply_rule(state, prior_role_id, implied_role_id).await
                 },
                 on_audit_error: |_: AuditDispatchError| RoleProviderError::Driver("audit dispatch failed".into()),
             }?
@@ -220,9 +212,7 @@ impl RoleApi for RoleService {
             let rule = self
                 .backend_driver
                 .create_role_imply_rule(ctx.state(), prior_role_id, implied_role_id)
-                .await;
-            self.cache.invalidate();
-            let rule = rule?;
+                .await?;
 
             ctx.state()
                 .event_dispatcher
@@ -240,6 +230,7 @@ impl RoleApi for RoleService {
 
         cache_remove(ROLE_IMPLY_BY_PRIOR_CACHE_NS, prior_role_id);
         cache_remove(ROLE_IMPLY_ALL_CACHE_NS, ROLE_IMPLY_ALL_CACHE_KEY);
+        cache_remove(ROLE_INFERENCE_CACHE_NS, ROLE_IMPLY_ALL_CACHE_KEY);
         Ok(rule)
     }
 
@@ -289,11 +280,7 @@ impl RoleApi for RoleService {
                     EventPayload::Role { id: role_id_clone },
                 ),
                 operation: async {
-                    // Invalidate right after the commit so that a late audit failure cannot
-                    // leave a committed change hidden behind the cache.
-                    let result = backend_driver.update_role(state, role_id, role).await;
-                    self.cache.invalidate();
-                    result
+                    backend_driver.update_role(state, role_id, role).await
                 },
                 on_audit_error: |_: AuditDispatchError| RoleProviderError::Driver("audit dispatch failed".into()),
             }?
@@ -301,9 +288,7 @@ impl RoleApi for RoleService {
             let role = self
                 .backend_driver
                 .update_role(ctx.state(), role_id, role)
-                .await;
-            self.cache.invalidate();
-            let role = role?;
+                .await?;
             ctx.state()
                 .event_dispatcher
                 .emit(Event::new(
@@ -344,10 +329,6 @@ impl RoleApi for RoleService {
                 // deleted it still gets its assignments revoked, then the
                 // NotFound is returned (ADR 0042).
                 let driver_result = self.backend_driver.delete_role(ctx.state(), id).await;
-                // Invalidate right after the commit so that a late audit
-                // failure cannot leave a committed change hidden behind
-                // the process-wide cache.
-                self.cache.invalidate();
                 let deleted = match driver_result {
                     Ok(()) => Ok(()),
                     Err(err @ RoleProviderError::RoleNotFound(_)) => Err(err),
@@ -363,7 +344,6 @@ impl RoleApi for RoleService {
                     .get_application_credential_provider()
                     .delete_application_credentials_for_role(ctx, id)
                     .await?;
-                self.cache.invalidate();
                 deleted
             },
             on_audit_error: |_: AuditDispatchError| RoleProviderError::Driver("audit dispatch failed".into()),
@@ -375,6 +355,7 @@ impl RoleApi for RoleService {
         cache_remove(ROLE_NAME_CACHE_NS, id);
         cache_remove(ROLE_IMPLY_BY_PRIOR_CACHE_NS, id);
         cache_remove(ROLE_IMPLY_ALL_CACHE_NS, ROLE_IMPLY_ALL_CACHE_KEY);
+        cache_remove(ROLE_INFERENCE_CACHE_NS, ROLE_IMPLY_ALL_CACHE_KEY);
         result
     }
 
@@ -405,22 +386,14 @@ impl RoleApi for RoleService {
                     },
                 ),
                 operation: async {
-                    // Invalidate right after the commit so that a late audit failure cannot
-                    // leave a committed change hidden behind the cache.
-                    let result = self.backend_driver.delete_role_imply_rule(ctx.state(), prior_role_id, implied_role_id).await;
-                    self.cache.invalidate();
-                    result?;
-                    Ok::<(), RoleProviderError>(())
+                    self.backend_driver.delete_role_imply_rule(ctx.state(), prior_role_id, implied_role_id).await
                 },
                 on_audit_error: |_: AuditDispatchError| RoleProviderError::Driver("audit dispatch failed".into()),
             }?;
         } else {
-            let result = self
-                .backend_driver
+            self.backend_driver
                 .delete_role_imply_rule(ctx.state(), prior_role_id, implied_role_id)
-                .await;
-            self.cache.invalidate();
-            result?;
+                .await?;
 
             ctx.state()
                 .event_dispatcher
@@ -436,6 +409,7 @@ impl RoleApi for RoleService {
 
         cache_remove(ROLE_IMPLY_BY_PRIOR_CACHE_NS, prior_role_id);
         cache_remove(ROLE_IMPLY_ALL_CACHE_NS, ROLE_IMPLY_ALL_CACHE_KEY);
+        cache_remove(ROLE_INFERENCE_CACHE_NS, ROLE_IMPLY_ALL_CACHE_KEY);
         Ok(())
     }
 
@@ -477,17 +451,35 @@ impl RoleApi for RoleService {
         if let Some(role) = cache_get::<Role>(ROLE_CACHE_NS, id) {
             return Ok(Some(role));
         }
-        if let Some(role) = self.cache.get_role(id) {
-            cache_set(ROLE_CACHE_NS, id, role.clone());
-            return Ok(Some(role));
-        }
-        let loaded = self.cache.begin_role();
         let role = self.backend_driver.get_role(ctx.state(), id).await?;
         if let Some(role) = &role {
-            self.cache.put_role(role, &loaded);
             cache_set(ROLE_CACHE_NS, id, role.clone());
         }
         Ok(role)
+    }
+
+    /// Get the resolved role inference.
+    ///
+    /// The driver resolves the inference graph once per version of the rules
+    /// and keeps the result, so the transitive closure is not recalculated
+    /// by every request.
+    #[tracing::instrument(name = "provider.role.get_role_inference", level = "debug", skip_all)]
+    async fn get_role_inference<'a>(
+        &self,
+        ctx: &ExecutionContext<'a>,
+    ) -> Result<Arc<RoleInference>, RoleProviderError> {
+        if let Some(inference) =
+            cache_get::<Arc<RoleInference>>(ROLE_INFERENCE_CACHE_NS, ROLE_IMPLY_ALL_CACHE_KEY)
+        {
+            return Ok(inference);
+        }
+        let inference = self.backend_driver.get_role_inference(ctx.state()).await?;
+        cache_set(
+            ROLE_INFERENCE_CACHE_NS,
+            ROLE_IMPLY_ALL_CACHE_KEY,
+            inference.clone(),
+        );
+        Ok(inference)
     }
 
     /// Get a role imply rule.
@@ -526,20 +518,10 @@ impl RoleApi for RoleService {
         {
             return Ok(rules);
         }
-        if let Some(rules) = self.cache.get_imply_all() {
-            cache_set(
-                ROLE_IMPLY_ALL_CACHE_NS,
-                ROLE_IMPLY_ALL_CACHE_KEY,
-                rules.clone(),
-            );
-            return Ok(rules);
-        }
-        let loaded = self.cache.begin_imply_all();
         let rules = self
             .backend_driver
             .list_role_imply_rules(ctx.state())
             .await?;
-        self.cache.put_imply_all(rules.clone(), &loaded);
         cache_set(
             ROLE_IMPLY_ALL_CACHE_NS,
             ROLE_IMPLY_ALL_CACHE_KEY,
@@ -564,17 +546,10 @@ impl RoleApi for RoleService {
         {
             return Ok(rules);
         }
-        if let Some(rules) = self.cache.get_imply_by_prior(prior_role_id) {
-            cache_set(ROLE_IMPLY_BY_PRIOR_CACHE_NS, prior_role_id, rules.clone());
-            return Ok(rules);
-        }
-        let loaded = self.cache.begin_imply_by_prior();
         let rules = self
             .backend_driver
             .list_role_imply_rules_by_prior(ctx.state(), prior_role_id)
             .await?;
-        self.cache
-            .put_imply_by_prior(prior_role_id, rules.clone(), &loaded);
         cache_set(ROLE_IMPLY_BY_PRIOR_CACHE_NS, prior_role_id, rules.clone());
         Ok(rules)
     }
@@ -597,15 +572,12 @@ impl RoleApi for RoleService {
         let mut rules: Vec<RoleImply> = Vec::new();
         let mut missing: Vec<&'a str> = Vec::new();
         for id in prior_role_ids {
-            match cache_get::<Vec<RoleImply>>(ROLE_IMPLY_BY_PRIOR_CACHE_NS, id)
-                .or_else(|| self.cache.get_imply_by_prior(id))
-            {
+            match cache_get::<Vec<RoleImply>>(ROLE_IMPLY_BY_PRIOR_CACHE_NS, id) {
                 Some(cached) => rules.extend(cached),
                 None => missing.push(id),
             }
         }
         if !missing.is_empty() {
-            let loaded = self.cache.begin_imply_by_prior();
             let fetched = self
                 .backend_driver
                 .list_role_imply_rules_by_priors(ctx.state(), &missing)
@@ -616,7 +588,6 @@ impl RoleApi for RoleService {
                     .filter(|rule| rule.prior_role.id == *id)
                     .cloned()
                     .collect();
-                self.cache.put_imply_by_prior(id, own.clone(), &loaded);
                 cache_set(ROLE_IMPLY_BY_PRIOR_CACHE_NS, id, own);
             }
             rules.extend(fetched);
@@ -647,14 +618,12 @@ impl RoleApi for RoleService {
             let mut roles = Vec::new();
             let mut missing = Vec::new();
             for id in ids {
-                match cache_get::<Role>(ROLE_NAME_CACHE_NS, id).or_else(|| self.cache.get_name(id))
-                {
+                match cache_get::<Role>(ROLE_NAME_CACHE_NS, id) {
                     Some(role) => roles.push(role),
                     None => missing.push(id.clone()),
                 }
             }
             if !missing.is_empty() {
-                let loaded = self.cache.begin_name();
                 let fetched = self
                     .backend_driver
                     .list_roles(
@@ -667,7 +636,6 @@ impl RoleApi for RoleService {
                     )
                     .await?;
                 for role in fetched {
-                    self.cache.put_name(&role, &loaded);
                     cache_set(ROLE_NAME_CACHE_NS, &role.id, role.clone());
                     roles.push(role);
                 }
@@ -711,7 +679,6 @@ mod tests {
             .returning(|_, _| Ok(Some(make_immutable_role("rid", "admin"))));
         let provider = RoleService {
             backend_driver: Arc::new(backend),
-            cache: RoleCache::new(Duration::ZERO),
         };
 
         let err = provider
@@ -742,7 +709,6 @@ mod tests {
             .returning(|_, _, _| Ok(make_role("rid", "admin")));
         let provider = RoleService {
             backend_driver: Arc::new(backend),
-            cache: RoleCache::new(Duration::ZERO),
         };
 
         let result = provider
@@ -773,7 +739,6 @@ mod tests {
             .returning(|_, _| Ok(Some(make_immutable_role("rid", "admin"))));
         let provider = RoleService {
             backend_driver: Arc::new(backend),
-            cache: RoleCache::new(Duration::ZERO),
         };
 
         let err = provider
@@ -829,7 +794,6 @@ mod tests {
         backend.expect_delete_role().returning(|_, _| Ok(()));
         let provider = RoleService {
             backend_driver: Arc::new(backend),
-            cache: RoleCache::new(Duration::ZERO),
         };
 
         let err = provider
@@ -861,7 +825,6 @@ mod tests {
         backend.expect_delete_role().returning(|_, _| Ok(()));
         let provider = RoleService {
             backend_driver: Arc::new(backend),
-            cache: RoleCache::new(Duration::ZERO),
         };
 
         crate::request_cache::RequestCache::scope(async {
@@ -894,7 +857,6 @@ mod tests {
             .returning(|_, _| Err(RoleProviderError::RoleNotFound("rid".into())));
         let provider = RoleService {
             backend_driver: Arc::new(backend),
-            cache: RoleCache::new(Duration::ZERO),
         };
 
         let err = provider
@@ -922,7 +884,6 @@ mod tests {
         backend.expect_delete_role().returning(|_, _| Ok(()));
         let provider = RoleService {
             backend_driver: Arc::new(backend),
-            cache: RoleCache::new(Duration::ZERO),
         };
 
         let err = provider
@@ -954,7 +915,6 @@ mod tests {
             .returning(|_, _| Ok(()));
         let provider = RoleService {
             backend_driver: Arc::new(backend),
-            cache: RoleCache::new(Duration::ZERO),
         };
 
         assert!(
@@ -990,7 +950,6 @@ mod tests {
             .returning(|_, _| Ok(Some(make_role("rid", "admin"))));
         let provider = RoleService {
             backend_driver: Arc::new(backend),
-            cache: RoleCache::new(Duration::ZERO),
         };
 
         crate::request_cache::RequestCache::scope(async {
@@ -1013,7 +972,6 @@ mod tests {
             .returning(|_, _| Ok(Some(make_role("rid", "admin"))));
         let provider = RoleService {
             backend_driver: Arc::new(backend),
-            cache: RoleCache::new(Duration::ZERO),
         };
 
         let ctx = ExecutionContext::internal(&state);
@@ -1042,7 +1000,6 @@ mod tests {
             });
         let provider = RoleService {
             backend_driver: Arc::new(backend),
-            cache: RoleCache::new(Duration::ZERO),
         };
 
         crate::request_cache::RequestCache::scope(async {
@@ -1091,7 +1048,6 @@ mod tests {
             .returning(|_, _| Ok(()));
         let provider = RoleService {
             backend_driver: Arc::new(backend),
-            cache: RoleCache::new(Duration::ZERO),
         };
 
         crate::request_cache::RequestCache::scope(async {
@@ -1114,7 +1070,6 @@ mod tests {
             .returning(|_, _| Ok(vec![make_imply("rid", "implied")]));
         let provider = RoleService {
             backend_driver: Arc::new(backend),
-            cache: RoleCache::new(Duration::ZERO),
         };
 
         crate::request_cache::RequestCache::scope(async {
@@ -1148,7 +1103,6 @@ mod tests {
             .returning(|_, _| Ok(vec![make_imply("c", "y")]));
         let provider = RoleService {
             backend_driver: Arc::new(backend),
-            cache: RoleCache::new(Duration::ZERO),
         };
 
         crate::request_cache::RequestCache::scope(async {
@@ -1185,7 +1139,6 @@ mod tests {
             .returning(|_, _| Ok(vec![]));
         let provider = RoleService {
             backend_driver: Arc::new(backend),
-            cache: RoleCache::new(Duration::ZERO),
         };
 
         crate::request_cache::RequestCache::scope(async {
@@ -1221,7 +1174,6 @@ mod tests {
             .returning(|_, _| Ok(vec![make_imply("rid", "implied")]));
         let provider = RoleService {
             backend_driver: Arc::new(backend),
-            cache: RoleCache::new(Duration::ZERO),
         };
 
         let ctx = ExecutionContext::internal(&state);
@@ -1250,7 +1202,6 @@ mod tests {
             .returning(|_, prior, implied| Ok(make_imply(prior, implied)));
         let provider = RoleService {
             backend_driver: Arc::new(backend),
-            cache: RoleCache::new(Duration::ZERO),
         };
 
         crate::request_cache::RequestCache::scope(async {
@@ -1289,7 +1240,6 @@ mod tests {
             .returning(|_, _, _| Ok(()));
         let provider = RoleService {
             backend_driver: Arc::new(backend),
-            cache: RoleCache::new(Duration::ZERO),
         };
 
         crate::request_cache::RequestCache::scope(async {
@@ -1325,7 +1275,6 @@ mod tests {
         });
         let provider = RoleService {
             backend_driver: Arc::new(backend),
-            cache: RoleCache::new(Duration::ZERO),
         };
         let params = |ids: &[&str]| RoleListParameters {
             ids: Some(ids.iter().map(|s| s.to_string()).collect()),
@@ -1372,7 +1321,6 @@ mod tests {
             .returning(|_, _| Ok(vec![make_role("r", "reader")]));
         let provider = RoleService {
             backend_driver: Arc::new(backend),
-            cache: RoleCache::new(Duration::ZERO),
         };
         let params = RoleListParameters {
             name: Some("reader".into()),
@@ -1398,7 +1346,6 @@ mod tests {
             .returning(|_| Ok(vec![make_imply("a", "b")]));
         let provider = RoleService {
             backend_driver: Arc::new(backend),
-            cache: RoleCache::new(Duration::ZERO),
         };
 
         crate::request_cache::RequestCache::scope(async {
@@ -1423,7 +1370,6 @@ mod tests {
             .returning(|_, _, _| Ok(()));
         let provider = RoleService {
             backend_driver: Arc::new(backend),
-            cache: RoleCache::new(Duration::ZERO),
         };
 
         crate::request_cache::RequestCache::scope(async {
@@ -1436,90 +1382,5 @@ mod tests {
             provider.list_role_imply_rules(&ctx).await.unwrap();
         })
         .await;
-    }
-
-    #[tokio::test]
-    async fn test_process_cache_serves_get_role_across_requests() {
-        let state = get_mocked_state(None, Some(Provider::mocked_builder())).await;
-        let mut backend = MockRoleBackend::default();
-        backend
-            .expect_get_role()
-            .times(1)
-            .returning(|_, _| Ok(Some(make_role("rid", "admin"))));
-        let provider = RoleService {
-            backend_driver: Arc::new(backend),
-            cache: RoleCache::new(Duration::from_secs(60)),
-        };
-        let ctx = ExecutionContext::internal(&state);
-
-        for _ in 0..3 {
-            // Each iteration is a separate request scope.
-            let role = crate::request_cache::RequestCache::scope(provider.get_role(&ctx, "rid"))
-                .await
-                .unwrap();
-            assert_eq!("admin", role.unwrap().name);
-        }
-    }
-
-    #[tokio::test]
-    async fn test_process_cache_serves_imply_rules_across_requests() {
-        let state = get_mocked_state(None, Some(Provider::mocked_builder())).await;
-        let mut backend = MockRoleBackend::default();
-        backend
-            .expect_list_role_imply_rules()
-            .times(1)
-            .returning(|_| Ok(Vec::new()));
-        let provider = RoleService {
-            backend_driver: Arc::new(backend),
-            cache: RoleCache::new(Duration::from_secs(60)),
-        };
-        let ctx = ExecutionContext::internal(&state);
-
-        for _ in 0..3 {
-            crate::request_cache::RequestCache::scope(provider.list_role_imply_rules(&ctx))
-                .await
-                .unwrap();
-        }
-    }
-
-    #[tokio::test]
-    async fn test_delete_role_invalidates_process_cache() {
-        let state = get_mocked_state(
-            None,
-            Some(
-                Provider::mocked_builder()
-                    .mock_assignment(assignment_mock_for("rid"))
-                    .mock_application_credential(appcred_mock_for("rid")),
-            ),
-        )
-        .await;
-        let mut backend = MockRoleBackend::default();
-        let mut seq = mockall::Sequence::new();
-        backend
-            .expect_get_role()
-            .times(1)
-            .in_sequence(&mut seq)
-            .returning(|_, _| Ok(Some(make_role("rid", "admin"))));
-        backend
-            .expect_delete_role()
-            .times(1)
-            .in_sequence(&mut seq)
-            .returning(|_, _| Ok(()));
-        backend
-            .expect_get_role()
-            .times(1)
-            .in_sequence(&mut seq)
-            .returning(|_, _| Ok(None));
-        let provider = RoleService {
-            backend_driver: Arc::new(backend),
-            cache: RoleCache::new(Duration::from_secs(60)),
-        };
-        let ctx = ExecutionContext::internal(&state);
-
-        // The first lookup fills the cache; delete_role's immutability check
-        // is then served from it.
-        provider.get_role(&ctx, "rid").await.unwrap();
-        provider.delete_role(&ctx, "rid").await.unwrap();
-        assert!(provider.get_role(&ctx, "rid").await.unwrap().is_none());
     }
 }

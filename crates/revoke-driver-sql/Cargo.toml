@@ -14,6 +14,7 @@ exclude.workspace = true
 async-trait.workspace = true
 chrono.workspace = true
 inventory.workspace = true
+openstack-keystone-config.workspace = true
 openstack-keystone-core.workspace = true
 openstack-keystone-core-types.workspace = true
 sea-orm = { workspace = true, features = ["macros"] }

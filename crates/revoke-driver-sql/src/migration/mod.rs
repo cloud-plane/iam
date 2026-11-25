@@ -14,8 +14,12 @@
 use sea_orm_migration::prelude::*;
 
 mod m20261029_000001_indexes;
+mod m20261123_000008_revocation_event_watermark;
 
 /// The ordered list of migrations.
 pub fn migrations() -> Vec<Box<dyn MigrationTrait>> {
-    vec![Box::new(m20261029_000001_indexes::Migration)]
+    vec![
+        Box::new(m20261029_000001_indexes::Migration),
+        Box::new(m20261123_000008_revocation_event_watermark::Migration),
+    ]
 }
