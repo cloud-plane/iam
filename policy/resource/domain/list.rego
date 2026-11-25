@@ -2,8 +2,6 @@
 # description: Policy for listing domains
 package identity.resource.domain.list
 
-import data.common.identity
-
 # List domains.
 #
 # The `input.target.domain` contains query parameters (DomainListParameters):

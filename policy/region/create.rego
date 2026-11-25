@@ -3,8 +3,6 @@
 # description: Policy for creating a catalog region
 package identity.region.create
 
-import data.common.identity
-
 # Create region.
 #
 # The `input.target.region` is the new region object (RegionCreate):

@@ -2,7 +2,7 @@
 # description: Policy for showing domain details
 package identity.resource.domain.show
 
-import data.common.identity
+import data.common.identity_domain
 
 # Show a domain.
 #
@@ -30,7 +30,7 @@ allow if {
 
 allow if {
 	"manager" in input.credentials.roles
-	identity.domain_matches_domain_scope
+	identity_domain.domain_matches_domain_scope
 }
 
 # METADATA

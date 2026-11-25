@@ -2,8 +2,6 @@
 # description: Policy for listing projects the authentication have access to
 package identity.auth.project.list
 
-import data.common.identity
-
 # List projects the authentication have access to.
 #
 # The `input.target.project` contains query parameters (ProjectListParameters):

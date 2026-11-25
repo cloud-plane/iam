@@ -3,8 +3,6 @@
 # description: Policy for creating a role imply rule
 package identity.role.imply_rule.create
 
-import data.common.identity
-
 # Create role imply rule.
 #
 # The `input.target.role_imply_rule` is the new rule object (RoleImply):

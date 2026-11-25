@@ -93,14 +93,15 @@ impl RegorusPolicyEnforcer {
                 format!("unknown policy {policy_name}"),
             ))
         })?;
-        evaluate_entrypoint(ep, regorus::Value::from(input))
+        evaluate_entrypoint(ep, regorus::Value::from(input), true)
     }
 
     /// Evaluate the policy for the OPA input document given as a JSON string.
     ///
     /// Parses straight into the `regorus` value, without a `serde_json::Value`
-    /// tree in between.
-    pub(crate) fn evaluate_json(
+    /// tree in between. This is the production path: `violation` is only
+    /// evaluated for a denial, since nothing reads it for an allow.
+    pub fn evaluate_json(
         &self,
         policy_name: &str,
         input: &str,
@@ -114,7 +115,7 @@ impl RegorusPolicyEnforcer {
         })?;
         let input = regorus::Value::from_json_str(input)
             .map_err(|e| PolicyError::Compilation(eyre_report(e)))?;
-        evaluate_entrypoint(ep, input)
+        evaluate_entrypoint(ep, input, false)
     }
 }
 
@@ -131,9 +132,17 @@ fn eyre_report(e: impl std::fmt::Display) -> eyre::Report {
     eyre::eyre!("{e}")
 }
 
+/// Evaluate the rules of the entrypoint.
+///
+/// With `violations_on_allow` the `violation` rule is also evaluated for an
+/// allow, so the result is the whole package document as OPA returns it
+/// (`tools/policy-diff.py` compares that). Without it an allow skips the
+/// rule: every `violation` evaluation builds and runs one more engine, and
+/// the result of an allowed request is never inspected.
 fn evaluate_entrypoint(
     ep: &Entrypoint,
     input: regorus::Value,
+    violations_on_allow: bool,
 ) -> Result<PolicyEvaluationResult, PolicyError> {
     // `allow` is `default false`; anything but an explicit `true` is a deny.
     let allow = matches!(eval_rule(&ep.allow, &input)?, regorus::Value::Bool(true));
@@ -144,10 +153,8 @@ fn evaluate_entrypoint(
         },
         None => None,
     };
-    // Evaluated on allow too: OPA returns the whole package document and
-    // `tools/policy-diff.py` checks for parity.
     let violations = match &ep.violation {
-        Some(p) => match eval_rule(p, &input)? {
+        Some(p) if violations_on_allow || !allow => match eval_rule(p, &input)? {
             regorus::Value::Undefined => None,
             v => {
                 let json: Value = serde_json::from_str(
@@ -157,7 +164,7 @@ fn evaluate_entrypoint(
                 Some(serde_json::from_value::<Vec<Violation>>(json)?)
             }
         },
-        None => None,
+        _ => None,
     };
     Ok(PolicyEvaluationResult {
         allow,

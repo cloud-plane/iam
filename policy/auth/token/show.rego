@@ -2,8 +2,6 @@
 # description: Policy for viewing authentication token details
 package identity.auth.token.show
 
-import data.common.identity
-
 # View authentication token details.
 #
 # The `input.existing.token` is the stored token object (Token):
@@ -41,8 +39,13 @@ allow if {
 	"all" == input.credentials.system
 }
 
+# The owner check is inlined, not imported from
+# `data.common.identity_token`: token validation is the hottest policy and
+# every imported module costs about 10 µs per evaluation in regorus (see
+# `crates/policy-regorus/benches`).
+
 # METADATA
 # description: Token owner can inspect own token
 allow if {
-	identity.token_subject
+	input.credentials.user_id == input.existing.token.user.id
 }

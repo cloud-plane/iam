@@ -3,7 +3,7 @@
 package identity.domain.group.role.grant
 
 import data.common.assignment
-import data.common.identity
+import data.common.identity_role
 
 default allow := false
 
@@ -18,7 +18,7 @@ allow if {
 allow if {
 	"manager" in input.credentials.roles
 	assignment.domain_group_role_domain_matches
-	identity.domain_managed_target_role
+	identity_role.domain_managed_target_role
 }
 
 violation contains {"field": "domain_id", "msg": "granting a role to a group on a domain requires admin or manager role in the domain scope."} if {
@@ -28,7 +28,7 @@ violation contains {"field": "domain_id", "msg": "granting a role to a group on 
 
 violation contains {"field": "role", "msg": "granting a role to a group on a domain as a manager is limited to the manager, member and reader roles."} if {
 	not "admin" in input.credentials.roles
-	not identity.domain_managed_target_role
+	not identity_role.domain_managed_target_role
 }
 
 violation contains {"field": "domain_id", "msg": "granting a role to a group on a domain requires domain scope matching the domain_id of the target domain, group and role (or a global role)."} if {

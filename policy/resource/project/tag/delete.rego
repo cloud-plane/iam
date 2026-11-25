@@ -2,7 +2,7 @@
 # description: Policy for deleting project tags
 package identity.resource.project.tag.delete
 
-import data.common.identity
+import data.common.identity_domain
 
 # Deleting the tags of a project.
 #
@@ -23,11 +23,11 @@ allow if {
 
 allow if {
 	"manager" in input.credentials.roles
-	identity.domain_matches_domain_scope
+	identity_domain.domain_matches_domain_scope
 }
 
 violation contains {"field": "domain_id", "msg": "deleting the tags of a project requires system admin or `manager` role in the domain scope."} if {
 	not input.credentials.is_admin
 	not "manager" in input.credentials.roles
-	identity.domain_matches_domain_scope
+	identity_domain.domain_matches_domain_scope
 }

@@ -2,8 +2,6 @@
 # description: Shared predicates for mapping ruleset policies
 package common.mapping
 
-import data.common.identity
-
 # Resolve domain_id from target or existing depending on operation.
 # Create/List: domain_id is in input.target.mapping.
 # Update/Show/Delete: domain_id is in input.existing.mapping.

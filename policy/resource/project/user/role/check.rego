@@ -3,7 +3,6 @@
 package identity.project.user.role.check
 
 import data.common.assignment
-import data.common.identity
 
 # Check whether the user has a role assigned on the project.
 

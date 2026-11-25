@@ -2,8 +2,6 @@
 # description: Common policies for token operations
 package common.token
 
-import data.common.identity
-
 foreign_token_restriction if {
 	token_restriction_domain_id != null
 	token_restriction_domain_id != input.credentials.domain_id

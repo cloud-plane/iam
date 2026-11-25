@@ -3,8 +3,6 @@
 # description: Policy for updating a legacy policy document
 package identity.policy.update
 
-import data.common.identity
-
 # Update policy (legacy `PATCH /v3/policies/{policy_id}`).
 #
 # The `input.target.policy` contains the requested changes, projected onto the

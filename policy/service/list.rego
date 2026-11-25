@@ -3,8 +3,6 @@
 # description: Policy for listing catalog services
 package identity.service.list
 
-import data.common.identity
-
 # List services.
 #
 # The `input.target.service` contains query parameters (ServiceListParameters):

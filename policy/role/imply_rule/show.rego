@@ -3,8 +3,6 @@
 # description: Policy for fetching a single role imply rule
 package identity.role.imply_rule.show
 
-import data.common.identity
-
 # Show role imply rule.
 #
 # The `input.target` is null

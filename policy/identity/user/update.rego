@@ -2,7 +2,7 @@
 # description: Policy for updating identity user
 package identity.user.update
 
-import data.common.identity
+import data.common.identity_domain
 
 # Update an existing user
 #
@@ -34,7 +34,7 @@ allow if {
 
 allow if {
 	"manager" in input.credentials.roles
-	identity.domain_matches_domain_scope
+	identity_domain.domain_matches_domain_scope
 }
 
 violation contains {"field": "domain_id", "msg": "updating a user in domain different to the domain scope requires `admin` role."} if {
@@ -46,5 +46,5 @@ violation contains {"field": "domain_id", "msg": "updating a user in domain diff
 violation contains {"field": "domain_id", "msg": "updating a user requires a manager role with the domain scope."} if {
 	not "admin" in input.credentials.roles
 	not "manager" in input.credentials.roles
-	identity.domain_matches_domain_scope
+	identity_domain.domain_matches_domain_scope
 }

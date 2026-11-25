@@ -2,8 +2,6 @@
 # description: Shared predicates for API Key (SCIM ingress) policies (ADR 0021)
 package common.api_key
 
-import data.common.identity
-
 # Resolve domain_id from target or existing depending on operation.
 # Create/List: domain_id is in input.target.api_key.
 # Update/Revoke/SimulateAccess: domain_id is in input.existing.api_key.

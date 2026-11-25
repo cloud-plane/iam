@@ -2,7 +2,7 @@
 # description: Policy for listing projects of a user
 package identity.user.project.list
 
-import data.common.identity
+import data.common.identity_domain
 
 # List projects a user has a role assignment on.
 #
@@ -38,7 +38,7 @@ allow if {
 
 allow if {
 	"reader" in input.credentials.roles
-	identity.domain_matches_domain_scope
+	identity_domain.domain_matches_domain_scope
 }
 
 allow if {

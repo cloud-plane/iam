@@ -2,7 +2,7 @@
 # description: Policy for listing users of a group
 package identity.group.user.list
 
-import data.common.identity
+import data.common.identity_domain
 
 # Listing users of a group.
 #
@@ -19,13 +19,13 @@ allow if {
 
 allow if {
 	"reader" in input.credentials.roles
-	identity.domain_matches_domain_scope
+	identity_domain.domain_matches_domain_scope
 }
 
 violation contains {"field": "domain_id", "msg": "listing users of a group in a domain different to the domain scope requires `admin` role."} if {
 	not "admin" in input.credentials.roles
 	"reader" in input.credentials.roles
-	not identity.domain_matches_domain_scope
+	not identity_domain.domain_matches_domain_scope
 }
 
 violation contains {"field": "domain_id", "msg": "listing users of a group requires a reader role with the domain scope."} if {

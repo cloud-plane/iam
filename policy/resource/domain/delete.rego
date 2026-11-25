@@ -2,8 +2,6 @@
 # description: Policy for deleting domains
 package identity.resource.domain.delete
 
-import data.common.identity
-
 # Delete a domain.
 #
 # The `input.target` is null.

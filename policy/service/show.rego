@@ -3,8 +3,6 @@
 # description: Policy for fetching a single catalog service
 package identity.service.show
 
-import data.common.identity
-
 # Show service.
 #
 # The `input.existing.service` is the stored service object (Service):

@@ -2,8 +2,6 @@
 # description: Policy for creating domains
 package identity.resource.domain.create
 
-import data.common.identity
-
 # Create a new domain
 #
 # The `input.target.domain` is the new domain object (DomainCreate):

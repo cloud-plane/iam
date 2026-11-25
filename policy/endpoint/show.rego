@@ -3,8 +3,6 @@
 # description: Policy for fetching a single catalog endpoint
 package identity.endpoint.show
 
-import data.common.identity
-
 # Show endpoint.
 #
 # The `input.existing.endpoint` is the stored endpoint object (Endpoint):

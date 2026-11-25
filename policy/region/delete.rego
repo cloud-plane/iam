@@ -3,8 +3,6 @@
 # description: Policy for deleting a catalog region
 package identity.region.delete
 
-import data.common.identity
-
 # Delete region.
 #
 # The `input.existing.region` is the stored region object (Region):

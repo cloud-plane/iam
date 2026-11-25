@@ -2,8 +2,6 @@
 # description: Policy for listing roles of a user on system
 package identity.system.user.role.list
 
-import data.common.identity
-
 # List direct (non-effective) user roles on the system.
 #
 # The `input.target` contains resolved user object:

@@ -2,7 +2,7 @@
 # description: Policy for listing k8s auth instances
 package identity.k8s_auth.instance.list
 
-import data.common.identity
+import data.common.identity_domain
 
 # List k8s auth instances.
 #
@@ -23,7 +23,7 @@ allow if {
 }
 
 allow if {
-	identity.own_target
+	identity_domain.own_target
 	"reader" in input.credentials.roles
 }
 
@@ -35,11 +35,11 @@ allow if {
 }
 
 violation contains {"field": "domain_id", "msg": "listing k8s_auth instance for other domain requires `admin` role."} if {
-	identity.foreign_target
+	identity_domain.foreign_target
 	not "admin" in input.credentials.roles
 }
 
 violation contains {"field": "role", "msg": "listing k8s_auth instance requires `reader` role."} if {
-	identity.own_target
+	identity_domain.own_target
 	not "reader" in input.credentials.roles
 }

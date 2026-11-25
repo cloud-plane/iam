@@ -3,8 +3,6 @@
 # description: Policy for creating a catalog service
 package identity.service.create
 
-import data.common.identity
-
 # Create service.
 #
 # The `input.target.service` is the new service object (ServiceCreate):

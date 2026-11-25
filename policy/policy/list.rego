@@ -3,8 +3,6 @@
 # description: Policy for listing legacy policy documents
 package identity.policy.list
 
-import data.common.identity
-
 # List policies (legacy `GET /v3/policies`).
 #
 # NOTE: this governs the deprecated `/v3/policies` *document store*, not this

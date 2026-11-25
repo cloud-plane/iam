@@ -2,7 +2,7 @@
 # description: Policy for listing projects
 package identity.resource.project.list
 
-import data.common.identity
+import data.common.identity_domain
 
 # List projects.
 #
@@ -32,11 +32,11 @@ allow if {
 
 allow if {
 	"reader" in input.credentials.roles
-	identity.domain_matches_domain_scope
+	identity_domain.domain_matches_domain_scope
 }
 
 violation contains {"field": "domain_id", "msg": "listing projects requires system admin or `reader` role with system scope or domain scope."} if {
 	not input.credentials.is_admin
 	not "reader" in input.credentials.roles
-	identity.domain_matches_domain_scope
+	identity_domain.domain_matches_domain_scope
 }
