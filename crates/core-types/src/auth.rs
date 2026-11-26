@@ -314,6 +314,13 @@ pub struct SecurityContext {
     #[builder(default)]
     token: Option<Arc<FernetToken>>,
 
+    /// The revocation state behind the token is out of date: the token was
+    /// issued by another authority and the revocation stream from it has not
+    /// been heard from within the bound. The policy of a sensitive action
+    /// denies such a request (ADR 0045 section 9).
+    #[builder(default)]
+    revocation_stale: bool,
+
     /// Request correlation ID for linking perimeter and provider audit events.
     ///
     /// Set by the API handler from the `x-openstack-request-id` header
@@ -407,6 +414,7 @@ impl SecurityContextTestingBuilder {
             interface: Interface::Public,
             token_restriction: self.token_restriction,
             token: self.token.map(Arc::new),
+            revocation_stale: false,
             correlation_id: None,
             peer_addr: None,
         }
@@ -504,6 +512,17 @@ impl SecurityContext {
     #[must_use]
     pub fn token(&self) -> Option<&FernetToken> {
         self.token.as_deref()
+    }
+
+    /// Whether the revocation state behind the token is stale.
+    #[must_use]
+    pub const fn revocation_stale(&self) -> bool {
+        self.revocation_stale
+    }
+
+    /// Marks the revocation state behind the token as stale or fresh.
+    pub fn set_revocation_stale(&mut self, stale: bool) {
+        self.revocation_stale = stale;
     }
 
     /// Sets the `FernetToken` on this context.

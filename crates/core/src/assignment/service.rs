@@ -1043,6 +1043,7 @@ impl AssignmentApi for AssignmentService {
             audit_id: None,
             audit_chain_id: None,
             revoked_at: chrono::Utc::now(),
+            owner_domain_id: None,
         };
         // A revocation event cannot be bound to the members of a group: it
         // would revoke every token carrying the role on that scope, including

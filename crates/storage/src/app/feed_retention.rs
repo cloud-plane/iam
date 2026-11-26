@@ -19,6 +19,7 @@
 //! the same events.
 
 use super::*;
+use crate::store::state_machine::OutboxClass;
 
 /// Interval between two retention checks.
 const FEED_RETENTION_CHECK_INTERVAL: Duration = Duration::from_secs(600);
@@ -27,6 +28,15 @@ impl Storage {
     /// Propose a prune if retention asks for one. Returns the index pruned up
     /// to; `None` if this node is not the leader or nothing is due.
     pub async fn prune_feed_outbox(&self) -> Result<Option<u64>, StoreError> {
+        self.prune_outbox(OutboxClass::Normal).await
+    }
+
+    /// [`Self::prune_feed_outbox`] for the priority outbox.
+    pub async fn prune_priority_outbox(&self) -> Result<Option<u64>, StoreError> {
+        self.prune_outbox(OutboxClass::Priority).await
+    }
+
+    async fn prune_outbox(&self, class: OutboxClass) -> Result<Option<u64>, StoreError> {
         if self.current_leader() != Some(self.node_id) {
             return Ok(None);
         }
@@ -35,7 +45,8 @@ impl Storage {
         let retention_secs = u64::from(self.feed_retention_days) * 24 * 60 * 60;
         let max_events = self.feed_max_events;
         let point = tokio::task::spawn_blocking(move || {
-            sm.outbox_prune_point(
+            sm.outbox_prune_point_in(
+                class,
                 crate::store::state_machine::unix_now(),
                 retention_secs,
                 max_events,
@@ -46,7 +57,10 @@ impl Storage {
         let Some(upto_index) = point else {
             return Ok(None);
         };
-        let cmd = StoreCommand::Transaction(vec![MutationInner::PruneOutbox { upto_index }]);
+        let cmd = StoreCommand::Transaction(vec![MutationInner::PruneOutbox {
+            upto_index,
+            priority: class == OutboxClass::Priority,
+        }]);
         let payload = crate::pb::api::CommandRequest::try_from(cmd)
             .map_err(|e| StoreError::Other(eyre!(e)))?;
         match self.raft.client_write(payload).await {
@@ -70,6 +84,12 @@ pub(super) fn spawn_feed_retention_task(storage: &Arc<Storage>) {
             };
             if let Err(e) = storage.prune_feed_outbox().await {
                 tracing::warn!(error = %e, "feed outbox pruning failed; retrying on the next check");
+            }
+            if let Err(e) = storage.prune_priority_outbox().await {
+                tracing::warn!(
+                    error = %e,
+                    "priority outbox pruning failed; retrying on the next check"
+                );
             }
         }
     });

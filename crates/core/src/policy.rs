@@ -395,6 +395,20 @@ pub struct Credentials {
     #[serde(default)]
     pub delegated_project_id: Option<String>,
 
+    /// The revocation state behind the caller's token is stale: the token was
+    /// issued by another authority and its revocation stream has not been
+    /// heard from within `[revoke] revocation_max_staleness` (ADR 0045
+    /// section 9).
+    ///
+    /// # Security Note
+    ///
+    /// Policies of sensitive actions must deny when this is set (see
+    /// `common.revocation.fresh`): the token may have been revoked without
+    /// this authority knowing it.
+    #[builder(default)]
+    #[serde(default)]
+    pub revocation_stale: bool,
+
     /// The delegatable service acting in the request (ADR 0036): the
     /// grantee under a service grant, or the service acting as itself.
     /// `None` for every other authentication.
@@ -437,6 +451,7 @@ impl TryFrom<&ValidatedSecurityContext> for Credentials {
         builder.is_admin(sc.is_admin());
         builder.auth_type(sc.authentication_context().auth_type());
         builder.is_delegated(sc.authentication_context().is_delegated());
+        builder.revocation_stale(sc.revocation_stale());
         // Delegation facts are taken from the authentication chain, not the
         // token scope, so the policy engine sees the delegation's own
         // immutable binding (OSSA-2026-015). See `delegated_project_id`.

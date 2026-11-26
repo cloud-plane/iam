@@ -30,7 +30,7 @@ use tonic::{Request, Response, Status};
 use crate::grpc::authz::{PeerAuthz, PeerRole};
 use crate::leader_contact::LeaderContact;
 use crate::pb;
-use crate::store::state_machine::{FeedCursor, FeedGrants, OutboxEvent};
+use crate::store::state_machine::{FeedCursor, FeedGrants, OutboxClass, OutboxEvent};
 use crate::types::{Raft, StateMachineStore};
 
 /// Events read from the outbox per batch.
@@ -43,6 +43,13 @@ const DEFAULT_MAX_STALENESS: Duration = Duration::from_secs(30);
 
 /// How often an idle stream looks for new events.
 const POLL: Duration = Duration::from_millis(200);
+
+/// Heartbeat of the priority stream.
+const PRIORITY_HEARTBEAT: Duration = Duration::from_secs(1);
+
+/// Longest a voter may have gone without hearing from the leader and still
+/// serve the priority stream.
+const PRIORITY_MAX_STALENESS: Duration = Duration::from_secs(2);
 
 /// What one request asks for; empty narrows nothing.
 #[derive(Debug, Default)]
@@ -156,8 +163,23 @@ impl pb::raft::feed_service_server::FeedService for FeedServiceImpl {
 
         let sm = self.sm.clone();
         let raft = self.raft.clone();
-        let heartbeat = self.heartbeat;
-        let limit = self.max_staleness.unwrap_or(DEFAULT_MAX_STALENESS);
+        let class = OutboxClass::from_priority(req.priority);
+        // The priority stream carries revocations, which are acted on within
+        // seconds: its heartbeat is short and a voter must have heard from the
+        // leader recently to serve it.
+        let (heartbeat, limit) = if req.priority {
+            (
+                PRIORITY_HEARTBEAT.min(self.heartbeat),
+                self.max_staleness
+                    .unwrap_or(DEFAULT_MAX_STALENESS)
+                    .min(PRIORITY_MAX_STALENESS),
+            )
+        } else {
+            (
+                self.heartbeat,
+                self.max_staleness.unwrap_or(DEFAULT_MAX_STALENESS),
+            )
+        };
         let leader_contact = self.leader_contact.clone();
         let node_id = self.node_id;
         let (tx, rx) = tokio::sync::mpsc::channel::<Result<pb::raft::FeedMessage, Status>>(4);
@@ -194,7 +216,7 @@ impl pb::raft::feed_service_server::FeedService for FeedServiceImpl {
                         Ok::<_, crate::error::StoreError>((
                             sm.feed_grants(&identity)?,
                             sm.feed_epoch()?.unwrap_or(0),
-                            sm.feed_floor()?,
+                            sm.feed_floor_in(class)?,
                         ))
                     })
                     .await
@@ -267,9 +289,9 @@ impl pb::raft::feed_service_server::FeedService for FeedServiceImpl {
                 let read = {
                     let sm = sm.clone();
                     tokio::task::spawn_blocking(move || {
-                        let batch = sm.outbox_events_after(cursor, BATCH);
+                        let batch = sm.outbox_events_after_in(class, cursor, BATCH);
                         let epoch = sm.feed_epoch()?.unwrap_or(0);
-                        let floor = sm.feed_floor()?;
+                        let floor = sm.feed_floor_in(class)?;
                         Ok::<_, crate::error::StoreError>((batch, epoch, floor))
                     })
                     .await

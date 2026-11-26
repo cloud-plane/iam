@@ -598,6 +598,10 @@ message SubscribeRequest {
   repeated string kinds = 5;
   // Domains wanted; empty means every domain the caller may receive.
   repeated string domains = 6;
+  // Subscribe to the priority outbox (revocations) instead of the normal one.
+  // Served by the leader or a voter with fresh leader contact, with a 1 s
+  // heartbeat. The cursor and epoch are those of that outbox.
+  bool priority = 7;
 }
 
 message FeedEvent {

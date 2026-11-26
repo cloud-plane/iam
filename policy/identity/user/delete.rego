@@ -3,6 +3,7 @@
 package identity.user.delete
 
 import data.common.identity_domain
+import data.common.revocation as revocation_common
 
 # Delete user.
 #
@@ -20,14 +21,17 @@ import data.common.identity_domain
 default allow := false
 
 allow if {
+	revocation_common.fresh
 	"admin" in input.credentials.roles
 }
 
 allow if {
+	revocation_common.fresh
 	input.credentials.is_admin
 }
 
 allow if {
+	revocation_common.fresh
 	"manager" in input.credentials.roles
 	identity_domain.domain_matches_domain_scope
 }

@@ -105,7 +105,7 @@ operator's unless a row says otherwise.
 | Passkey public keys and state | WebAuthn login | Raft | Until removed. |
 | Federated identity links | Federation | Federation backend | Until removed. |
 | Role assignments, trusts, application credentials | Authorisation and delegation | SQL | Until the owning user or project is deleted (assignments, trusts and application credentials are removed with the user). |
-| Revocation events | Token revocation | SQL | Pruned after the token expiry plus `[revoke] expiration_buffer`. |
+| Revocation events | Token revocation | SQL or Raft (`[revoke] driver`) | Pruned after the token expiry plus `[revoke] expiration_buffer`. |
 | Audit records: initiator ID, domain, project, source address, target ID, action, outcome | Accountability and incident forensics | Local signed spool, then the configured sink | Kept until shipped; deleted only after the sink acknowledges, or by `spool_max_segments`. |
 | Application logs | Operations | Log sink | Operator-defined. May carry user IDs and source addresses; never bearer tokens. |
 | Traces and metrics | Operations | OTLP / Prometheus | Operator-defined. |

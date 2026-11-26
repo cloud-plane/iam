@@ -74,6 +74,17 @@ impl RaftStateMachine<TypeConfig> for Arc<FjallStateMachine> {
                 .as_ref()
                 .map(|raw| StoreCommand::unpack(raw))
                 .transpose()?;
+            // Keyspaces this entry writes; they get a new revision once the
+            // batch is committed.
+            let written_keyspaces: Vec<String> = match &command {
+                Some(StoreCommand::Transaction(mutations)) => {
+                    super::revision::written_keyspaces(mutations)
+                        .into_iter()
+                        .map(str::to_owned)
+                        .collect()
+                }
+                _ => Vec::new(),
+            };
             let mut restore_outcome: Option<Result<(), RestoreError>> = None;
             let mut unwrapped_deks: HashMap<Vec<u8>, Zeroizing<[u8; 32]>> = HashMap::new();
             let mut unwrap_failures: HashMap<Vec<u8>, String> = HashMap::new();
@@ -990,6 +1001,7 @@ impl RaftStateMachine<TypeConfig> for Arc<FjallStateMachine> {
                                     op,
                                     value,
                                     tier,
+                                    priority,
                                 } => {
                                     let refuse = |what: &str, why: String| Violation {
                                         r#type: what.to_string(),
@@ -1023,7 +1035,12 @@ impl RaftStateMachine<TypeConfig> for Arc<FjallStateMachine> {
                                         position: emit_position,
                                     };
                                     emit_position += 1;
-                                    match self.stage_outbox_event(&mut batch, cursor, &event) {
+                                    match self.stage_outbox_event(
+                                        &mut batch,
+                                        OutboxClass::from_priority(priority),
+                                        cursor,
+                                        &event,
+                                    ) {
                                         Ok(()) => {
                                             self.stage_feed_epoch(
                                                 &mut batch,
@@ -1059,9 +1076,16 @@ impl RaftStateMachine<TypeConfig> for Arc<FjallStateMachine> {
                                         domain.as_deref(),
                                     );
                                 }
-                                MutationInner::PruneOutbox { upto_index } => {
-                                    self.stage_outbox_prune(&mut batch, upto_index)
-                                        .map_err(|e| io::Error::other(e.to_string()))?;
+                                MutationInner::PruneOutbox {
+                                    upto_index,
+                                    priority,
+                                } => {
+                                    self.stage_outbox_prune(
+                                        &mut batch,
+                                        OutboxClass::from_priority(priority),
+                                        upto_index,
+                                    )
+                                    .map_err(|e| io::Error::other(e.to_string()))?;
                                 }
                                 MutationInner::SetSites { sites } => {
                                     pending_sites = Some(
@@ -1129,6 +1153,9 @@ impl RaftStateMachine<TypeConfig> for Arc<FjallStateMachine> {
                     .commit()
                     .map_err(|e| io::Error::other(e.to_string()))?;
 
+                self.revisions
+                    .touch(written_keyspaces.iter().map(String::as_str));
+
                 if let (Some(sites), Some(kek)) = (pending_sites, self.kek.as_site_kek()) {
                     kek.registry().replace(sites);
                 }
@@ -1157,6 +1184,10 @@ impl RaftStateMachine<TypeConfig> for Arc<FjallStateMachine> {
                             .map_err(|e| io::Error::other(e.to_string()))?;
                         tracing::info!(keyspace = %name, "keyspace dropped via Raft");
                     }
+                    // The drop took effect after the bump above: a reader that
+                    // loaded in between holds the pre-drop contents.
+                    self.revisions
+                        .touch(pending_keyspace_drops.iter().map(String::as_str));
                 }
 
                 // Swap the active DEK epoch after a successful InstallDek

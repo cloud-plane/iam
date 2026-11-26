@@ -1744,6 +1744,73 @@ changed (restore, emergency DEK rotation) or the event was pruned: reload from a
 bundle and subscribe again without a cursor. The leader prunes events past the
 retention limits every ten minutes.
 
+#### Priority outbox
+
+A driver can emit an event as `priority`. Priority events (revocations) are
+kept in their own outbox with their own floor and pruned separately, so a burst
+of bulk events cannot delay them or push them out of retention. A subscriber
+reads them with `SubscribeRequest.priority = true`, under the same grants and
+epoch as the normal stream. The priority stream beats every second whatever
+`feed_heartbeat_secs` says, and a voter serves it only while it has heard from
+the leader within the last 2 seconds (the leader always can); otherwise the
+stream ends and the consumer reconnects to another voter.
+
+#### Revocation events in Raft
+
+`[revoke] driver = "raft"` keeps the revocation events in the `revocation_event`
+keyspace instead of SQL. Each create and each expiry delete also emits a
+`revocation` event into the priority outbox, in the same transaction, when
+`feed_kinds` lists `revocation`; without it the driver still revokes and emits
+nothing. The check of a token is answered from an in-memory copy of the events
+that is reloaded only when the keyspace revision moves; a follower reads through
+to the leader. Grant a subscriber the `revocation` kind (every domain, since a
+revocation can name a user without a domain) to receive them on the priority
+stream.
+
+A consumer built with `FeedConsumerConfig { priority: true, .. }` follows that
+stream. It keeps a cursor of its own (`<name>#priority`) and, unlike the normal
+feed, reconnects with a backoff capped at five seconds, since the revocation
+bound is 30 seconds. `RevocationFeedSink` applies the events of one authority
+into the `revocation_event_mirror` keyspace, keyed `<authority>:<event id>`. The
+authority is the one the subscription is configured for; the origin carried in
+an event body is overwritten. A mirrored event revokes only tokens whose issuer
+is that authority, and a local event revokes only local tokens, so one authority
+cannot revoke the tokens of another. Mirrored events are removed when the source
+removes them, when the cursor is reset (the sink clears that authority and the
+new subscription replays what the source still holds), or when they pass the
+regular expiry cutoff.
+
+#### Stale revocation state fails closed
+
+A heartbeat of a priority stream tells keystone that the revocation state of
+that authority is current: the source sends one only when it has no event left
+for the consumer, and the consumer has applied every event before it. An event
+alone does not count, since a consumer that reconnects after an outage first
+receives a backlog. When a token issued by another
+authority is validated and its stream was last heard from more than
+`[revoke] revocation_max_staleness` seconds ago (default 30), or never, the
+request carries `input.credentials.revocation_stale`. The policies of sensitive
+actions (trust create, credential create and update, user update and delete)
+deny it; reads keep working. Tokens of the local authority are not affected.
+`keystone_revocation_event_age_seconds{authority}` shows how long events take to
+arrive, `keystone_revocation_head_age_seconds{authority}` how long ago the
+stream was last heard from, and `keystone_revocation_stale_decisions_total`
+counts the requests that were marked.
+
+The issuer of a token is not part of the token payload yet, and no node starts
+a feed consumer for another authority yet. Until both exist, every token
+validates as local, nothing is marked stale, and a mirrored event revokes
+nothing: this fail-closed gate is not in effect.
+
+#### Keyspace revisions
+
+`StorageApi::keyspace_revision` returns an opaque revision of a keyspace on
+this node. Equal values mean the keyspace did not change in between, so a
+driver can keep a small keyspace in memory and reload it only when the revision
+moves. The leader answers after a `ReadIndex`; a follower asked for a
+linearizable answer returns nothing and the caller reads through. Revisions are
+not replicated and are only comparable with ones from the same node.
+
 ### Consuming a feed
 
 `feed_consumer::FeedConsumer` (built with `Storage::feed_consumer`) subscribes

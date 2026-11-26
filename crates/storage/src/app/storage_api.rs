@@ -297,6 +297,64 @@ impl StorageApi for Storage {
             .map_err(ApiStoreError::from)
     }
 
+    fn feed_kind_enabled(&self, kind: &str) -> bool {
+        self.state_machine_store.feed_kind_enabled(kind)
+    }
+
+    /// The revision of `keyspace`, when this node can vouch for it: a local
+    /// read the configuration allows, or the leader after a `ReadIndex`
+    /// confirmed it holds everything committed. A follower asked for a
+    /// linearizable answer returns `None`, and the caller reads through.
+    async fn keyspace_revision(
+        &self,
+        keyspace: &str,
+        consistency: ReadConsistency,
+    ) -> Result<Option<u64>, ApiStoreError> {
+        if self.local_read_allowed(consistency) {
+            return Ok(Some(self.state_machine_store.keyspace_revision(keyspace)));
+        }
+        Ok(match self.ensure_linearizable_with_retry().await? {
+            EnsureLinearizableOutcome::Leader => {
+                Some(self.state_machine_store.keyspace_revision(keyspace))
+            }
+            EnsureLinearizableOutcome::Forward(..) => None,
+        })
+    }
+
+    /// Revisions of `keyspaces` in one call, led by the instance id of the
+    /// node that vouches for them. A follower asks the leader, which confirms
+    /// its leadership once for all of them.
+    async fn keyspace_revisions(
+        &self,
+        keyspaces: &[&str],
+        consistency: ReadConsistency,
+    ) -> Result<Option<Vec<u64>>, ApiStoreError> {
+        let local = || {
+            let mut out = vec![self.state_machine_store.revision_instance()];
+            out.extend(
+                keyspaces
+                    .iter()
+                    .map(|k| self.state_machine_store.keyspace_revision(k)),
+            );
+            out
+        };
+        if self.local_read_allowed(consistency) {
+            return Ok(Some(local()));
+        }
+        Ok(Some(
+            match self
+                .route_read(|lead_id, leader_addr| async move {
+                    self.forwarded_keyspace_revisions(lead_id, leader_addr, keyspaces)
+                        .await
+                })
+                .await?
+            {
+                Some(forwarded) => forwarded,
+                None => local(),
+            },
+        ))
+    }
+
     /// Gets a value for a given key from the distributed store.
     ///
     /// # Parameters

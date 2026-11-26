@@ -40,6 +40,7 @@ pub mod error;
 pub mod hook;
 mod provider_api;
 pub mod service;
+pub mod stream_health;
 
 use openstack_keystone_core_types::revoke::*;
 use openstack_keystone_core_types::token::FernetToken;
@@ -51,9 +52,27 @@ pub use error::RevokeProviderError;
 pub use hook::RevokeHook;
 pub use provider_api::RevokeApi;
 pub use service::RevokeService;
+pub use stream_health::{STREAM_HEALTH, StreamHealth};
 
 #[cfg(any(test, feature = "mock"))]
 pub use crate::mocks::MockRevokeProvider;
+
+/// Whether the revocation state behind a token issued by `issuer` is stale
+/// (`None` for a token of this authority).
+///
+/// Call it while validating a token of another authority and mark the
+/// context with [`SecurityContext::set_revocation_stale`]; the policy input
+/// then carries `revocation_stale`.
+pub async fn is_issuer_stale(state: &crate::keystone::ServiceState, issuer: Option<&str>) -> bool {
+    let max = state
+        .config_manager
+        .config
+        .read()
+        .await
+        .revoke
+        .revocation_max_staleness;
+    STREAM_HEALTH.is_stale(issuer, std::time::Duration::from_secs(max))
+}
 
 /// Convert Token into the revocation events listing parameters following the
 /// <https://openstack-experimental.github.io/keystone/adr/0009-auth-token-revoke.html#revocation-check>.

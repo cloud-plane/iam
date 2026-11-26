@@ -137,6 +137,7 @@ pub(crate) async fn revoke_all(
                     audit_id: None,
                     audit_chain_id: None,
                     revoked_at: Utc::now(),
+                    owner_domain_id: None,
                 },
             )
             .await?;

@@ -46,6 +46,49 @@ pub(crate) const META_FEED_FLOOR: &[u8] = b"_meta:feed:floor";
 /// takes effect at its log index.
 pub(crate) const FEED_GRANT_PREFIX: &str = "_meta:feed:grant:";
 
+/// Fjall meta key prefix of the priority outbox (revocation events). A
+/// separate prefix with its own floor keeps a burst of bulk events from
+/// delaying them or pushing them out of retention.
+pub(crate) const OUTBOX_PRIORITY_PREFIX: &str = "_meta:outbox_p:";
+
+/// Fjall meta key of the priority outbox floor.
+pub(crate) const META_FEED_FLOOR_PRIORITY: &[u8] = b"_meta:feed:floor_p";
+
+/// Which outbox an event lives in.
+#[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
+pub enum OutboxClass {
+    /// Registry and other bulk kinds.
+    #[default]
+    Normal,
+    /// Kinds whose events must reach every authority within seconds.
+    Priority,
+}
+
+impl OutboxClass {
+    pub(crate) fn prefix(self) -> &'static str {
+        match self {
+            Self::Normal => OUTBOX_PREFIX,
+            Self::Priority => OUTBOX_PRIORITY_PREFIX,
+        }
+    }
+
+    fn floor_key(self) -> &'static [u8] {
+        match self {
+            Self::Normal => META_FEED_FLOOR,
+            Self::Priority => META_FEED_FLOOR_PRIORITY,
+        }
+    }
+
+    /// The class a wire flag selects.
+    pub fn from_priority(priority: bool) -> Self {
+        if priority {
+            Self::Priority
+        } else {
+            Self::Normal
+        }
+    }
+}
+
 /// Partition name under which outbox events are encrypted and quarantined.
 const OUTBOX_PARTITION: &[u8] = b"outbox";
 
@@ -112,8 +155,8 @@ fn parse_grant(rest: &[u8]) -> Option<(String, Option<String>)> {
     Some((kind.to_owned(), domain))
 }
 
-pub(super) fn outbox_key(cursor: FeedCursor) -> Vec<u8> {
-    let mut key = OUTBOX_PREFIX.as_bytes().to_vec();
+pub(super) fn outbox_key(class: OutboxClass, cursor: FeedCursor) -> Vec<u8> {
+    let mut key = class.prefix().as_bytes().to_vec();
     key.extend_from_slice(&cursor.index.to_be_bytes());
     key.extend_from_slice(&cursor.position.to_be_bytes());
     key
@@ -129,8 +172,8 @@ pub(crate) struct EmitRefusal {
     pub description: String,
 }
 
-fn cursor_from_key(key: &[u8]) -> Option<FeedCursor> {
-    let rest = key.strip_prefix(OUTBOX_PREFIX.as_bytes())?;
+fn cursor_from_key(class: OutboxClass, key: &[u8]) -> Option<FeedCursor> {
+    let rest = key.strip_prefix(class.prefix().as_bytes())?;
     let (index, position) = rest.split_at_checked(8)?;
     Some(FeedCursor {
         index: u64::from_be_bytes(index.try_into().ok()?),
@@ -150,6 +193,14 @@ impl FjallStateMachine {
     /// Kinds that `Emit` may write; empty disables the feed.
     pub fn set_feed_kinds(&self, kinds: impl IntoIterator<Item = String>) {
         *self.feed_kinds.write().unwrap_or_else(|p| p.into_inner()) = kinds.into_iter().collect();
+    }
+
+    /// Whether `Emit` of `kind` is accepted on this node.
+    pub fn feed_kind_enabled(&self, kind: &str) -> bool {
+        self.feed_kinds
+            .read()
+            .unwrap_or_else(|p| p.into_inner())
+            .contains(kind)
     }
 
     /// Largest feed event this node accepts.
@@ -209,10 +260,11 @@ impl FjallStateMachine {
     pub(super) fn stage_outbox_event(
         &self,
         batch: &mut fjall::OwnedWriteBatch,
+        class: OutboxClass,
         cursor: FeedCursor,
         event: &OutboxEvent,
     ) -> Result<(), StoreError> {
-        let key = outbox_key(cursor);
+        let key = outbox_key(class, cursor);
         let plain = rmp_serde::to_vec(event)?;
         let (encrypted, dek_version) =
             self.encrypt_and_store(&self.meta, &key, OUTBOX_PARTITION, 1, &plain)?;
@@ -238,7 +290,12 @@ impl FjallStateMachine {
     /// The oldest log index a cursor can still resume from (0 if nothing was
     /// pruned).
     pub fn feed_floor(&self) -> Result<u64, StoreError> {
-        Ok(self.meta_u64(META_FEED_FLOOR)?.unwrap_or(0))
+        self.feed_floor_in(OutboxClass::Normal)
+    }
+
+    /// The floor of one outbox.
+    pub fn feed_floor_in(&self, class: OutboxClass) -> Result<u64, StoreError> {
+        Ok(self.meta_u64(class.floor_key())?.unwrap_or(0))
     }
 
     /// Stages the epoch for the first event of a feed.
@@ -336,17 +393,18 @@ impl FjallStateMachine {
     pub(super) fn stage_outbox_prune(
         &self,
         batch: &mut fjall::OwnedWriteBatch,
+        class: OutboxClass,
         upto_index: u64,
     ) -> Result<(), StoreError> {
-        for item in self.meta.prefix(OUTBOX_PREFIX.as_bytes()) {
+        for item in self.meta.prefix(class.prefix().as_bytes()) {
             let key = item.key()?;
-            match cursor_from_key(&key) {
+            match cursor_from_key(class, &key) {
                 Some(c) if c.index <= upto_index => batch.remove(&self.meta, key),
                 _ => break,
             }
         }
-        let floor = self.feed_floor()?.max(upto_index.saturating_add(1));
-        batch.insert(&self.meta, META_FEED_FLOOR, floor.to_be_bytes());
+        let floor = self.feed_floor_in(class)?.max(upto_index.saturating_add(1));
+        batch.insert(&self.meta, class.floor_key(), floor.to_be_bytes());
         Ok(())
     }
 
@@ -359,10 +417,21 @@ impl FjallStateMachine {
         retention_secs: u64,
         max_events: u64,
     ) -> Result<Option<u64>, StoreError> {
+        self.outbox_prune_point_in(OutboxClass::Normal, now, retention_secs, max_events)
+    }
+
+    /// [`Self::outbox_prune_point`] for one outbox.
+    pub fn outbox_prune_point_in(
+        &self,
+        class: OutboxClass,
+        now: u64,
+        retention_secs: u64,
+        max_events: u64,
+    ) -> Result<Option<u64>, StoreError> {
         let mut entries: Vec<(u64, u64)> = Vec::new();
-        for item in self.meta.prefix(OUTBOX_PREFIX.as_bytes()) {
+        for item in self.meta.prefix(class.prefix().as_bytes()) {
             let (key, value) = item.into_inner()?;
-            if let Some(c) = cursor_from_key(&key) {
+            if let Some(c) = cursor_from_key(class, &key) {
                 // An entry that cannot be read must not stop retention for
                 // good: count it as the oldest, so the age rule removes it.
                 let at = match split_entry(&value) {
@@ -422,14 +491,16 @@ impl FjallStateMachine {
         index: u64,
     ) -> Result<(), StoreError> {
         let mut removed = false;
-        for item in self.meta.prefix(OUTBOX_PREFIX.as_bytes()) {
-            let (key, value) = item.into_inner()?;
-            // An entry that cannot be read cannot be decrypted either, so a
-            // revocation removes it.
-            let revoked = split_entry(&value).map_or(true, |(v, _, _)| v == dek_version);
-            if revoked {
-                batch.remove(&self.meta, key);
-                removed = true;
+        for class in [OutboxClass::Normal, OutboxClass::Priority] {
+            for item in self.meta.prefix(class.prefix().as_bytes()) {
+                let (key, value) = item.into_inner()?;
+                // An entry that cannot be read cannot be decrypted either, so
+                // a revocation removes it.
+                let revoked = split_entry(&value).map_or(true, |(v, _, _)| v == dek_version);
+                if revoked {
+                    batch.remove(&self.meta, key);
+                    removed = true;
+                }
             }
         }
         if removed {
@@ -448,10 +519,12 @@ impl FjallStateMachine {
     /// (`SetFeedEpoch`).
     pub(crate) fn reset_feed(&self, epoch: u64) -> Result<(), StoreError> {
         let mut batch = self.db.batch();
-        for item in self.meta.prefix(OUTBOX_PREFIX.as_bytes()) {
-            batch.remove(&self.meta, item.key()?);
+        for class in [OutboxClass::Normal, OutboxClass::Priority] {
+            for item in self.meta.prefix(class.prefix().as_bytes()) {
+                batch.remove(&self.meta, item.key()?);
+            }
+            batch.remove(&self.meta, class.floor_key());
         }
-        batch.remove(&self.meta, META_FEED_FLOOR);
         // Always start a new epoch, even if the restored state never emitted,
         // so a cursor from the replaced cluster is never mistaken for current.
         batch.insert(&self.meta, META_FEED_EPOCH, epoch.to_be_bytes());
@@ -465,9 +538,19 @@ impl FjallStateMachine {
         after: Option<FeedCursor>,
         limit: usize,
     ) -> Result<Vec<(FeedCursor, OutboxEvent)>, StoreError> {
+        self.outbox_events_after_in(OutboxClass::Normal, after, limit)
+    }
+
+    /// [`Self::outbox_events_after`] for one outbox.
+    pub fn outbox_events_after_in(
+        &self,
+        class: OutboxClass,
+        after: Option<FeedCursor>,
+        limit: usize,
+    ) -> Result<Vec<(FeedCursor, OutboxEvent)>, StoreError> {
         let start = match after {
-            Some(c) => outbox_key(c),
-            None => OUTBOX_PREFIX.as_bytes().to_vec(),
+            Some(c) => outbox_key(class, c),
+            None => class.prefix().as_bytes().to_vec(),
         };
         let mut out = Vec::new();
         for item in self.meta.range(start..) {
@@ -475,7 +558,7 @@ impl FjallStateMachine {
                 break;
             }
             let (key, value) = item.into_inner()?;
-            let Some(cursor) = cursor_from_key(&key) else {
+            let Some(cursor) = cursor_from_key(class, &key) else {
                 break;
             };
             if after == Some(cursor) {

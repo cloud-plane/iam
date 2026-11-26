@@ -38,6 +38,7 @@ members = [
   "crates/policy-store-driver-sql",
   "crates/resource-driver-sql",
   "crates/role-driver-sql",
+  "crates/revoke-driver-raft",
   "crates/revoke-driver-sql",
   "crates/scim-driver-raft",
   "crates/service-grant-driver-raft",
@@ -177,6 +178,7 @@ openstack-keystone-idmapping-driver-sql = { version = "0.1", path = "crates/idma
 openstack-keystone-policy-store-driver-sql = { version = "0.1", path = "crates/policy-store-driver-sql/" }
 openstack-keystone-policy-regorus = { version = "0.1", path = "crates/policy-regorus/" }
 openstack-keystone-resource-driver-sql = { version = "0.1", path = "crates/resource-driver-sql/" }
+openstack-keystone-revoke-driver-raft = { version = "0.1", path = "crates/revoke-driver-raft/" }
 openstack-keystone-revoke-driver-sql = { version = "0.1", path = "crates/revoke-driver-sql/" }
 openstack-keystone-role-driver-sql = { version = "0.1", path = "crates/role-driver-sql/" }
 openstack-keystone-scim-driver-raft = { version = "0.1", path = "crates/scim-driver-raft/" }

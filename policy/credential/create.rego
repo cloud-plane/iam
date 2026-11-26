@@ -3,6 +3,8 @@
 # description: Policy for creating a credential
 package identity.credential.create
 
+import data.common.revocation as revocation_common
+
 import data.common.credential as credential_common
 
 # Create credential.
@@ -37,16 +39,19 @@ import data.common.credential as credential_common
 default allow := false
 
 allow if {
+	revocation_common.fresh
 	"admin" in input.credentials.roles
 }
 
 allow if {
+	revocation_common.fresh
 	input.credentials.is_admin
 }
 
 # METADATA
 # description: "Omitting `user_id` targets the caller's own user (server-side default)."
 allow if {
+	revocation_common.fresh
 	"member" in input.credentials.roles
 	not input.target.credential.user_id
 	credential_common.not_delegated_or_bound_to_own_project(object.get(input.target.credential, "project_id", null))
@@ -56,6 +61,7 @@ allow if {
 # METADATA
 # description: "Explicitly targeting one's own user is equivalent to omitting it."
 allow if {
+	revocation_common.fresh
 	"member" in input.credentials.roles
 	input.target.credential.user_id == input.credentials.user_id
 	credential_common.not_delegated_or_bound_to_own_project(object.get(input.target.credential, "project_id", null))

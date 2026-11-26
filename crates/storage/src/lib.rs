@@ -88,7 +88,7 @@ pub use openstack_keystone_storage_api::{
 pub use error::StoreError;
 pub use store::bootstrap::new;
 pub use store::log_store::FjallLogStore;
-pub use store::state_machine::FjallStateMachine;
+pub use store::state_machine::{FjallStateMachine, OutboxClass};
 
 /// Largest Raft RPC message a node accepts. openraft ships up to 300 log
 /// entries per AppendEntries call; this fits a full batch of live-restore

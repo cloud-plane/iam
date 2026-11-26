@@ -208,6 +208,17 @@ volume/latency is tracked in aggregate rather than per-rule.
 `scope` values: `per_ip`, `per_user`, `global`, `auth_endpoint` — the fixed
 set of limiter scopes defined by ADR 0022's config.
 
+#### Revocation streams (ADR 0045)
+
+| Metric | Type | Labels | Purpose |
+|---|---|---|---|
+| `keystone_revocation_event_age_seconds` | gauge | `authority` | Age of the last revocation event of an authority when it arrived (propagation delay) |
+| `keystone_revocation_head_age_seconds` | gauge | `authority` | Time since the last heartbeat or event of the stream, as seen at the last decision |
+| `keystone_revocation_stale_decisions_total` | counter | `authority` | Requests marked stale, so the policy of a sensitive action denies them |
+
+`authority` is one of the authorities a feed consumer is configured for (an
+operator-configured set); the issuer of a token never becomes a label.
+
 #### Audit (ADR 0023) — existing
 
 `keystone_audit_dropped_total`, `keystone_audit_postaudit_dropped_total`,

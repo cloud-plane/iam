@@ -132,6 +132,7 @@ mod tests {
             role_id: Some("role_id".into()),
             trust_id: Some("trust_id".into()),
             user_id: Some("uid".into()),
+            owner_domain_id: None,
         };
 
         create(&db, req).await.unwrap();

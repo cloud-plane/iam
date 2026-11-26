@@ -61,6 +61,21 @@ message ForwardedPrefixIndexResponse {
   repeated string keys = 1;
 }
 
+// Internal request of the revisions of keyspaces, forwarded from follower to
+// leader.
+message ForwardedKeyspaceRevisionsRequest {
+  repeated string keyspaces = 1;
+}
+
+// Revisions of the keyspaces asked for, in order, as the leader sees them
+// after confirming its leadership.
+message ForwardedKeyspaceRevisionsResponse {
+  // Identifies the leader process; revisions are only comparable with the
+  // ones of the same instance.
+  uint64 instance = 1;
+  repeated uint64 revisions = 2;
+}
+
 // GetResponse contains the value associated with the requested key.
 message Response {
   // Retrieved value.
