@@ -52,6 +52,7 @@ syslog = [
 ]
 
 [dev-dependencies]
+criterion.workspace = true
 openstack-keystone-tls-provider.workspace = true
 openstack-keystone-telemetry = { workspace = true, features = ["golden"] }
 nix = { workspace = true, features = ["user"] }
@@ -60,6 +61,10 @@ serde = { workspace = true, features = ["derive"] }
 serde_json.workspace = true
 tempfile.workspace = true
 tokio = { workspace = true, features = ["macros", "rt-multi-thread"] }
+
+[[bench]]
+name = "spool"
+harness = false
 
 [lints]
 workspace = true

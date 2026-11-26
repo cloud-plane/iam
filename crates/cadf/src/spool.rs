@@ -412,9 +412,13 @@ impl SpoolWriter {
 /// Background worker: drains the critical and perimeter channels to the
 /// per-node JSONL spool.
 ///
-/// A single task owns the file, so lines cannot interleave. Critical events
-/// are flushed and fsynced before the next event is taken; perimeter events
-/// are buffered and flushed/fsynced every 500ms. `spool_bytes` is kept equal
+/// A single task owns the file, so lines cannot interleave. Critical and
+/// perimeter events are buffered and flushed/fsynced every 500ms, as ADR 0023
+/// accepts (the millisecond durability gap): an fsync per critical event
+/// capped the writer at about 700 events/s and, once the critical channel
+/// filled, stalled every audited write. The flush tick is polled before the
+/// perimeter channel so a flood cannot starve it; a graceful shutdown still
+/// drains and fsyncs everything. `spool_bytes` is kept equal
 /// to the total size of the live spool and sealed segments (the
 /// `keystone_audit_spool_bytes` gauge).
 ///
@@ -449,12 +453,8 @@ pub async fn run_spool_writer(
                 break;
             }
             event = critical.recv(), if critical_open => match event {
-                Some(event) => log_append(writer.append(&event, true), &writer.path, &event, &writer.cfg.metrics),
-                None => critical_open = false,
-            },
-            event = perimeter.recv(), if perimeter_open => match event {
                 Some(event) => log_append(writer.append(&event, false), &writer.path, &event, &writer.cfg.metrics),
-                None => perimeter_open = false,
+                None => critical_open = false,
             },
             _ = flush_tick.tick() => {
                 if writer.dirty
@@ -463,6 +463,10 @@ pub async fn run_spool_writer(
                     error!(path = %writer.path.display(), error = %e, "failed to sync audit spool");
                 }
             }
+            event = perimeter.recv(), if perimeter_open => match event {
+                Some(event) => log_append(writer.append(&event, false), &writer.path, &event, &writer.cfg.metrics),
+                None => perimeter_open = false,
+            },
         }
     }
 
@@ -505,15 +509,15 @@ fn drain_on_shutdown(
             }
             return;
         }
-        let (event, durable) = match critical.try_recv() {
-            Ok(event) => (event, true),
+        let event = match critical.try_recv() {
+            Ok(event) => event,
             Err(_) => match perimeter.try_recv() {
-                Ok(event) => (event, false),
+                Ok(event) => event,
                 Err(_) => break,
             },
         };
         log_append(
-            writer.append(&event, durable),
+            writer.append(&event, false),
             &writer.path,
             &event,
             &writer.cfg.metrics,

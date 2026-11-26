@@ -1055,6 +1055,7 @@ dependencies = [
  "async-trait",
  "aws-lc-rs",
  "chrono",
+ "criterion",
  "nix 0.32.0",
  "openstack-keystone-telemetry",
  "openstack-keystone-tls-provider",
