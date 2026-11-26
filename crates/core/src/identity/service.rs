@@ -1298,10 +1298,12 @@ impl IdentityApi for IdentityService {
                             .map_err(IdentityProviderError::from)
                     },
                 );
-                credentials
-                    .and(application_credentials)
-                    .and(trusts)
-                    .and(assignments)?;
+                crate::common::first_cascade_error([
+                    credentials,
+                    application_credentials,
+                    trusts,
+                    assignments,
+                ])?;
                 deleted
             },
             on_audit_error: |_: AuditDispatchError| IdentityProviderError::Driver("audit dispatch failed".into()),

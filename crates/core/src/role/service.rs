@@ -354,7 +354,7 @@ impl RoleApi for RoleService {
                             .map_err(RoleProviderError::from)
                     },
                 );
-                assignments.and(application_credentials)?;
+                crate::common::first_cascade_error([assignments, application_credentials])?;
                 deleted
             },
             on_audit_error: |_: AuditDispatchError| RoleProviderError::Driver("audit dispatch failed".into()),

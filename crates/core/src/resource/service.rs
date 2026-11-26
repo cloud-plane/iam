@@ -595,9 +595,11 @@ impl ResourceApi for ResourceService {
                             .map_err(ResourceProviderError::from)
                     },
                 );
-                credentials
-                    .and(application_credentials)
-                    .and(assignments)?;
+                crate::common::first_cascade_error([
+                    credentials,
+                    application_credentials,
+                    assignments,
+                ])?;
                 deleted
             },
             on_audit_error: |_: AuditDispatchError| ResourceProviderError::Driver("audit dispatch failed".into()),
