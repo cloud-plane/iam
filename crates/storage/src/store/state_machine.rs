@@ -619,6 +619,8 @@ mod keyspace_gc_tests;
 
 #[cfg(test)]
 mod ephemeral_tests;
+#[cfg(test)]
+mod watermark_tests;
 
 #[cfg(test)]
 mod snapshot_tests;
