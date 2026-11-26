@@ -42,6 +42,12 @@ pub struct SecurityComplianceProvider {
     /// When a user exceeds this threshold and is considered "inactive", the
     /// user's enabled attribute in the HTTP API may not match the value of
     /// the user's enabled column in the user table.
+    ///
+    /// The activity of a user is recorded only while this option is set. A
+    /// user without a recorded activity counts as active, but one whose last
+    /// recorded activity is older than the threshold is considered inactive
+    /// when the option is turned on, even if the user authenticated in the
+    /// meantime.
     #[serde(default)]
     #[validate(range(min = 1))]
     pub disable_user_account_days_inactive: Option<u16>,
