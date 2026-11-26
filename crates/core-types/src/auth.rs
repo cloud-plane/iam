@@ -321,6 +321,12 @@ pub struct SecurityContext {
     #[builder(default)]
     revocation_stale: bool,
 
+    /// Authority that issued the token (its `iss` claim), `None` for a token
+    /// of this authority. Revocation events of another authority match only
+    /// the tokens it issued (ADR 0045 section 9).
+    #[builder(default)]
+    token_issuer: Option<String>,
+
     /// Request correlation ID for linking perimeter and provider audit events.
     ///
     /// Set by the API handler from the `x-openstack-request-id` header
@@ -415,6 +421,7 @@ impl SecurityContextTestingBuilder {
             token_restriction: self.token_restriction,
             token: self.token.map(Arc::new),
             revocation_stale: false,
+            token_issuer: None,
             correlation_id: None,
             peer_addr: None,
         }
@@ -518,6 +525,17 @@ impl SecurityContext {
     #[must_use]
     pub const fn revocation_stale(&self) -> bool {
         self.revocation_stale
+    }
+
+    /// The authority that issued the token, `None` for this authority.
+    #[must_use]
+    pub fn token_issuer(&self) -> Option<&str> {
+        self.token_issuer.as_deref()
+    }
+
+    /// Records the foreign authority that issued the token.
+    pub fn set_token_issuer(&mut self, issuer: Option<String>) {
+        self.token_issuer = issuer;
     }
 
     /// Marks the revocation state behind the token as stale or fresh.

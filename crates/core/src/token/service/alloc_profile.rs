@@ -164,7 +164,7 @@ async fn run_stages(
     let bearer = SecretString::from("token".to_string());
     let mut stages = Vec::new();
 
-    let (_, stats) = measure(|| service.backend_driver.decode("token"));
+    let (_, stats) = measure(|| service.backend_driver.decode_with_issuer("token"));
     stages.push(("mocked token decode (constant floor)", stats));
 
     let (vsc, stats) = measure_async(service.validate_to_context(&ctx, "token", None, None)).await;
@@ -214,8 +214,8 @@ async fn alloc_profile_token_validation() {
     let mut backend = MockTokenBackend::default();
     let decoded = token.clone();
     backend
-        .expect_decode()
-        .returning(move |_| Ok(decoded.clone()));
+        .expect_decode_with_issuer()
+        .returning(move |_| Ok((decoded.clone(), None)));
     let service = TokenService {
         config: config.clone(),
         backend_driver: Arc::new(backend),

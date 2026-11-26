@@ -308,7 +308,8 @@ impl TokenService {
         user_detail: UserDetail,
     ) -> Result<ValidatedSecurityContext, TokenProviderError> {
         // Shared by the authentication context and the security context.
-        let token = Arc::new(self.backend_driver.decode(credential)?);
+        let (token, issuer) = self.backend_driver.decode_with_issuer(credential)?;
+        let token = Arc::new(token);
         let state = ctx.state();
 
         let latest_expiration_cutof = Utc::now()
@@ -484,6 +485,13 @@ impl TokenService {
 
         let mut sc = SecurityContext::try_from(auth_result)?;
         sc.set_token(token);
+        if let Some(issuer) = issuer {
+            // A token of another authority is revoked there: the decision is
+            // only as fresh as the revocation stream from it.
+            let stale = crate::revoke::is_issuer_stale(state, Some(&issuer)).await;
+            sc.set_revocation_stale(stale);
+            sc.set_token_issuer(Some(issuer));
+        }
         let scope = sc
             .authorization()
             .ok_or(TokenProviderError::ScopeMissing)?
@@ -954,8 +962,8 @@ mod tests {
             .expect_encode()
             .returning(|_| Ok("token".to_string()));
         backend_driver_mock
-            .expect_decode()
-            .returning(move |_| Ok(token_clone_expect.clone()));
+            .expect_decode_with_issuer()
+            .returning(move |_| Ok((token_clone_expect.clone(), None)));
 
         let config = setup_config();
         let token_provider = get_provider(&config, Some(backend_driver_mock));
@@ -1122,7 +1130,9 @@ mod tests {
     fn backend_returning(token: &FernetToken) -> MockTokenBackend {
         let mut backend = MockTokenBackend::default();
         let t = token.clone();
-        backend.expect_decode().returning(move |_| Ok(t.clone()));
+        backend
+            .expect_decode_with_issuer()
+            .returning(move |_| Ok((t.clone(), None)));
         backend
     }
 
@@ -1176,6 +1186,50 @@ mod tests {
             ),
             "got {res:?}"
         );
+    }
+
+    /// A token of another authority is marked with its issuer, and as stale
+    /// while nothing was heard from that authority's revocation stream.
+    #[tokio::test]
+    async fn test_foreign_token_is_marked_stale_without_a_stream() {
+        let token = generate_token(Some(TimeDelta::hours(1))).unwrap();
+        let config = setup_config();
+        let mut backend = MockTokenBackend::default();
+        let t = token.clone();
+        backend
+            .expect_decode_with_issuer()
+            .returning(move |_| Ok((t.clone(), Some("authority-never-heard".into()))));
+        let provider = get_provider(&config, Some(backend));
+        let state = request_token_state(&token, &config, true, false).await;
+
+        let vsc = provider
+            .authorize_request_token(
+                &ExecutionContext::internal(&state),
+                &"token".to_string().into(),
+            )
+            .await
+            .expect("authorized");
+        assert_eq!(vsc.inner().token_issuer(), Some("authority-never-heard"));
+        assert!(vsc.inner().revocation_stale());
+    }
+
+    /// A token of this authority is never stale.
+    #[tokio::test]
+    async fn test_local_token_is_not_stale() {
+        let token = generate_token(Some(TimeDelta::hours(1))).unwrap();
+        let config = setup_config();
+        let provider = get_provider(&config, Some(backend_returning(&token)));
+        let state = request_token_state(&token, &config, true, false).await;
+
+        let vsc = provider
+            .authorize_request_token(
+                &ExecutionContext::internal(&state),
+                &"token".to_string().into(),
+            )
+            .await
+            .expect("authorized");
+        assert_eq!(vsc.inner().token_issuer(), None);
+        assert!(!vsc.inner().revocation_stale());
     }
 
     /// Revocation is still enforced on the minimal path.
@@ -1270,8 +1324,8 @@ mod tests {
             .expect_encode()
             .returning(|_| Ok("token".to_string()));
         backend_driver_mock
-            .expect_decode()
-            .returning(move |_| Ok(token_clone.clone()));
+            .expect_decode_with_issuer()
+            .returning(move |_| Ok((token_clone.clone(), None)));
 
         let config = config_with_plugin_valid_since("p", Some(valid_since));
         let token_provider = get_provider(&config, Some(backend_driver_mock));
@@ -1304,8 +1358,8 @@ mod tests {
             .expect_encode()
             .returning(|_| Ok("token".to_string()));
         backend_driver_mock
-            .expect_decode()
-            .returning(move |_| Ok(token_clone.clone()));
+            .expect_decode_with_issuer()
+            .returning(move |_| Ok((token_clone.clone(), None)));
 
         let config = config_with_plugin_valid_since("p", Some(valid_since));
         let token_provider = get_provider(&config, Some(backend_driver_mock));

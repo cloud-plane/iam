@@ -45,6 +45,24 @@ pub trait TokenBackend: Send + Sync {
     /// - `Result<Token, TokenProviderError>` - The decoded token or an error.
     fn decode(&self, credential: &str) -> Result<TokenPayload, TokenProviderError>;
 
+    /// Extract the token from string together with the foreign authority that
+    /// issued it.
+    ///
+    /// The issuer is `None` for a token of this authority, which is the only
+    /// kind a format without an issuer claim (Fernet) can carry. A backend
+    /// returns `Some(issuer)` only for a token whose signature was verified
+    /// against the keys it trusts for that issuer.
+    ///
+    /// # Returns
+    /// - `Result<(TokenPayload, Option<String>), TokenProviderError>` - The
+    ///   decoded token and its foreign issuer, or an error.
+    fn decode_with_issuer(
+        &self,
+        credential: &str,
+    ) -> Result<(TokenPayload, Option<String>), TokenProviderError> {
+        self.decode(credential).map(|token| (token, None))
+    }
+
     /// Encode the token into a string.
     ///
     /// # Parameters

@@ -83,88 +83,98 @@ pub async fn is_issuer_stale(state: &crate::keystone::ServiceState, issuer: Opti
 impl TryFrom<&ValidatedSecurityContext> for RevocationEventListParametersBuilder {
     type Error = RevokeProviderError;
     fn try_from(value: &ValidatedSecurityContext) -> Result<Self, Self::Error> {
-        if let Some(token) = value.inner().token() {
-            let mut builder = RevocationEventListParametersBuilder::default();
-            builder.audit_id(
-                token
-                    .audit_ids()
-                    .first()
-                    .ok_or(RevokeProviderError::TokenHasNoAuditId)?,
-            );
-            builder.issued_before(*token.issued_at());
-            if let Some(domain_id) = token.domain_id() {
-                builder.domain_ids(vec![domain_id.clone()]);
-            }
-            if let Some(project_id) = token.project_id() {
-                builder.project_id(project_id);
-            }
-            if let FernetToken::Trust(token) = &token {
-                if let AuthenticationContext::Trust { trust, .. } = &value.authentication_context()
-                {
-                    // Trust tokens include trust, trustor, and trustee user IDs
-                    // for revocation
-                    builder.trust_id(trust.id.clone());
-                    builder.user_ids(vec![
-                        token.user_id.clone(),
-                        trust.trustor_user_id.clone(),
-                        trust.trustee_user_id.clone(),
-                    ]);
-                } else {
-                    builder.user_ids(vec![token.user_id.clone()]);
-                }
-            } else {
-                builder.user_ids(vec![token.user_id().clone()]);
-            }
-            if let Some(authz) = value.authorization()
-                && let Some(roles) = authz.effective_roles()
-            {
-                // For ValidatedSecurityContext from ApplicationCredentials we
-                // need to consider original roles tied to the
-                // application_credential and not the roles that the
-                // effective in the revocation check.
-                if let AuthenticationContext::ApplicationCredential {
-                    application_credential,
-                    ..
-                } = &value.authentication_context()
-                {
-                    builder.role_refs(application_credential.roles.iter());
-                } else {
-                    builder.role_refs(roles.iter());
-                }
-            }
-
-            Ok(builder)
-        } else if let AuthenticationContext::OnBehalfOf {
-            root_jti,
-            auth_time,
-            ..
-        } = value.authentication_context()
-        {
-            // An on-behalf-of chain is revoked with the user token that
-            // started it (ADR 0036 §6.3): match events against that token's
-            // audit id and the time the user authenticated.
-            let mut builder = RevocationEventListParametersBuilder::default();
-            builder.audit_id(root_jti);
-            builder.issued_before(*auth_time);
-            builder.user_ids(vec![value.principal().get_user_id()]);
-            if let Some(authz) = value.authorization() {
-                match &authz.scope {
-                    ScopeInfo::Project { project, .. } => {
-                        builder.project_id(&project.id);
-                    }
-                    ScopeInfo::Domain(domain) => {
-                        builder.domain_ids(vec![domain.id.clone()]);
-                    }
-                    _ => {}
-                }
-                if let Some(roles) = authz.effective_roles() {
-                    builder.role_refs(roles.iter());
-                }
-            }
-            Ok(builder)
-        } else {
-            Err(RevokeProviderError::SecurityContextHasNoToken)
+        let mut builder = builder_from_context(value)?;
+        // Events of another authority match only the tokens it issued.
+        if let Some(issuer) = value.inner().token_issuer() {
+            builder.issuer(issuer);
         }
+        Ok(builder)
+    }
+}
+
+fn builder_from_context(
+    value: &ValidatedSecurityContext,
+) -> Result<RevocationEventListParametersBuilder, RevokeProviderError> {
+    if let Some(token) = value.inner().token() {
+        let mut builder = RevocationEventListParametersBuilder::default();
+        builder.audit_id(
+            token
+                .audit_ids()
+                .first()
+                .ok_or(RevokeProviderError::TokenHasNoAuditId)?,
+        );
+        builder.issued_before(*token.issued_at());
+        if let Some(domain_id) = token.domain_id() {
+            builder.domain_ids(vec![domain_id.clone()]);
+        }
+        if let Some(project_id) = token.project_id() {
+            builder.project_id(project_id);
+        }
+        if let FernetToken::Trust(token) = &token {
+            if let AuthenticationContext::Trust { trust, .. } = &value.authentication_context() {
+                // Trust tokens include trust, trustor, and trustee user IDs
+                // for revocation
+                builder.trust_id(trust.id.clone());
+                builder.user_ids(vec![
+                    token.user_id.clone(),
+                    trust.trustor_user_id.clone(),
+                    trust.trustee_user_id.clone(),
+                ]);
+            } else {
+                builder.user_ids(vec![token.user_id.clone()]);
+            }
+        } else {
+            builder.user_ids(vec![token.user_id().clone()]);
+        }
+        if let Some(authz) = value.authorization()
+            && let Some(roles) = authz.effective_roles()
+        {
+            // For ValidatedSecurityContext from ApplicationCredentials we
+            // need to consider original roles tied to the
+            // application_credential and not the roles that the
+            // effective in the revocation check.
+            if let AuthenticationContext::ApplicationCredential {
+                application_credential,
+                ..
+            } = &value.authentication_context()
+            {
+                builder.role_refs(application_credential.roles.iter());
+            } else {
+                builder.role_refs(roles.iter());
+            }
+        }
+
+        Ok(builder)
+    } else if let AuthenticationContext::OnBehalfOf {
+        root_jti,
+        auth_time,
+        ..
+    } = value.authentication_context()
+    {
+        // An on-behalf-of chain is revoked with the user token that
+        // started it (ADR 0036 §6.3): match events against that token's
+        // audit id and the time the user authenticated.
+        let mut builder = RevocationEventListParametersBuilder::default();
+        builder.audit_id(root_jti);
+        builder.issued_before(*auth_time);
+        builder.user_ids(vec![value.principal().get_user_id()]);
+        if let Some(authz) = value.authorization() {
+            match &authz.scope {
+                ScopeInfo::Project { project, .. } => {
+                    builder.project_id(&project.id);
+                }
+                ScopeInfo::Domain(domain) => {
+                    builder.domain_ids(vec![domain.id.clone()]);
+                }
+                _ => {}
+            }
+            if let Some(roles) = authz.effective_roles() {
+                builder.role_refs(roles.iter());
+            }
+        }
+        Ok(builder)
+    } else {
+        Err(RevokeProviderError::SecurityContextHasNoToken)
     }
 }
 
@@ -264,6 +274,13 @@ mod tests {
     }
 
     fn make_vsc_password(token: FernetToken) -> crate::auth::ValidatedSecurityContext {
+        make_vsc_password_issued_by(token, None)
+    }
+
+    fn make_vsc_password_issued_by(
+        token: FernetToken,
+        issuer: Option<&str>,
+    ) -> crate::auth::ValidatedSecurityContext {
         let auth = AuthenticationResultBuilder::default()
             .context(AuthenticationContext::Password)
             .principal(make_test_principal())
@@ -271,6 +288,7 @@ mod tests {
             .unwrap();
         let mut sc = crate::auth::SecurityContext::try_from(auth).unwrap();
         sc.set_token(token);
+        sc.set_token_issuer(issuer.map(str::to_owned));
         sc.set_authorization(
             AuthzInfoBuilder::default()
                 .scope(ScopeInfo::Project {
@@ -376,6 +394,29 @@ mod tests {
             HashSet::<String>::from_iter(["r1".to_string(), "r2".to_string()]),
             HashSet::<String>::from_iter(params.role_ids.expect("roles must be there").into_iter())
         );
+    }
+
+    #[test]
+    fn test_revocation_list_local_token_has_no_issuer() {
+        let vsc = make_vsc_password(make_project_scope_token("user_id", "project_id"));
+        let params = RevocationEventListParametersBuilder::try_from(&vsc)
+            .unwrap()
+            .build()
+            .unwrap();
+        assert_eq!(params.issuer, None);
+    }
+
+    #[test]
+    fn test_revocation_list_foreign_token_carries_its_issuer() {
+        let vsc = make_vsc_password_issued_by(
+            make_project_scope_token("user_id", "project_id"),
+            Some("authority-a"),
+        );
+        let params = RevocationEventListParametersBuilder::try_from(&vsc)
+            .unwrap()
+            .build()
+            .unwrap();
+        assert_eq!(params.issuer.as_deref(), Some("authority-a"));
     }
 
     #[test]
