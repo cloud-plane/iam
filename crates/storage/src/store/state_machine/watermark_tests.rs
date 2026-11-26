@@ -91,6 +91,16 @@ fn node_without_rows_floors_at_last_applied() {
 }
 
 #[test]
+fn missing_floor_with_rows_floors_at_last_applied() {
+    let (sm, _td) = make_seeded_sm(0x0a);
+    apply_tx(&sm, 3, vec![remove("a", 1)]);
+    sm.meta.remove(super::watermark::FLOOR_KEY).expect("remove");
+    let w = super::watermark::AppliedWatermarks::from_meta(&sm.meta, 40).expect("load");
+    assert_eq!(w.get("a"), 40);
+    assert_eq!(w.get("untouched"), 40);
+}
+
+#[test]
 fn floor_survives_a_reload() {
     let (sm, _td) = make_seeded_sm(0x0a);
     sm.meta

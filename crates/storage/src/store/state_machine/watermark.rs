@@ -208,10 +208,10 @@ pub struct AppliedWatermarks {
 impl AppliedWatermarks {
     /// Loads the persisted rows and floor.
     ///
-    /// A node that has neither (data written before watermarks existed)
-    /// cannot tell when its keyspaces were last written, so it takes
-    /// `last_applied` as the floor, persisted so that it survives the first
-    /// apply after the upgrade.
+    /// A node with no floor row (data written before watermarks existed, or
+    /// a build that kept the floor in memory only) cannot tell when its
+    /// keyspaces were last replaced, so it takes `last_applied` as the floor,
+    /// persisted so that it survives the first apply after the upgrade.
     pub fn from_meta(meta: &Keyspace, last_applied: u64) -> Result<Self, fjall::Error> {
         let rows = DashMap::new();
         for item in meta.prefix(WATERMARK_PREFIX.as_bytes()) {
@@ -226,10 +226,13 @@ impl AppliedWatermarks {
                 rows.insert(name.to_string(), index);
             }
         }
+        // No usable floor row: either data from before watermarks, or a node
+        // that ran a build keeping the floor in memory only and may have lost
+        // a restore. `last_applied` is true on a follower (everything up to
+        // it is applied) and only raises `W[K]` on a leader, so it is safe.
         let floor = match meta.get(FLOOR_KEY)? {
             Some(raw) => decode(&raw).unwrap_or(last_applied),
-            None if rows.is_empty() => last_applied,
-            None => 0,
+            None => last_applied,
         };
         if meta.get(FLOOR_KEY)?.is_none() {
             meta.insert(FLOOR_KEY, encode(floor))?;
