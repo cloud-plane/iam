@@ -96,6 +96,7 @@ ______________________________________________________________________
   - [Local development](contributor/development.md)
   - [Observability stack](contributor/observability.md)
   - [Testing](contributor/testing.md)
+  - [Load tests](contributor/loadtest.md)
   - [Rust vs Python comparison](contributor/memory-comparison.md)
   - [API development](contributor/api-development.md)
   - [Python API compatibility](contributor/python-compatibility.md)
