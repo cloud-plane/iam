@@ -55,6 +55,7 @@ mod basic;
 mod common;
 mod crash;
 mod feed;
+mod follower_read;
 mod harness;
 mod join;
 mod kek;

@@ -904,6 +904,7 @@ pub async fn init_storage(config_manager: &Arc<ConfigManager>) -> Result<Arc<Sto
         ensure_linearizable_retries: ds_config.ensure_linearizable_retries,
         ensure_linearizable_retry_delay_ms: ds_config.ensure_linearizable_retry_delay_ms,
         local_reads_mode: ds_config.local_reads_mode,
+        follower_linearizable_reads: ds_config.follower_linearizable_reads,
         local_read_max_staleness: ds_config
             .local_read_max_staleness_ms
             .map(Duration::from_millis),

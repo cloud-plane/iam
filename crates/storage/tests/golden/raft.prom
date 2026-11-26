@@ -29,6 +29,12 @@ keystone_raft_dek_reencrypt_migrated_total 0
 # HELP keystone_raft_dek_reencrypt_skipped_total Records skipped by background DEK re-encryption sweeps.
 # TYPE keystone_raft_dek_reencrypt_skipped_total counter
 keystone_raft_dek_reencrypt_skipped_total 0
+# HELP keystone_raft_follower_reads_fallback_total Reads that tried the follower path and were forwarded instead.
+# TYPE keystone_raft_follower_reads_fallback_total counter
+keystone_raft_follower_reads_fallback_total 0
+# HELP keystone_raft_follower_reads_served_total Linearizable reads a follower served from its own copy.
+# TYPE keystone_raft_follower_reads_served_total counter
+keystone_raft_follower_reads_served_total 0
 # HELP keystone_raft_gcm_failures_total AES-GCM tag verification failures on state reads.
 # TYPE keystone_raft_gcm_failures_total counter
 keystone_raft_gcm_failures_total 0

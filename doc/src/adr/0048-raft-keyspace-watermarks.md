@@ -4,7 +4,8 @@
 
 ## Status
 
-Proposed (design exploration; nothing is implemented).
+Accepted. Implemented behind the opt-in
+`[distributed_storage] follower_linearizable_reads` (default off).
 
 ## Reference
 
@@ -17,8 +18,8 @@ drivers), `doc/src/contributor/security-model.md`.
 ADR 0047 gives the SQL drivers a per-table version counter so a cache, or a
 reader, can tell whether the data it holds is still current without reading it.
 It states that Raft-backed drivers do not use it because "their log index is the
-natural watermark". That sentence is true of the global log index only. A
-Raft read today cannot use it per table:
+natural watermark". That sentence is true of the global log index only. A Raft
+read today cannot use it per table:
 
 - **Every linearizable read is served by the leader.** `Storage::route_read`
   calls `raft.ensure_linearizable(ReadPolicy::ReadIndex)`. On a follower that
@@ -47,10 +48,10 @@ without waiting for unrelated entries and without forwarding the read.
 Keep two watermarks per keyspace. Both are log indexes. They answer different
 questions and live in different places.
 
-| Watermark                | Meaning                                                                                           | Where                                                                  |
-| ------------------------ | ------------------------------------------------------------------------------------------------- | ---------------------------------------------------------------------- |
-| **Applied** `A[K]`       | Index of the last **applied** entry that touched keyspace `K`.                                    | Every node, in `meta` under `_wm:<keyspace>`, persisted.               |
-| **Committed** `W[K](R)`  | Index of the latest entry at or below read index `R` that touches `K`, applied or not.            | The leader, in memory, updated when an entry is proposed or appended.  |
+| Watermark               | Meaning                                                                                | Where                                                                 |
+| ----------------------- | -------------------------------------------------------------------------------------- | --------------------------------------------------------------------- |
+| **Applied** `A[K]`      | Index of the last **applied** entry that touched keyspace `K`.                         | Every node, in `meta` under `_wm:<keyspace>`, persisted.              |
+| **Committed** `W[K](R)` | Index of the latest entry at or below read index `R` that touches `K`, applied or not. | The leader, in memory, updated when an entry is proposed or appended. |
 
 `A[K]` is deterministic: every node derives it from the same log, so two nodes
 that have applied the same index hold the same table. `W[K]` is the cluster's
@@ -65,18 +66,19 @@ union of those touched for `prefix_index` and for tier lookups through `meta`):
    (leadership confirmed by a quorum), then returns `R` and
    `W[S] = max over K in S of W[K](R)`.
 2. The reader compares with its own table. It may read locally when
-   `max over K in S of A[K] >= W[S]` **and** its `last_applied >= W[S]`.
-   Then no entry at or below `R` that touches `S` is unapplied here, even if the
-   global `last_applied < R`. This is the skip.
-3. Otherwise it waits until `last_applied >= W[S]` (not `R`), bounded by the
-   existing retry budget, or forwards the read to the leader as today.
+   `A[K] >= W[K]` for **every** `K` in `S`. Then no entry at or below `R` that
+   touches `S` is unapplied here, even if the global `last_applied < R`. This is
+   the skip. The check is per keyspace: a replica far ahead on one keyspace must
+   not hide that it is behind on another.
+3. Otherwise it polls its own table within the existing retry budget, and then
+   forwards the read to the leader as today.
 
 The leader uses the same rule against its own `A`. The apply wait it skips is
 usually short, so the gain is on followers.
 
 What is **not** skipped: the leadership confirmation in step 1. Without it a
-partitioned old leader could answer with a stale `W[K]`. Removing the round
-trip needs a leader lease (`ReadPolicy::LeaseRead`), which adds a clock-skew
+partitioned old leader could answer with a stale `W[K]`. Removing the round trip
+needs a leader lease (`ReadPolicy::LeaseRead`), which adds a clock-skew
 assumption. That is a separate decision and out of scope here. ADR 0016-v2
 invariant 4 (no stale reads of Tier 2/3 data) stays unchanged.
 
@@ -90,8 +92,7 @@ keyspace the entry mutates:
   (each is bumped);
 - `drop_keyspace` (the row for `K` is bumped, then removed with the keyspace);
 - writes to ephemeral (in-memory) keyspaces, which are rebuilt from the log on
-  restart: their `A[K]` is held in memory and is `last_applied` after a
-  restart;
+  restart: their `A[K]` is held in memory and is `last_applied` after a restart;
 - writes to `meta`. A tier lookup reads `meta` and the data keyspace, so a read
   includes both in `S`;
 - snapshot install sets `A[K] = snapshot.last_applied` for every keyspace.
@@ -103,30 +104,29 @@ both or neither, so `A[K]` can never be ahead of the data.
 
 The log index of an entry is only known once it is appended, so the map is
 filled by the log store's `append`, on every node, not on the propose path.
-`last_logged[K]` is the index of the latest appended entry that touches `K`.
-It is recorded before the append callback fires, so no entry can commit
-without its keyspaces being in the map.
+`last_logged[K]` is the index of the latest appended entry that touches `K`. It
+is recorded before the append callback fires, so no entry can commit without its
+keyspaces being in the map.
 
-A read at index `R` uses
-`W[K](R) = min(R, max(A_leader[K], last_logged[K]))`. `A_leader[K]` stands for
-every entry the leader already applied, which the log scan below does not
-cover. Entries beyond `R` make the bound larger than the true value up to `R`,
-never smaller, so the error is extra waiting, not staleness. A truncated
-entry is never removed from the map, for the same reason.
+A read at index `R` uses `W[K](R) = min(R, max(A_leader[K], last_logged[K]))`.
+`A_leader[K]` stands for every entry the leader already applied, which the log
+scan below does not cover. Entries beyond `R` make the bound larger than the
+true value up to `R`, never smaller, so the error is extra waiting, not
+staleness. A truncated entry is never removed from the map, for the same reason.
 
-On start the log store scans the retained log after `last_applied` and fills
-the map before the node serves reads. A node that becomes leader already holds
-the map, because every node appends. `R` is always a safe answer, which is
-today's behaviour.
+On start the log store scans the retained log after `last_applied` and fills the
+map before the node serves reads. A node that becomes leader already holds the
+map, because every node appends. `R` is always a safe answer, which is today's
+behaviour.
 
 ### Wire
 
 A new unary `StorageService` RPC, `ReadWatermark`, runs the leader's ReadIndex
 and returns `R` with `(keyspace, W)` pairs and a `default_watermark` for every
-keyspace not listed (a restore or snapshot install replaced them all). The request carries a keyspace
-filter; an empty filter means all keyspaces, and that is the default. It
-replaces forwarding the read when the follower can serve it locally. The
-existing forwarding path stays as the fallback.
+keyspace not listed (a restore or snapshot install replaced them all). The
+request carries a keyspace filter; an empty filter means all keyspaces, and that
+is the default. It replaces forwarding the read when the follower can serve it
+locally. The existing forwarding path stays as the fallback.
 
 It is unary, not a stream, for these reasons:
 
@@ -149,19 +149,18 @@ keyspace.
 ## Consequences
 
 - **Followers can serve linearizable reads** for keyspaces that did not change
-  recently, for any tier. The cost is one small RPC to the leader instead of
-  the full read and response, and the plaintext of Tier 2/3 records never
-  crosses the network for a read the follower can serve.
+  recently, for any tier. The cost is one small RPC to the leader instead of the
+  full read and response, and the plaintext of Tier 2/3 records never crosses
+  the network for a read the follower can serve.
 - **The leadership round trip stays.** The saving is the apply wait and the
   forwarded payload, not a quorum round. A hot keyspace (frequent writes) gains
   little, because `W[K]` is close to `R`.
 - **Correctness depends on completeness of the update path.** If a command
-  mutates a keyspace without bumping `A[K]` or `last_proposed[K]`, a replica
-  can serve a stale linearizable read of Tier 2/3 data. The single choke point
-  in `apply()`, and a test that enumerates every `StoreCommand` variant and
-  asserts each one touches the watermark, are required, not optional. This is a
-  security-model concern; the reviewer checklist in `security-model.md`
-  applies.
+  mutates a keyspace without bumping `A[K]` or `last_proposed[K]`, a replica can
+  serve a stale linearizable read of Tier 2/3 data. The single choke point in
+  `apply()`, and a test that enumerates every `StoreCommand` variant and asserts
+  each one touches the watermark, are required, not optional. This is a
+  security-model concern; the reviewer checklist in `security-model.md` applies.
 - **Torn reads stay possible** unless the read holds a consistent view:
   `local_get` reads `meta` and data separately and may race a concurrent apply
   (it already notes this). A local linearizable read must check `A[S]` before
@@ -171,15 +170,15 @@ keyspace.
   is bounded by the number of keyspaces.
 - **Rolling upgrade.** An old node has no `_wm:` rows. A node treats a missing
   `A[K]` as `0`, which never satisfies `A[K] >= W[S]` for `W > 0`, so it falls
-  back to waiting or forwarding. The rows live in `meta` under
-  `_wm:`, which has no NUL byte and so cannot collide with a record's
-  `<keyspace>\0<key>` metadata key. Leaders that do not serve
-  `ReadWatermark` make the follower forward as today.
+  back to waiting or forwarding. The rows live in `meta` under `_wm:`, which has
+  no NUL byte and so cannot collide with a record's `<keyspace>\0<key>` metadata
+  key. Leaders that do not serve `ReadWatermark` make the follower forward as
+  today.
 - **Relation to ADR 0047.** Both answer "is my copy current?" with a monotone
   counter per unit of data. The SQL counters are bumped by triggers and polled;
   these are derived from the Raft log and need no triggers, no poller and no
-  `table_version`-style counter rows. The Raft drivers do not use `TableWatermarks`,
-  and the SQL drivers do not use this.
+  `table_version`-style counter rows. The Raft drivers do not use
+  `TableWatermarks`, and the SQL drivers do not use this.
 - **Crypto.** The table holds log indexes only. No cryptographic primitive is
   added or moved, so `crypto-inventory.md` is unaffected.
 
@@ -196,14 +195,15 @@ keyspace.
   the follower to hold the log up to `R`, which the leader does not guarantee,
   and makes the read cost grow with the backlog. The leader already knows.
 - **Per-key log index in `Metadata`.** Finer than a keyspace, but a prefix or
-  list read would need the maximum over all keys it covers, and the leader
-  would need an index of it. A keyspace is the unit the rest of the design
+  list read would need the maximum over all keys it covers, and the leader would
+  need an index of it. A keyspace is the unit the rest of the design
   (`drop_keyspace`, tiers, ephemeral keyspaces) already uses.
 
 ## Open points
 
-- Expose the follower-served ratio and the wait the watermark avoided as
-  metrics, before any default is changed. The mode would be opt-in
-  (`[distributed_storage] follower_linearizable_reads`) at first.
-- A test per backend of the failover rebuild: kill the leader mid-write and
-  assert no replica serves a value older than the acknowledged write.
+- The wait the watermark avoided is not measured; only the served and fallback
+  counts are exported. Add it before the default is changed.
+- The failover test runs on the three-node cluster harness of `crates/storage`.
+  The `*-raft` driver crates are not covered separately.
+- `prefix` and `get_by_key` use the watermark; reads that already run on the
+  leader are unchanged.

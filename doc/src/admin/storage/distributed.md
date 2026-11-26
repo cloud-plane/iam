@@ -387,6 +387,23 @@ written without an explicit tier default to Tier 1. Without the option, or for
 Tier 2/3 records (and prefix scans that match one), the request is ignored and
 the read goes through `ReadIndex`. Index key listings are always linearizable.
 
+### Follower-served linearizable reads
+
+By default a follower forwards every linearizable read, with its response, to
+the leader. Setting `follower_linearizable_reads = true` lets a follower serve
+the read from its own copy instead, for any tier, when the copy is current for
+the keyspaces the read touches (ADR 0048). The follower asks the leader for the
+per-keyspace watermark. The leader confirms its leadership with a quorum first,
+so the answer is never older than an acknowledged write. If the follower has
+applied up to the watermark of every keyspace involved, it reads locally;
+otherwise it waits within the `ensure_linearizable_*` budget and then forwards
+the read as before. A hot keyspace therefore gains little, and the quorum round
+trip stays. The Prometheus counters
+`keystone_raft_follower_reads_served_total` and
+`keystone_raft_follower_reads_fallback_total` show how many reads took each way.
+The option is off by default. Peers that run an older version do not serve the
+watermark request, and the follower forwards to them as before.
+
 ---
 
 ## Intra-Cluster Transport (mTLS)
@@ -829,6 +846,10 @@ node_listener_addr = "0.0.0.0:8310"
 # Allow consumers to request stale local reads of Tier 0/1 records
 # (`disabled` (default) or `local_for_public`).
 # local_reads_mode = "disabled"
+
+# Let a follower serve linearizable reads from its own copy when it is current
+# for the keyspaces read (ADR 0048). Default: false (forward to the leader).
+# follower_linearizable_reads = false
 
 # Longest a node may go without contact from a Raft leader and still serve a
 # local read (milliseconds). Unset means unbounded. At least twice

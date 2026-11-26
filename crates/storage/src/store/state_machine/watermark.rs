@@ -126,6 +126,26 @@ pub fn read_watermarks(
     (rows, default)
 }
 
+/// Whether this replica has applied everything the leader's answer says it
+/// needs for `keyspaces`: for each one, `A[K] >= W[K]`.
+///
+/// `rows` and `default` come from the `ReadWatermark` response; a keyspace
+/// the response does not list uses `default`.
+pub fn replica_is_current(
+    applied: &AppliedWatermarks,
+    rows: &[(String, u64)],
+    default: u64,
+    keyspaces: &[String],
+) -> bool {
+    keyspaces.iter().all(|ks| {
+        let need = rows
+            .iter()
+            .find(|(name, _)| name == ks)
+            .map_or(default, |(_, w)| *w);
+        applied.get(ks) >= need
+    })
+}
+
 /// Builds the `meta` key of the watermark row of `keyspace`.
 pub(super) fn watermark_key(keyspace: &str) -> Vec<u8> {
     let mut out = Vec::with_capacity(WATERMARK_PREFIX.len() + keyspace.len());
@@ -279,6 +299,22 @@ mod tests {
 
         let (rows, _) = read_watermarks(&applied, &logged, 10, &["zzz".to_string()]);
         assert_eq!(rows, vec![("zzz".to_string(), 2)]);
+    }
+
+    #[test]
+    fn replica_is_current_checks_every_keyspace() {
+        let applied = AppliedWatermarks::default();
+        applied.record(&["a".to_string()], 10);
+        applied.record(&["b".to_string()], 1);
+        let rows = vec![("a".to_string(), 8), ("b".to_string(), 8)];
+        let a = ["a".to_string()];
+        let ab = ["a".to_string(), "b".to_string()];
+        assert!(replica_is_current(&applied, &rows, 0, &a));
+        // `a` being far ahead must not hide that `b` is behind.
+        assert!(!replica_is_current(&applied, &rows, 0, &ab));
+        // An unlisted keyspace uses the default.
+        assert!(!replica_is_current(&applied, &rows, 5, &["c".to_string()]));
+        assert!(replica_is_current(&applied, &rows, 0, &["c".to_string()]));
     }
 
     #[test]

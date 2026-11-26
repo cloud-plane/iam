@@ -94,6 +94,10 @@ pub struct KeystoneRaftPrometheusMetrics {
     dek_reencrypt_migrated_total: EventCounter,
     /// Records the background sweeps skipped (CAS retries exhausted).
     dek_reencrypt_skipped_total: EventCounter,
+    /// Linearizable reads a follower served from its own copy (ADR 0048).
+    pub follower_reads_served_total: EventCounter,
+    /// Reads that tried the follower path and fell back to forwarding.
+    pub follower_reads_fallback_total: EventCounter,
     /// AES-GCM tag verification failures on state reads (the quarantine
     /// trigger). Incremented on every failure, not only on the one that
     /// crosses the quarantine threshold.
@@ -118,6 +122,8 @@ impl KeystoneRaftPrometheusMetrics {
             write_rate_version_max: Arc::new(AtomicU32::new(0)),
             dek_reencrypt_migrated_total: EventCounter::default(),
             dek_reencrypt_skipped_total: EventCounter::default(),
+            follower_reads_served_total: EventCounter::default(),
+            follower_reads_fallback_total: EventCounter::default(),
             dek_reencrypt_last_skipped: Arc::new(AtomicU64::new(0)),
         };
         this.gcm_failures_total.register(
@@ -134,6 +140,16 @@ impl KeystoneRaftPrometheusMetrics {
             meter,
             "keystone_raft_dek_reencrypt_skipped_total",
             "Records skipped by background DEK re-encryption sweeps.",
+        );
+        this.follower_reads_served_total.register(
+            meter,
+            "keystone_raft_follower_reads_served_total",
+            "Linearizable reads a follower served from its own copy.",
+        );
+        this.follower_reads_fallback_total.register(
+            meter,
+            "keystone_raft_follower_reads_fallback_total",
+            "Reads that tried the follower path and were forwarded instead.",
         );
         let version = Arc::clone(&this.write_rate_version_max);
         observe_gauge(
