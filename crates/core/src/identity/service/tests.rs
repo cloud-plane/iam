@@ -1518,9 +1518,32 @@ async fn test_delete_user_cascade_failure_still_invalidates_cache() {
                 ),
             )
         });
+    // A failed step does not stop the others: each one runs once.
+    let mut appcred_mock =
+        crate::application_credential::MockApplicationCredentialProvider::default();
+    appcred_mock
+        .expect_delete_application_credentials_for_user()
+        .times(1)
+        .returning(|_, _| Ok(()));
+    let mut trust_mock = crate::trust::MockTrustProvider::default();
+    trust_mock
+        .expect_delete_trusts_for_user()
+        .times(1)
+        .returning(|_, _| Ok(()));
+    let mut assignment_mock = MockAssignmentProvider::default();
+    assignment_mock
+        .expect_delete_assignments_for_user()
+        .times(1)
+        .returning(|_, _| Ok(()));
     let state = get_mocked_state(
         None,
-        Some(Provider::mocked_builder().mock_credential(credential_mock)),
+        Some(
+            Provider::mocked_builder()
+                .mock_credential(credential_mock)
+                .mock_application_credential(appcred_mock)
+                .mock_trust(trust_mock)
+                .mock_assignment(assignment_mock),
+        ),
     )
     .await;
     let mut backend = MockIdentityBackend::default();

@@ -106,6 +106,7 @@ pub mod k8s_auth;
 pub mod keystone;
 pub mod limit;
 pub mod mapping;
+pub mod migration_index;
 pub mod net;
 pub mod nova_client;
 pub mod oauth2_client;

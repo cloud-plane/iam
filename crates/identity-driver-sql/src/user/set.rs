@@ -24,6 +24,10 @@ use crate::entity::user as db_user;
 
 /// Reset the `user.last_active_at` to the specified date.
 ///
+/// The column holds a date: a user that already is marked active on that day
+/// is returned as is. Every write moves the `user` table version and so drops
+/// the cached users, and a login would otherwise do it each time.
+///
 /// # Parameters
 /// - `db`: The database connection.
 /// - `user`: The user model to update.
@@ -37,8 +41,12 @@ pub async fn reset_last_active(
     user: &db_user::Model,
     last_active_at: DateTime<Utc>,
 ) -> Result<db_user::Model, IdentityProviderError> {
+    let day = last_active_at.date_naive();
+    if user.last_active_at == Some(day) {
+        return Ok(user.clone());
+    }
     let mut update: db_user::ActiveModel = user.clone().into();
-    update.last_active_at = Set(Some(last_active_at.date_naive()));
+    update.last_active_at = Set(Some(day));
 
     Ok(update
         .update(db)
@@ -53,6 +61,20 @@ mod tests {
 
     use super::*;
     use crate::user::tests::get_user_mock;
+
+    #[tokio::test]
+    async fn test_reset_last_active_same_day_writes_nothing() {
+        let db = MockDatabase::new(DatabaseBackend::Postgres).into_connection();
+        let now = Utc::now();
+        let mut user = get_user_mock("user_id");
+        user.last_active_at = Some(now.date_naive());
+
+        assert_eq!(
+            reset_last_active(&db, &user, now).await.unwrap().id,
+            "user_id"
+        );
+        assert!(db.into_transaction_log().is_empty());
+    }
 
     #[tokio::test]
     async fn test_reset_last_active() {

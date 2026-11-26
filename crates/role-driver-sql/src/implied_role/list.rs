@@ -38,6 +38,7 @@ pub async fn list(db: &DatabaseConnection) -> Result<Vec<RoleImply>, RoleProvide
 ///
 /// # Returns
 /// A `Result` containing a list of `RoleImply`, or an `Error`.
+#[cfg_attr(not(test), allow(dead_code))]
 pub async fn list_by_prior(
     db: &DatabaseConnection,
     prior_role_id: &str,
@@ -53,6 +54,7 @@ pub async fn list_by_prior(
 ///
 /// # Returns
 /// A `Result` containing a list of `RoleImply`, or an `Error`.
+#[cfg_attr(not(test), allow(dead_code))]
 pub async fn list_by_priors(
     db: &DatabaseConnection,
     prior_role_ids: &[&str],

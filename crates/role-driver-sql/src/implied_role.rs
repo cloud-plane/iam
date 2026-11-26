@@ -34,14 +34,21 @@ mod list;
 pub use check::check;
 pub use create::create;
 pub use delete::delete;
+pub use list::list;
+// The single and the filtered reads are served from the cached rule list; the
+// queries stay for a read that must bypass it.
+#[allow(unused_imports)]
 pub use get::get;
-pub use list::{list, list_by_prior, list_by_priors};
+#[allow(unused_imports)]
+pub use list::{list_by_prior, list_by_priors};
 
 /// Filter variants for listing role imply rules.
 pub(crate) enum ImpliedRoleFilter<'a> {
     /// Filter by prior role only.
+    #[cfg_attr(not(test), allow(dead_code))]
     PriorRole(&'a str),
     /// Filter by any of the prior roles.
+    #[cfg_attr(not(test), allow(dead_code))]
     PriorRoles(&'a [&'a str]),
     /// Filter by both prior and implied role IDs.
     Exact(&'a str, &'a str),

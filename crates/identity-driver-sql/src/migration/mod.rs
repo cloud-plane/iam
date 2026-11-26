@@ -16,10 +16,12 @@
 use sea_orm_migration::prelude::*;
 
 mod m20261120_000004_identity_table_watermark;
+mod m20261126_000017_identity_lookup_indexes;
 
 /// The ordered list of migrations.
 pub fn migrations() -> Vec<Box<dyn MigrationTrait>> {
-    vec![Box::new(
-        m20261120_000004_identity_table_watermark::Migration,
-    )]
+    vec![
+        Box::new(m20261120_000004_identity_table_watermark::Migration),
+        Box::new(m20261126_000017_identity_lookup_indexes::Migration),
+    ]
 }

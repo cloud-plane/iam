@@ -58,6 +58,28 @@ impl SqlBackend {
     fn caches(&self) -> &cache::RoleCaches {
         self.caches.get_or_init(cache::RoleCaches::default)
     }
+
+    /// All imply rules, kept while the `role` and `implied_role` tables are
+    /// unchanged. The reads of single and filtered rules are answered from
+    /// this list: the table is small and the callers (role assignment
+    /// checks) run on the request path.
+    async fn cached_rules(
+        &self,
+        state: &ServiceState,
+    ) -> Result<Arc<Vec<RoleImply>>, RoleProviderError> {
+        let db = state.db.connection();
+        let watermarks = state.db.watermarks();
+        self.caches()
+            .rules
+            .get_or_load(
+                &watermarks,
+                &db,
+                cache::RULES_KEY,
+                Freshness::Linearizable,
+                || async { Ok(Arc::new(implied_role::list(&db).await?)) },
+            )
+            .await
+    }
 }
 
 /// Linkage anchor — see ADR-0018. Referenced by the `keystone` crate's
@@ -147,7 +169,7 @@ impl RoleBackend for SqlBackend {
         params: RoleCreate,
     ) -> Result<Role, RoleProviderError> {
         let role = role::create(&state.db.connection(), params).await?;
-        self.caches().invalidate_role(&role.id);
+        self.caches().invalidate_created_role(&role.id);
         Ok(role)
     }
 
@@ -272,7 +294,51 @@ impl RoleBackend for SqlBackend {
         state: &ServiceState,
         roles: &mut Vec<RoleRef>,
     ) -> Result<(), RoleProviderError> {
-        expand_implied_roles(&state.db.connection(), roles).await
+        // The resolved inference and the role names are cached; this runs on
+        // every token validation, so it must not read the rule tables.
+        let inference = self.get_role_inference(state).await?;
+        let mut role_ids: HashSet<String> =
+            HashSet::from_iter(roles.iter().map(|role| role.id.clone()));
+        let mut implied_roles: Vec<RoleRef> = Vec::new();
+        for implied in roles
+            .iter()
+            .flat_map(|role| inference.implied(&role.id).iter())
+        {
+            if role_ids.insert(implied.id.clone()) {
+                implied_roles.push(implied.clone());
+            }
+        }
+        roles.extend(implied_roles);
+        // The request list may only contain role IDs: populate name and
+        // domain from the names cache.
+        let unnamed: Vec<String> = roles
+            .iter()
+            .filter(|role| role.name.is_none())
+            .map(|role| role.id.clone())
+            .collect();
+        if !unnamed.is_empty() {
+            let found: std::collections::HashMap<String, Role> = self
+                .list_roles(
+                    state,
+                    &RoleListParameters {
+                        ids: Some(unnamed),
+                        skip_options: true,
+                        ..Default::default()
+                    },
+                )
+                .await?
+                .into_iter()
+                .map(|role| (role.id.clone(), role))
+                .collect();
+            for role in roles.iter_mut().filter(|role| role.name.is_none()) {
+                let full = found
+                    .get(&role.id)
+                    .ok_or_else(|| RoleProviderError::RoleNotFound(role.id.clone()))?;
+                role.name = Some(full.name.clone());
+                role.domain_id = full.domain_id.clone();
+            }
+        }
+        Ok(())
     }
 
     /// Get the resolved role inference.
@@ -297,7 +363,7 @@ impl RoleBackend for SqlBackend {
                 cache::INFERENCE_KEY,
                 Freshness::Linearizable,
                 || async {
-                    let rules = implied_role::list(&db).await?;
+                    let rules = self.cached_rules(state).await?;
                     Ok(Arc::new(RoleInference::from_rules(&rules)))
                 },
             )
@@ -319,7 +385,14 @@ impl RoleBackend for SqlBackend {
         state: &ServiceState,
         id: &'a str,
     ) -> Result<Option<Role>, RoleProviderError> {
-        Ok(role::get(&state.db.connection(), id).await?)
+        let db = state.db.connection();
+        let watermarks = state.db.watermarks();
+        self.caches()
+            .roles
+            .get_or_load_some(&watermarks, &db, id, Freshness::Linearizable, || async {
+                role::get(&db, id).await
+            })
+            .await
     }
 
     /// Get a role imply rule.
@@ -339,7 +412,14 @@ impl RoleBackend for SqlBackend {
         prior_role_id: &'a str,
         implied_role_id: &'a str,
     ) -> Result<Option<RoleImply>, RoleProviderError> {
-        Ok(implied_role::get(&state.db.connection(), prior_role_id, implied_role_id).await?)
+        Ok(self
+            .cached_rules(state)
+            .await?
+            .iter()
+            .find(|rule| {
+                rule.prior_role.id == prior_role_id && rule.implied_role.id == implied_role_id
+            })
+            .cloned())
     }
 
     /// List role imply rules.
@@ -358,7 +438,7 @@ impl RoleBackend for SqlBackend {
         &self,
         state: &ServiceState,
     ) -> Result<Vec<RoleImply>, RoleProviderError> {
-        Ok(implied_role::list(&state.db.connection()).await?)
+        Ok(self.cached_rules(state).await?.as_ref().clone())
     }
 
     /// List role imply rules for a specific prior role.
@@ -375,7 +455,13 @@ impl RoleBackend for SqlBackend {
         state: &ServiceState,
         prior_role_id: &'a str,
     ) -> Result<Vec<RoleImply>, RoleProviderError> {
-        Ok(implied_role::list_by_prior(&state.db.connection(), prior_role_id).await?)
+        Ok(self
+            .cached_rules(state)
+            .await?
+            .iter()
+            .filter(|rule| rule.prior_role.id == prior_role_id)
+            .cloned()
+            .collect())
     }
 
     /// List role imply rules for any of the given prior roles.
@@ -392,7 +478,13 @@ impl RoleBackend for SqlBackend {
         state: &ServiceState,
         prior_role_ids: &[&'a str],
     ) -> Result<Vec<RoleImply>, RoleProviderError> {
-        Ok(implied_role::list_by_priors(&state.db.connection(), prior_role_ids).await?)
+        Ok(self
+            .cached_rules(state)
+            .await?
+            .iter()
+            .filter(|rule| prior_role_ids.contains(&rule.prior_role.id.as_str()))
+            .cloned()
+            .collect())
     }
 
     /// List roles.

@@ -29,6 +29,7 @@ use super::ImpliedRoleFilter;
 /// # Returns
 /// A `Result` containing an `Option` with the `RoleImply` if found, or an
 /// `Error`.
+#[cfg_attr(not(test), allow(dead_code))]
 pub async fn get(
     db: &DatabaseConnection,
     prior_role_id: &str,

@@ -131,6 +131,13 @@ cargo nextest run --profile api -p test_api
 - Logs are preserved after test completion. Stop with `./tools/teardown-api.sh`.
   Full cleanup: `rm -rf /tmp/nextest/keystone /tmp/spire-ci-test-harness`.
 
+### Load tests
+
+`tests/loadtest` drives a running keystone (local processes or the skaffold k3s
+deployment) with Goose. Profiles, the `loadtest` skaffold profile, credentials,
+the Raft volume pitfall after a scale change and how to read and compare runs
+are in [doc/src/contributor/loadtest.md](doc/src/contributor/loadtest.md).
+
 ### Allocation profiling
 
 The hot paths of a request (token validation, the catalog, the conversions to
@@ -420,5 +427,7 @@ Every architectural change requires an ADR in `doc/src/adr/`.
 - [CONTRIBUTING.md](CONTRIBUTING.md) — this file
 - [Contributor development guide](doc/src/contributor/development.md) —
   environment setup details (skaffold, OSC)
+- [Load tests](doc/src/contributor/loadtest.md) — running and reading load
+  tests
 - [.pre-commit-config.yaml](.pre-commit-config.yaml) — linting hooks
 - [committed.toml](committed.toml) — commit message rules

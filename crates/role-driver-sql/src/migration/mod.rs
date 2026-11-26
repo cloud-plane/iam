@@ -15,8 +15,12 @@
 use sea_orm_migration::prelude::*;
 
 mod m20261124_000009_role_table_watermark;
+mod m20261126_000018_implied_role_implied_index;
 
 /// The ordered list of migrations.
 pub fn migrations() -> Vec<Box<dyn MigrationTrait>> {
-    vec![Box::new(m20261124_000009_role_table_watermark::Migration)]
+    vec![
+        Box::new(m20261124_000009_role_table_watermark::Migration),
+        Box::new(m20261126_000018_implied_role_implied_index::Migration),
+    ]
 }

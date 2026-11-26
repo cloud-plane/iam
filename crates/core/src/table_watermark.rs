@@ -70,8 +70,13 @@ use crate::keystone::ServiceState;
 /// Name of the table holding the counters.
 pub const VERSION_TABLE: &str = "table_version";
 
-/// Tables the project caches depend on.
-pub const PROJECT_TABLES: &[&str] = &["project"];
+/// Tables the projections of the `project` row alone (the short project, the
+/// domain of a project, its parents) depend on.
+pub const PROJECT_ROW_TABLES: &[&str] = &["project"];
+
+/// Tables a project with its options and tags is read from.
+pub const PROJECT_TABLES: &[&str] = &["project", "project_option", "project_tag"];
+
 /// The tolerance of the token validation path reads: what
 /// `[database] projection_max_staleness_ms` allows (the config validator
 /// caps it at 300000 ms); linearizable when unset.
@@ -101,6 +106,8 @@ pub fn validation_freshness(config: &openstack_keystone_config::Config) -> Fresh
 pub const IDENTITY_TABLES: &[&str] = &[
     "user",
     "local_user",
+    "nonlocal_user",
+    "federated_user",
     "user_option",
     "password",
     "group",
@@ -121,7 +128,7 @@ pub const ASSIGNMENT_TABLES: &[&str] = &["assignment", "system_assignment"];
 
 /// Tables the role driver caches projections of: the names of the roles and
 /// the imply rules the inference is resolved from.
-pub const ROLE_TABLES: &[&str] = &["role", "implied_role"];
+pub const ROLE_TABLES: &[&str] = &["role", "implied_role", "role_option"];
 
 /// Tables the catalog driver caches the assembled catalog of.
 pub const CATALOG_TABLES: &[&str] = &["service", "endpoint"];
@@ -136,8 +143,11 @@ pub const CATALOG_TABLES: &[&str] = &["service", "endpoint"];
 ///
 /// `project`: a request creating a project must not make every other
 /// request read its project again. `local_user`: a new user changes no
-/// cached local user.
-pub const INSERT_NEUTRAL_TABLES: &[&str] = &["project", "local_user"];
+/// cached local user. `role`: a new role is in no imply rule yet, so it
+/// changes neither the names of the other roles nor the resolved inference,
+/// which is built from the rules (`implied_role`, whose inserts do move its
+/// counter).
+pub const INSERT_NEUTRAL_TABLES: &[&str] = &["project", "local_user", "role"];
 
 /// Whether a new row of `table` moves its counter.
 fn bumps_on_insert(table: &str) -> bool {
@@ -977,6 +987,15 @@ mod tests {
 
     use super::*;
 
+    /// The project row caches stay valid across a project insert only while
+    /// they depend on nothing but insert neutral tables.
+    #[test]
+    fn test_project_row_tables_are_insert_neutral() {
+        assert!(PROJECT_ROW_TABLES.iter().all(|t| !bumps_on_insert(t)));
+        assert!(PROJECT_TABLES.contains(&"project_option"));
+        assert!(!PROJECT_ROW_TABLES.contains(&"project_option"));
+    }
+
     fn registry(interval_ms: u64) -> TableWatermarks {
         let wm = TableWatermarks::new();
         wm.configure(Duration::from_millis(interval_ms));
@@ -1050,26 +1069,34 @@ mod tests {
 
     #[test]
     fn test_trigger_statements_per_backend() {
-        let pg = create_trigger_statements(DatabaseBackend::Postgres, "role");
+        let pg = create_trigger_statements(DatabaseBackend::Postgres, "assignment");
         assert_eq!(2, pg.len());
-        assert_eq!("DROP TRIGGER IF EXISTS wm_role ON \"role\"", pg[0]);
+        assert_eq!(
+            "DROP TRIGGER IF EXISTS wm_assignment ON \"assignment\"",
+            pg[0]
+        );
         assert!(pg[1].contains("FOR EACH STATEMENT"));
-        assert!(pg[1].contains("keystone_bump_table_version('role')"));
+        assert!(pg[1].contains("keystone_bump_table_version('assignment')"));
 
-        let mysql = create_trigger_statements(DatabaseBackend::MySql, "role");
+        let mysql = create_trigger_statements(DatabaseBackend::MySql, "assignment");
         assert_eq!(6, mysql.len());
-        assert!(mysql[3].starts_with("CREATE TRIGGER wm_role_ins AFTER INSERT ON `role`"));
+        assert!(
+            mysql[3].starts_with("CREATE TRIGGER wm_assignment_ins AFTER INSERT ON `assignment`")
+        );
         assert!(mysql[4].contains("AFTER UPDATE"));
         assert!(mysql[5].contains("AFTER DELETE"));
         // A random counter row of the table, not the base row only, chosen
         // once per statement (a `RAND()` in the `WHERE` is evaluated per row
         // and bumps nothing in a third of the cases).
-        assert!(mysql[3].contains("SET counter = ELT(FLOOR(RAND() * 8) + 1, 'role', 'role:1'"));
-        assert!(mysql[3].contains("'role:7');"));
+        assert!(
+            mysql[3]
+                .contains("SET counter = ELT(FLOOR(RAND() * 8) + 1, 'assignment', 'assignment:1'")
+        );
+        assert!(mysql[3].contains("'assignment:7');"));
         assert!(mysql[3].contains("WHERE table_name = counter; END"));
         assert!(!mysql[3].contains("table_name = ELT"));
 
-        let sqlite = create_trigger_statements(DatabaseBackend::Sqlite, "role");
+        let sqlite = create_trigger_statements(DatabaseBackend::Sqlite, "assignment");
         assert_eq!(6, sqlite.len());
         assert!(sqlite[3].contains("BEGIN UPDATE table_version"));
         assert!(sqlite[3].ends_with("END"));
@@ -1148,7 +1175,7 @@ mod tests {
     #[tokio::test]
     async fn test_sqlite_counter_is_the_sum_of_the_shards() {
         let conn = sqlite_with_role_table().await;
-        install(&conn, &["role"]).await.unwrap();
+        install(&conn, &["assignment"]).await.unwrap();
         // The count of rows: one per shard.
         let rows = conn
             .query_all_raw(Statement::from_string(
@@ -1160,15 +1187,15 @@ mod tests {
         assert_eq!(COUNTER_SHARDS, rows.len());
         let wm = registry(1000);
         wm.poll(&conn).await.unwrap();
-        let before = wm.stamp(&["role"]).unwrap();
+        let before = wm.stamp(&["assignment"]).unwrap();
         // A write to the base shard (SQLite triggers bump it) moves the sum.
-        conn.execute_unprepared("INSERT INTO role (id, name) VALUES ('a', 'x')")
+        conn.execute_unprepared("INSERT INTO assignment (id, name) VALUES ('a', 'x')")
             .await
             .unwrap();
         wm.poll(&conn).await.unwrap();
-        assert!(wm.stamp(&["role"]).unwrap() > before);
+        assert!(wm.stamp(&["assignment"]).unwrap() > before);
         // Uninstall removes every shard.
-        uninstall(&conn, &["role"]).await.unwrap();
+        uninstall(&conn, &["assignment"]).await.unwrap();
         let rows = conn
             .query_all_raw(Statement::from_string(
                 DatabaseBackend::Sqlite,
@@ -1182,13 +1209,13 @@ mod tests {
     #[test]
     fn test_seed_statement_per_backend() {
         assert!(
-            seed_counter_statement(DatabaseBackend::MySql, "role").starts_with(
-                "INSERT IGNORE INTO table_version (table_name, version) VALUES ('role', "
+            seed_counter_statement(DatabaseBackend::MySql, "assignment").starts_with(
+                "INSERT IGNORE INTO table_version (table_name, version) VALUES ('assignment', "
             )
         );
         for backend in [DatabaseBackend::Postgres, DatabaseBackend::Sqlite] {
             assert!(
-                seed_counter_statement(backend, "role")
+                seed_counter_statement(backend, "assignment")
                     .ends_with("ON CONFLICT (table_name) DO NOTHING")
             );
         }
@@ -1196,7 +1223,7 @@ mod tests {
 
     async fn sqlite_with_role_table() -> DatabaseConnection {
         let conn = Database::connect("sqlite::memory:").await.unwrap();
-        conn.execute_unprepared("CREATE TABLE role (id TEXT PRIMARY KEY, name TEXT)")
+        conn.execute_unprepared("CREATE TABLE assignment (id TEXT PRIMARY KEY, name TEXT)")
             .await
             .unwrap();
         conn
@@ -1205,22 +1232,22 @@ mod tests {
     #[tokio::test]
     async fn test_sqlite_triggers_bump_counter() {
         let conn = sqlite_with_role_table().await;
-        install(&conn, &["role"]).await.unwrap();
+        install(&conn, &["assignment"]).await.unwrap();
         // Idempotent.
-        install(&conn, &["role"]).await.unwrap();
+        install(&conn, &["assignment"]).await.unwrap();
 
         let wm = registry(1000);
         wm.poll(&conn).await.unwrap();
-        let mut last = wm.stamp(&["role"]).unwrap();
+        let mut last = wm.stamp(&["assignment"]).unwrap();
 
         for sql in [
-            "INSERT INTO role (id, name) VALUES ('a', 'x')",
-            "UPDATE role SET name = 'y' WHERE id = 'a'",
-            "DELETE FROM role WHERE id = 'a'",
+            "INSERT INTO assignment (id, name) VALUES ('a', 'x')",
+            "UPDATE assignment SET name = 'y' WHERE id = 'a'",
+            "DELETE FROM assignment WHERE id = 'a'",
         ] {
             conn.execute_unprepared(sql).await.unwrap();
             wm.poll(&conn).await.unwrap();
-            let stamp = wm.stamp(&["role"]).unwrap();
+            let stamp = wm.stamp(&["assignment"]).unwrap();
             assert!(stamp > last, "`{sql}` did not bump the counter");
             last = stamp;
         }
@@ -1230,33 +1257,33 @@ mod tests {
     async fn test_sqlite_rolled_back_change_is_not_visible() {
         use sea_orm::TransactionTrait;
         let conn = sqlite_with_role_table().await;
-        install(&conn, &["role"]).await.unwrap();
+        install(&conn, &["assignment"]).await.unwrap();
         let wm = registry(1000);
         wm.poll(&conn).await.unwrap();
-        let before = wm.stamp(&["role"]);
+        let before = wm.stamp(&["assignment"]);
 
         let txn = conn.begin().await.unwrap();
-        txn.execute_unprepared("INSERT INTO role (id, name) VALUES ('a', 'x')")
+        txn.execute_unprepared("INSERT INTO assignment (id, name) VALUES ('a', 'x')")
             .await
             .unwrap();
         txn.rollback().await.unwrap();
 
         wm.poll(&conn).await.unwrap();
-        assert_eq!(before, wm.stamp(&["role"]));
+        assert_eq!(before, wm.stamp(&["assignment"]));
     }
 
     #[tokio::test]
     async fn test_sqlite_uninstall_stops_bumping() {
         let conn = sqlite_with_role_table().await;
-        install(&conn, &["role"]).await.unwrap();
-        uninstall(&conn, &["role"]).await.unwrap();
-        conn.execute_unprepared("INSERT INTO role (id, name) VALUES ('a', 'x')")
+        install(&conn, &["assignment"]).await.unwrap();
+        uninstall(&conn, &["assignment"]).await.unwrap();
+        conn.execute_unprepared("INSERT INTO assignment (id, name) VALUES ('a', 'x')")
             .await
             .unwrap();
         let wm = registry(1000);
         wm.poll(&conn).await.unwrap();
         // The counter row is gone, so the table has no stamp.
-        assert!(wm.stamp(&["role"]).is_none());
+        assert!(wm.stamp(&["assignment"]).is_none());
     }
 
     /// Pause long enough for the millisecond clock to tick.
@@ -1267,7 +1294,7 @@ mod tests {
     #[tokio::test]
     async fn test_read_scope_shares_one_sync() {
         let conn = sqlite_with_role_table().await;
-        install(&conn, &["role"]).await.unwrap();
+        install(&conn, &["assignment"]).await.unwrap();
         let wm = registry(1000);
         wm.poll(&conn).await.unwrap();
         tick().await;
@@ -1288,7 +1315,7 @@ mod tests {
     #[tokio::test]
     async fn test_read_scope_remembers_its_sync_within_one_millisecond() {
         let conn = sqlite_with_role_table().await;
-        install(&conn, &["role"]).await.unwrap();
+        install(&conn, &["assignment"]).await.unwrap();
         let wm = registry(1000);
         wm.poll(&conn).await.unwrap();
 
@@ -1310,7 +1337,7 @@ mod tests {
     #[tokio::test]
     async fn test_cancelled_leader_wakes_the_followers() {
         let conn = sqlite_with_role_table().await;
-        install(&conn, &["role"]).await.unwrap();
+        install(&conn, &["assignment"]).await.unwrap();
         let wm = registry(1000);
         wm.poll(&conn).await.unwrap();
         tick().await;
@@ -1337,7 +1364,7 @@ mod tests {
     #[tokio::test]
     async fn test_without_scope_every_read_syncs() {
         let conn = sqlite_with_role_table().await;
-        install(&conn, &["role"]).await.unwrap();
+        install(&conn, &["assignment"]).await.unwrap();
         let wm = registry(1000);
         wm.poll(&conn).await.unwrap();
         tick().await;
@@ -1351,7 +1378,7 @@ mod tests {
     #[tokio::test]
     async fn test_a_write_in_the_scope_forces_a_new_sync() {
         let conn = sqlite_with_role_table().await;
-        install(&conn, &["role"]).await.unwrap();
+        install(&conn, &["assignment"]).await.unwrap();
         let wm = registry(1000);
         wm.poll(&conn).await.unwrap();
         tick().await;
@@ -1360,10 +1387,10 @@ mod tests {
             tick().await;
             assert!(wm.sync(&conn).await);
             let first = wm.snapshot_ms.load(Ordering::Acquire);
-            let before = wm.stamp(&["role"]).unwrap();
+            let before = wm.stamp(&["assignment"]).unwrap();
 
             tick().await;
-            conn.execute_unprepared("INSERT INTO role (id, name) VALUES ('a', 'x')")
+            conn.execute_unprepared("INSERT INTO assignment (id, name) VALUES ('a', 'x')")
                 .await
                 .unwrap();
             ReadScope::advance();
@@ -1372,7 +1399,7 @@ mod tests {
             // The snapshot predates the write: a new read of the counters.
             assert!(wm.sync(&conn).await);
             assert!(wm.snapshot_ms.load(Ordering::Acquire) > first);
-            assert!(wm.stamp(&["role"]).unwrap() > before);
+            assert!(wm.stamp(&["assignment"]).unwrap() > before);
         })
         .await;
     }
@@ -1395,7 +1422,7 @@ mod tests {
         let conn = Database::connect("sqlite::memory:").await.unwrap();
         let wm = registry(100);
         assert!(wm.poll(&conn).await.is_err());
-        assert!(wm.stamp(&["role"]).is_none());
+        assert!(wm.stamp(&["assignment"]).is_none());
     }
 
     #[tokio::test]
@@ -1407,6 +1434,6 @@ mod tests {
         // request: the poller retries once per interval.
         install(&conn, &[]).await.unwrap();
         assert!(!wm.sync(&conn).await);
-        assert!(wm.stamp(&["role"]).is_none());
+        assert!(wm.stamp(&["assignment"]).is_none());
     }
 }
