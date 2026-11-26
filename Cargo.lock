@@ -5781,6 +5781,19 @@ dependencies = [
 ]
 
 [[package]]
+name = "openstack-keystone-principal-index-raft"
+version = "0.1.0"
+dependencies = [
+ "async-trait",
+ "openstack-keystone-distributed-storage",
+ "rmp-serde",
+ "serde",
+ "thiserror 2.0.21",
+ "tokio",
+ "tracing",
+]
+
+[[package]]
 name = "openstack-keystone-reservation-raft"
 version = "0.1.0"
 dependencies = [

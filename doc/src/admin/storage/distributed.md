@@ -1894,3 +1894,29 @@ grace period, so a crash between claim and publication does not hold a name
 forever. Only the holder confirms, renames or releases. Domain names, role names
 and base URLs are compared case insensitively (a base URL also without a
 trailing slash); domain ids exactly.
+
+### Principal pointers (ADR 0045 section 8)
+
+Grants are keyed by their target, so "where can this user act" would scatter over
+every authority. The authority that holds a grant for a principal of another
+authority publishes a pointer to the principal's home, which keeps a reverse
+index and answers locally (`keystone-principal-index-raft`).
+
+- Add `principal_pointer` to `feed_kinds` on the authority that holds the grants.
+  The event belongs to the domain of the principal, so the home needs a feed
+  grant for that kind and domain, and consumes the feed with one
+  `PointerSink` per source authority.
+- A pointer is per grant: removing one of two grants of a principal at an
+  authority keeps the pointer of the other.
+- The home files a pointer under the authority of the subscription, never the
+  one in the event, and drops a pointer whose domain it does not serve or whose
+  issuer is not the issuer of that domain.
+- The grant is written in its own backend (SQL, OpenFGA), not in the same
+  transaction as its pointer, so the index is a hint. An empty answer means
+  "unknown": ask the parts of the domain. `PointerPublisher::reconcile` repairs
+  the source side from the authoritative list of grants.
+- A mesh token for an audience carries the groups of the user that hold a grant
+  there and no others (`PointerIndex::groups_for_audience`).
+
+The crate is not wired into the assignment providers or started from
+configuration yet; both are follow-ups.

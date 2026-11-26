@@ -35,6 +35,7 @@ members = [
   "crates/oslo-config",
   "crates/password-hashing",
   "crates/policy-regorus",
+  "crates/principal-index-raft",
   "crates/policy-store-driver-sql",
   "crates/resource-driver-sql",
   "crates/role-driver-sql",
@@ -179,6 +180,7 @@ openstack-keystone-idmapping-driver-sql = { version = "0.1", path = "crates/idma
 openstack-keystone-policy-store-driver-sql = { version = "0.1", path = "crates/policy-store-driver-sql/" }
 openstack-keystone-policy-regorus = { version = "0.1", path = "crates/policy-regorus/" }
 openstack-keystone-resource-driver-sql = { version = "0.1", path = "crates/resource-driver-sql/" }
+openstack-keystone-principal-index-raft = { version = "0.1", path = "crates/principal-index-raft/" }
 openstack-keystone-reservation-raft = { version = "0.1", path = "crates/reservation-raft/" }
 openstack-keystone-revoke-driver-raft = { version = "0.1", path = "crates/revoke-driver-raft/" }
 openstack-keystone-revoke-driver-sql = { version = "0.1", path = "crates/revoke-driver-sql/" }
