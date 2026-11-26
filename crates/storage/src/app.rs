@@ -86,7 +86,10 @@ mod storage_api;
 
 pub use dek_rotation::RotationTrigger;
 pub(crate) use init::adopt_cluster_dek;
-pub use init::{get_app_server, init_storage, normalize_rpc_addr};
+pub use init::{
+    GroupSource, get_app_server, init_reservation_storage, init_storage, init_storage_group,
+    normalize_rpc_addr,
+};
 
 /// gRPC metadata header used to communicate the leader's endpoint to clients.
 ///

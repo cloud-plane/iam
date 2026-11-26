@@ -1273,6 +1273,88 @@ impl ConfigSection for DistributedStorageConfiguration {
 
 register_section!(DistributedStorageConfiguration);
 
+/// Shortest heartbeat interval, in milliseconds, of the reservation group.
+///
+/// Its voters sit on different continents (ADR 0045 section 4), where a LAN
+/// timer would depose the leader on every RTT spike. A group member may
+/// raise it, never lower it.
+pub const RESERVATION_MIN_HEARTBEAT_MS: u64 = 200;
+
+/// The `[reservation_storage]` section: the Raft group that reserves
+/// mesh-wide names (ADR 0045 section 4).
+///
+/// It has every option of `[distributed_storage]`, and nothing is shared
+/// with it: the group has its own listener, database path, KEK and DEK. On
+/// top of the common validation it must use timers for a WAN: a heartbeat of
+/// at least [`RESERVATION_MIN_HEARTBEAT_MS`] and an election timeout of at
+/// least three heartbeats.
+#[derive(Debug, Deserialize, Clone)]
+#[serde(transparent)]
+pub struct ReservationStorageConfiguration(pub DistributedStorageConfiguration);
+
+impl ReservationStorageConfiguration {
+    /// Checks the timers for a WAN group.
+    pub fn validate_wan(&self) -> Result<(), validator::ValidationError> {
+        let cfg = &self.0;
+        if cfg.raft_heartbeat_interval_ms < RESERVATION_MIN_HEARTBEAT_MS {
+            return Err(
+                validator::ValidationError::new("reservation_heartbeat_too_small").with_message(
+                    format!(
+                        "raft_heartbeat_interval_ms ({}) of the reservation group must be at \
+                         least {RESERVATION_MIN_HEARTBEAT_MS}",
+                        cfg.raft_heartbeat_interval_ms
+                    )
+                    .into(),
+                ),
+            );
+        }
+        let min = cfg.raft_heartbeat_interval_ms.saturating_mul(3);
+        if cfg.raft_election_timeout_min_ms < min {
+            return Err(
+                validator::ValidationError::new("reservation_election_timeout_too_small")
+                    .with_message(
+                        format!(
+                            "raft_election_timeout_min_ms ({}) of the reservation group must be \
+                             at least three heartbeats ({min})",
+                            cfg.raft_election_timeout_min_ms
+                        )
+                        .into(),
+                    ),
+            );
+        }
+        Ok(())
+    }
+}
+
+impl ConfigSection for ReservationStorageConfiguration {
+    const NAME: &'static str = "reservation_storage";
+
+    fn finish(&mut self, ctx: &LoadCtx) -> Result<(), ConfigError> {
+        self.0.finish(ctx)
+    }
+
+    fn validate_with(&self, sections: &SectionBag) -> Result<(), ConfigError> {
+        self.0.validate_with(sections)?;
+        self.validate_wan()
+            .wrap_err("validating [reservation_storage] section")
+    }
+
+    fn watch_files(&self) -> Vec<PathBuf> {
+        self.0.watch_files()
+    }
+}
+
+/// The group configuration of `[reservation_storage]` in a snapshot.
+pub fn reservation_group_config(
+    view: &openstack_keystone_config::ConfigView<'_>,
+) -> Option<DistributedStorageConfiguration> {
+    view.section::<ReservationStorageConfiguration>()
+        .map(|s| s.0.clone())
+}
+
+// Absent on a node that is not a member of the reservation group.
+register_section!(ReservationStorageConfiguration);
+
 /// Build an unwatched [`ConfigManager`] around a default core configuration
 /// and the given `[distributed_storage]` section.
 ///
@@ -1319,6 +1401,25 @@ mod tests {
         assert!(validate_local_read_staleness(&cfg).is_err());
         cfg.local_read_max_staleness_ms = Some(1000);
         assert!(validate_local_read_staleness(&cfg).is_ok());
+    }
+
+    #[test]
+    fn reservation_group_needs_wan_timers() {
+        let mut cfg = ReservationStorageConfiguration(DistributedStorageConfiguration {
+            raft_heartbeat_interval_ms: 500,
+            raft_election_timeout_min_ms: 1500,
+            raft_election_timeout_max_ms: 3000,
+            ..Default::default()
+        });
+        assert!(cfg.validate_wan().is_ok());
+        cfg.0.raft_heartbeat_interval_ms = 50;
+        cfg.0.raft_election_timeout_min_ms = 300;
+        assert!(cfg.validate_wan().is_err());
+        cfg.0.raft_heartbeat_interval_ms = 300;
+        cfg.0.raft_election_timeout_min_ms = 600;
+        assert!(cfg.validate_wan().is_err());
+        cfg.0.raft_election_timeout_min_ms = 900;
+        assert!(cfg.validate_wan().is_ok());
     }
 
     #[test]

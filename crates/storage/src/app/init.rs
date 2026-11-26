@@ -663,7 +663,69 @@ pub async fn init_storage(config_manager: &Arc<ConfigManager>) -> Result<Arc<Sto
         .section::<DistributedStorageConfiguration>()
         .ok_or(StoreError::ConfigMissing)?
         .clone();
+    init_storage_group(config_manager, ds_config, GroupSource::Primary).await
+}
 
+/// Starts the reservation group (ADR 0045 section 4) from
+/// `[reservation_storage]`.
+///
+/// The group is a second Raft instance in the process. Serve it with
+/// [`get_app_server`] on the group's own listener (`node_listener_addr` of its
+/// section).
+pub async fn init_reservation_storage(
+    config_manager: &Arc<ConfigManager>,
+) -> Result<Arc<Storage>, StoreError> {
+    let ds_config = config_manager
+        .config
+        .read()
+        .await
+        .view()
+        .section::<crate::config::ReservationStorageConfiguration>()
+        .ok_or(StoreError::ConfigMissing)?
+        .0
+        .clone();
+    init_storage_group(
+        config_manager,
+        ds_config,
+        GroupSource::Secondary {
+            select: crate::config::reservation_group_config,
+        },
+    )
+    .await
+}
+
+/// Where a Raft group takes its configuration from and how it is exposed.
+///
+/// A process runs one primary group (the authority core, `[distributed_storage]`)
+/// and may run further groups that share nothing with it: their own listener,
+/// Fjall database, log, DEK and KEK (ADR 0045 section 4, reservation group).
+#[derive(Clone, Copy)]
+pub enum GroupSource {
+    /// The authority core, configured by `[distributed_storage]`.
+    Primary,
+    /// A secondary group. `select` returns its configuration from a loaded
+    /// snapshot and is used to follow certificate rotation. The group's
+    /// Raft gauges are not registered: they carry no group label yet and
+    /// would collide with the primary group's.
+    Secondary {
+        /// Selects the group's configuration from a loaded snapshot.
+        select: fn(
+            &openstack_keystone_config::ConfigView<'_>,
+        ) -> Option<DistributedStorageConfiguration>,
+    },
+}
+
+/// Starts a Raft group from an explicit configuration.
+///
+/// [`init_storage`] is this for the primary group. Every resource the group
+/// owns (database, KEK, TLS client, audit spool) is built from `ds_config`
+/// alone, so two groups in one process never share a log, a DEK or a
+/// keyspace.
+pub async fn init_storage_group(
+    config_manager: &Arc<ConfigManager>,
+    ds_config: DistributedStorageConfiguration,
+    source: GroupSource,
+) -> Result<Arc<Storage>, StoreError> {
     // Create a configuration for the raft instance.
     let raft_config = Arc::new(
         Config {
@@ -739,7 +801,12 @@ pub async fn init_storage(config_manager: &Arc<ConfigManager>) -> Result<Arc<Sto
     let log_nonce = log_store.nonce_manager();
     let logged_watermarks = log_store.logged_watermarks();
     tracing::debug!("Raft stores opened; initializing Raft TLS client...");
-    let tls_client = init_tls_watcher(config_manager).await?;
+    let tls_client = match source {
+        GroupSource::Primary => init_tls_watcher(config_manager).await?,
+        GroupSource::Secondary { select } => {
+            crate::network::init_tls_watcher_with(config_manager, select).await?
+        }
+    };
     tracing::debug!("Raft TLS client initialized.");
     let network = Arc::new(NetworkManager::new(tls_client.clone())?);
 
@@ -796,7 +863,7 @@ pub async fn init_storage(config_manager: &Arc<ConfigManager>) -> Result<Arc<Sto
 
     // ADR 0031 / 0040 metrics: the Raft gauges read the live openraft
     // metrics on every collection; the audit spool exposes its atomics.
-    {
+    if matches!(source, GroupSource::Primary) {
         let meter = openstack_keystone_telemetry::metrics::meter();
         let metrics_rx = raft.metrics();
         let progress_rx = metrics_rx.clone();

@@ -1107,48 +1107,51 @@ pub async fn get_spiffe_grpc_channel(
 pub async fn init_tls_watcher(
     config_manager: &Arc<ConfigManager>,
 ) -> Result<RaftTlsClient, StoreError> {
-    let spiffe_cfg = {
+    init_tls_watcher_with(config_manager, primary_section).await
+}
+
+/// The `[distributed_storage]` section of a snapshot.
+fn primary_section(
+    view: &openstack_keystone_config::ConfigView<'_>,
+) -> Option<DistributedStorageConfiguration> {
+    view.section::<DistributedStorageConfiguration>().cloned()
+}
+
+/// [`init_tls_watcher`] for a group whose configuration `select` picks from
+/// a snapshot, so that a second Raft group in the process follows its own
+/// section's certificates.
+pub async fn init_tls_watcher_with(
+    config_manager: &Arc<ConfigManager>,
+    select: fn(
+        &openstack_keystone_config::ConfigView<'_>,
+    ) -> Option<DistributedStorageConfiguration>,
+) -> Result<RaftTlsClient, StoreError> {
+    let ds = {
         let cfg = config_manager.config.read().await;
-        match cfg
-            .view()
-            .section::<DistributedStorageConfiguration>()
-            .map(|ds| &ds.tls_configuration)
-        {
-            Some(RaftTlsConfiguration::Spiffe(spiffe_cfg)) => Some(spiffe_cfg.clone()),
-            _ => None,
-        }
+        select(&cfg.view()).ok_or(StoreError::TlsConfigMissing)?
     };
 
-    if let Some(spiffe_cfg) = spiffe_cfg {
+    if let RaftTlsConfiguration::Spiffe(spiffe_cfg) = &ds.tls_configuration {
         // Present the configured identity per role (or the node's own legacy
         // identity: first allowed peer SVID, else the
         // `<spiffe_path_prefix>node` convention), never some other SVID the
         // process happens to also hold.
-        return init_spiffe_raft_tls(&spiffe_cfg).await;
+        return init_spiffe_raft_tls(spiffe_cfg).await;
     }
 
     // Static TLS fallback: load certificates from config files.
-    let initial_config = {
-        let cfg = config_manager.config.read().await;
-        get_client_tls_config(
-            cfg.view()
-                .section::<DistributedStorageConfiguration>()
-                .ok_or(StoreError::TlsConfigMissing)?,
-        )?
-    };
-
-    let (tx, rx) = watch::channel(initial_config);
+    let (tx, rx) = watch::channel(get_client_tls_config(&ds)?);
 
     let cm_clone = config_manager.clone();
     let mut reload_rx = config_manager.notify_tx.subscribe();
     tokio::spawn(async move {
         while reload_rx.recv().await.is_ok() {
             let cfg = cm_clone.config.read().await;
-            let Some(ds) = cfg.view().section::<DistributedStorageConfiguration>() else {
-                error!("failed to reload TLS certificates: [distributed_storage] is gone");
+            let Some(ds) = select(&cfg.view()) else {
+                error!("failed to reload TLS certificates: the storage section is gone");
                 continue;
             };
-            match get_client_tls_config(ds) {
+            match get_client_tls_config(&ds) {
                 Ok(new_config) => {
                     let _ = tx.send(new_config);
                 }
