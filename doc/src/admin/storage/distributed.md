@@ -1895,7 +1895,7 @@ forever. Only the holder confirms, renames or releases. Domain names, role names
 and base URLs are compared case insensitively (a base URL also without a
 trailing slash); domain ids exactly.
 
-### Principal pointers (ADR 0045 section 8)
+## Principal pointers (ADR 0045 section 8)
 
 Grants are keyed by their target, so "where can this user act" would scatter over
 every authority. The authority that holds a grant for a principal of another
@@ -1920,3 +1920,39 @@ index and answers locally (`keystone-principal-index-raft`).
 
 The crate is not wired into the assignment providers or started from
 configuration yet; both are follow-ups.
+
+## Availability levels (ADR 0045 section 2.1)
+
+Only level A1 is a deployment choice today. A2 to A4 (session continuation,
+no-replay methods and password or MFA at replicas) need the sender-constrained
+tokens of ADR 0043, the per-site continuation keys and the site break-glass deny
+store, and wait for the open items of the ADR; they are not available.
+
+### A1: spread the core across sites
+
+Run the three voters of the authority in three sites of one jurisdiction. The
+authority then keeps logins and writes through the loss of a site. Each commit
+costs one round trip between the two nearest voters, so the sites must stay
+within the rule of ADR 0045 milestone M1 (about 50 ms apart; for example three EU
+regions).
+
+1. Use the `per_site` KEK provider with one entry per site, so that no key is
+   shared between sites and every site opens the DEK with its own key (see
+   [Per-site KEK](#per-site-kek)). Keep the same `sites` list on every node.
+2. Bind the peers by their SPIFFE ID (`peers`, see [Peer Roles](#peer-roles)),
+   one `voter` entry per node, and list the trust domain of each site in
+   `trust_domains`.
+3. Raise `raft_heartbeat_interval_ms` and the election timeouts above the round
+   trip between the farthest two sites. Keep the election timeout at least
+   three heartbeats and well above the round trip, or an RTT spike deposes the
+   leader.
+4. Set `local_read_max_staleness_ms` if keystones read from followers: it is at
+   least twice the heartbeat interval.
+5. Add the nodes one after the other (see [Adding Nodes](#adding-nodes)) and
+   check that each is a voter before the next site goes in. With three voters
+   one site can be lost; losing two stops writes.
+
+Losing one site does not need any action: the two remaining voters elect a
+leader and the missing node catches up when it returns, through the log or a
+snapshot. A site that is lost for good is removed with `remove-peer`, and its site key
+is removed from the `sites` list of the other nodes.
