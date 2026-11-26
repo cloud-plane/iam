@@ -1847,3 +1847,50 @@ presents its own identity to the source as a `feed-consumer`, so that identity
 needs the role (a `peers` entry at the source) and a feed grant for the kinds
 and domains it mirrors. A sink must be idempotent: removing a missing record is
 a no-op and a set replaces.
+
+## Reservation group (ADR 0045 section 4)
+
+A mesh keeps domain ids, domain names, global role names and authority base URLs
+unique with a separate Raft group that has one voter per authority. A node that
+is a member sets a `[reservation_storage]` section. It takes every option of
+`[distributed_storage]` and shares nothing with it:
+
+- its own listener (`node_listener_addr`), so a second Raft gRPC server runs
+  beside the core's;
+- its own database `path`, log and DEK; the DEK is wrapped by the group's own
+  KEK, so a site key of the core does not unlock it;
+- its own peer table (`peers`, `trust_domains`): the voters of the group are
+  listed there, not in `[distributed_storage]`.
+
+```toml
+[reservation_storage]
+node_id = 1
+node_cluster_addr = "https://keystone-eu.example.org:8301"
+node_listener_addr = "0.0.0.0:8301"
+path = "/var/lib/keystone/reservations"
+kek_provider = "pkcs11"
+raft_heartbeat_interval_ms = 500
+raft_election_timeout_min_ms = 2000
+raft_election_timeout_max_ms = 4000
+```
+
+Because the voters sit on different continents, the group refuses LAN timers: a
+heartbeat under 200 ms, or an election timeout under three heartbeats, fails the
+configuration load. Set both from the round trip between the two farthest sites
+(a commit crosses it once). A group of two voters needs both for every
+reservation; add a third voter in a third location to keep registering while one
+authority is cut off. The group holds names only, so that voter may sit in any
+jurisdiction.
+
+The group's Raft gauges are not exported yet: they would collide with the
+core's, as they carry no group label.
+
+The `keystone-reservation-raft` crate keeps the reservations: `(kind, value)`
+maps to `(authority, reference)` with a `pending` or `confirmed` state. A claim
+commits if the value is free and otherwise fails with the holder. The home
+confirms a claim once it has published the registry record, and a reconciler
+confirms the pending claims whose record exists and releases the rest after a
+grace period, so a crash between claim and publication does not hold a name
+forever. Only the holder confirms, renames or releases. Domain names, role names
+and base URLs are compared case insensitively (a base URL also without a
+trailing slash); domain ids exactly.

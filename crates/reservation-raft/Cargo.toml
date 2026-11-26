@@ -1,0 +1,25 @@
+[package]
+name = "openstack-keystone-reservation-raft"
+description = "Mesh-wide name reservations on a dedicated Raft group (ADR 0045)"
+version = "0.1.0"
+edition.workspace = true
+license.workspace = true
+authors.workspace = true
+rust-version.workspace = true
+repository.workspace = true
+homepage.workspace = true
+exclude.workspace = true
+
+[dependencies]
+async-trait.workspace = true
+openstack-keystone-distributed-storage.workspace = true
+serde = { workspace = true, features = ["derive"] }
+thiserror.workspace = true
+tracing.workspace = true
+
+[dev-dependencies]
+openstack-keystone-distributed-storage = { workspace = true, features = ["mock"] }
+tokio = { workspace = true, features = ["macros", "rt", "rt-multi-thread"] }
+
+[lints]
+workspace = true
