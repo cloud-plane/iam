@@ -42,6 +42,7 @@ pub mod bootstrap;
 pub mod listeners;
 pub mod opa;
 pub mod raft;
+pub mod revoke_feed;
 pub mod router;
 pub mod shutdown;
 pub mod tracing_init;
@@ -179,6 +180,7 @@ pub async fn run() -> Result<(), Report> {
     debug!("Starting Raft gRPC listener and cluster join...");
     raft::start(&startup, &mut handles).await?;
     debug_elapsed(listen_phase_start, "raft_start");
+    revoke_feed::start(&startup, &mut handles)?;
     debug!("Starting embedded OPA...");
     opa::spawn(&startup, &mut handles).await?;
     debug_elapsed(listen_phase_start, "opa_spawn");

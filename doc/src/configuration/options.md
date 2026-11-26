@@ -58,7 +58,7 @@ starts without telemetry.
 | `[auth]`                       | `methods`                                                                                                                        |
 | `[token]`                      | `provider`, `expiration`                                                                                                         |
 | `[fernet_tokens]`              | `key_repository`, `max_active_keys`, `insecure_allow_null_key`                                                                   |
-| `[jws_tokens]`                 | `key_repository`, `insecure_allow_null_key`                                                                                      |
+| `[jws_tokens]`                 | `key_repository`, `insecure_allow_null_key`, `issuer`, `trusted_authorities`                                                                                    |
 | `[credential]`                 | `driver`, `key_repository`, `insecure_allow_null_key`, `auth_ttl`                                                                |
 | `[application_credential]`     | `driver`, `reject_unenforced_access_rules`                                                                                       |
 | `[trust]`                      | `driver`, `allow_redelegation`, `max_redelegation_count`                                                                         |
@@ -82,7 +82,7 @@ See [Fernet tokens](../admin/tokens/fernet.md) and
 | `[resource]`          | `driver`, `caching`                                                                                                                                                                                                                             |
 | `[role]`              | `driver`, `list_limit`, `caching`, `cache_time`                                                                                                                                                                                                 |
 | `[limit]`             | `driver`, `list_limit`, `enforcement_model`                                                                                                                                                                                                     |
-| `[revoke]`            | `driver`, `expiration_buffer`, `revocation_max_staleness`                                                                                                                                                                                       |
+| `[revoke]`            | `driver`, `expiration_buffer`, `revocation_max_staleness`, `peer_authorities`                                                                                                                                                                                   |
 | `[idmapping]`         | `driver`                                                                                                                                                                                                                                        |
 | `[token_restriction]` | `driver`                                                                                                                                                                                                                                        |
 

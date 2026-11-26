@@ -1818,10 +1818,47 @@ arrive, `keystone_revocation_head_age_seconds{authority}` how long ago the
 stream was last heard from, and `keystone_revocation_stale_decisions_total`
 counts the requests that were marked.
 
-The issuer of a token is not part of the token payload yet, and no node starts
-a feed consumer for another authority yet. Until both exist, every token
-validates as local, nothing is marked stale, and a mirrored event revokes
-nothing: this fail-closed gate is not in effect.
+#### Joining a mesh: issuer, trusted authorities and consumers
+
+Origin matching and the fail-closed gate need the issuer of a token, which only
+the JWS token provider can carry (the `iss` claim); Fernet tokens are always
+local. Configure each authority of the mesh with:
+
+```ini
+[token]
+provider = jws
+
+[jws_tokens]
+# Name of this authority: the iss of the tokens it signs.
+issuer = authority-a
+
+# Authorities whose tokens are accepted, keyed by their iss.
+[jws_tokens.trusted_authorities.authority-b]
+algorithm = ES256
+public_key_files = /etc/keystone/mesh/authority-b/public.pem
+
+[revoke]
+driver = raft
+
+# Authority = Raft address of any voter of it. One priority consumer per entry
+# is started on every node.
+[revoke.peer_authorities]
+authority-b = authority-b.example.org:7443
+```
+
+A token that verifies against this authority's own keys is local, whatever its
+`iss` says. Otherwise it is accepted only if it names a trusted authority and
+verifies against that authority's public keys; its issuer is then recorded on
+the security context. A token signed by an unknown key, or by a trusted
+authority's key while naming another authority, is rejected. The source must
+grant this node the `revocation` kind (`keystone-manage storage feed-grants`),
+and an authority in `trusted_authorities` that has no entry in
+`peer_authorities` stays stale: its tokens validate, but the sensitive actions
+deny them.
+
+A user, project or domain that a foreign token names must be resolvable on this
+authority for the token to authorize anything; replicating them is a separate
+area of ADR 0045 and is not part of the revocation feed.
 
 #### Keyspace revisions
 

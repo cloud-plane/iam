@@ -11,6 +11,8 @@
 // limitations under the License.
 //
 // SPDX-License-Identifier: Apache-2.0
+use std::collections::HashMap;
+
 use serde::Deserialize;
 
 use crate::common::{default_cache_time, default_sql_driver, default_true};
@@ -53,11 +55,23 @@ pub struct RevokeProvider {
     /// (`input.credentials.revocation_stale`). The revocation bound of the
     /// mesh is 30 seconds.
     ///
-    /// Not in effect yet: the token carries no issuer and no node starts a
-    /// feed consumer for another authority, so no request is ever marked
-    /// stale.
+    /// Effective for the authorities of `peer_authorities`, with tokens of
+    /// the JWS provider that name the authority in `[jws_tokens]
+    /// trusted_authorities`. A token of an authority this node receives no
+    /// stream from is stale as well.
     #[serde(default = "default_revocation_max_staleness")]
     pub revocation_max_staleness: u64,
+
+    /// `[revoke.peer_authorities]`: the other authorities whose revocations
+    /// this node applies, as `<authority> = <host:port>` where `<authority>`
+    /// is the `iss` of their tokens and `<host:port>` the Raft address of any
+    /// voter of theirs. Every node of the authority starts one priority feed
+    /// consumer per entry, which needs `driver = raft`. The source must grant
+    /// this node the `revocation` kind (`keystone-manage storage
+    /// feed-grants`). An event is applied only to the tokens of the authority
+    /// it came from.
+    #[serde(default)]
+    pub peer_authorities: HashMap<String, String>,
 }
 
 impl Default for RevokeProvider {
@@ -68,6 +82,7 @@ impl Default for RevokeProvider {
             driver: default_sql_driver(),
             expiration_buffer: default_expiration_buffer(),
             revocation_max_staleness: default_revocation_max_staleness(),
+            peer_authorities: HashMap::new(),
         }
     }
 }

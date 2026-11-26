@@ -369,7 +369,11 @@ rule; reads and low-risk actions keep working during a partition. The flag is
 never derived from the token scope or from client input, and an unknown or
 unreachable stream is stale, not fresh. A foreign revocation event revokes only
 tokens whose issuer is its origin, and the origin is the configured
-subscription, never the event body.
+subscription (`[revoke.peer_authorities]`), never the event body. The issuer of
+a token is its `iss` claim, accepted only after the signature verified against
+the public keys configured for that authority in `[jws_tokens]
+trusted_authorities`; a token that verifies against this authority's own keys is
+local, whatever it claims.
 
 Today the sensitive set is `identity.trust.create`,
 `identity.credential.{create,update}` and `identity.user.{update,delete}`; a new
