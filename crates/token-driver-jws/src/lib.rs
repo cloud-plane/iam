@@ -21,15 +21,17 @@
 use std::fmt;
 use std::sync::Arc;
 
-use jsonwebtoken::{Header, Validation, decode, encode};
+use std::collections::HashMap;
+
+use jsonwebtoken::{DecodingKey, Header, Validation, decode, encode};
 use openstack_keystone_config::{Config, TokenProviderDriver};
 use openstack_keystone_core::plugin_manager::BackendRegistration;
 use openstack_keystone_core::token::TokenProviderError;
 use openstack_keystone_core::token::backend::TokenBackend;
 use openstack_keystone_core_types::token::TokenPayload;
 use openstack_keystone_key_repository::asymmetric::{
-    ActiveKeys, AsymmetricKeyRepository, FilesystemAsymmetricKeySource, to_decoding_key,
-    to_encoding_key,
+    ActiveKeys, AsymmetricKeyRepository, FilesystemAsymmetricKeySource, PublicKey,
+    SigningAlgorithm, to_decoding_key, to_encoding_key,
 };
 
 mod claims;
@@ -37,7 +39,7 @@ mod config;
 pub mod error;
 
 pub use claims::JwsClaims;
-pub use config::JwsTokensConfig;
+pub use config::{JwsTokensConfig, TrustedAuthority};
 pub use error::JwsDriverError;
 pub use openstack_keystone_key_repository::asymmetric::jwt_algorithm;
 
@@ -65,6 +67,22 @@ inventory::submit! {
     }
 }
 
+/// The `iss` claim of a token, read without verifying the signature.
+///
+/// Only ever used to choose which keys to verify with.
+fn unverified_issuer(credential: &str) -> Option<String> {
+    use base64::Engine;
+    let payload = credential.split('.').nth(1)?;
+    let bytes = base64::engine::general_purpose::URL_SAFE_NO_PAD
+        .decode(payload)
+        .ok()?;
+    serde_json::from_slice::<serde_json::Value>(&bytes)
+        .ok()?
+        .get("iss")?
+        .as_str()
+        .map(str::to_owned)
+}
+
 /// JWS token provider.
 pub struct JwsTokenProvider {
     repo: AsymmetricKeyRepository<FilesystemAsymmetricKeySource>,
@@ -72,6 +90,13 @@ pub struct JwsTokenProvider {
     /// (called on every request) and require it to have already run,
     /// mirroring `FernetTokenProvider`'s `cached` field.
     active: Option<ActiveKeys>,
+    /// This authority's name, the `iss` of its tokens.
+    issuer: Option<String>,
+    /// Keys of the trusted authorities as configured; read by
+    /// [`Self::load_keys`].
+    trusted_config: HashMap<String, TrustedAuthority>,
+    /// Verification keys of the trusted authorities, by issuer.
+    trusted: HashMap<String, Vec<PublicKey>>,
 }
 
 impl fmt::Debug for JwsTokenProvider {
@@ -83,9 +108,16 @@ impl fmt::Debug for JwsTokenProvider {
 impl JwsTokenProvider {
     /// Construct a new provider. Call [`Self::load_keys`] before use.
     pub fn new(config: JwsTokensConfig) -> Self {
-        let repo =
-            AsymmetricKeyRepository::new(FilesystemAsymmetricKeySource::new(config.key_repository));
-        Self { repo, active: None }
+        let repo = AsymmetricKeyRepository::new(FilesystemAsymmetricKeySource::new(
+            config.key_repository.clone(),
+        ));
+        Self {
+            repo,
+            active: None,
+            issuer: config.issuer,
+            trusted_config: config.trusted_authorities,
+            trusted: HashMap::new(),
+        }
     }
 
     /// Load (or reload) the active signing keys from the configured key
@@ -97,7 +129,73 @@ impl JwsTokenProvider {
     /// loudly at startup rather than silently falling back to Fernet.
     pub async fn load_keys(&mut self) -> Result<(), JwsDriverError> {
         self.active = Some(self.repo.load_active().await?);
+        self.load_trusted().await
+    }
+
+    /// Read the public keys of the trusted authorities.
+    ///
+    /// An authority without a key could never verify a token, so it is a
+    /// configuration error rather than a silently empty entry.
+    async fn load_trusted(&mut self) -> Result<(), JwsDriverError> {
+        let mut trusted = HashMap::new();
+        for (issuer, authority) in &self.trusted_config {
+            let algorithm = match authority.algorithm.as_str() {
+                "ES256" => SigningAlgorithm::Es256,
+                "RS256" => SigningAlgorithm::Rs256,
+                other => {
+                    return Err(JwsDriverError::KeyConversion(format!(
+                        "trusted authority {issuer}: unsupported algorithm {other}"
+                    )));
+                }
+            };
+            if authority.public_key_files.is_empty() {
+                return Err(JwsDriverError::KeyConversion(format!(
+                    "trusted authority {issuer} has no public_key_files"
+                )));
+            }
+            let mut keys = Vec::new();
+            for file in &authority.public_key_files {
+                let text = tokio::fs::read_to_string(file).await.map_err(|e| {
+                    JwsDriverError::KeyConversion(format!(
+                        "reading {} of authority {issuer}: {e}",
+                        file.display()
+                    ))
+                })?;
+                keys.push(PublicKey::from_pem(algorithm, &text)?);
+            }
+            trusted.insert(issuer.clone(), keys);
+        }
+        self.trusted = trusted;
         Ok(())
+    }
+
+    /// Verify `credential` against `keys`, requiring the issuer when given.
+    fn verify(
+        credential: &str,
+        keys: impl Iterator<Item = (jsonwebtoken::Algorithm, Result<DecodingKey, JwsDriverError>)>,
+        issuer: Option<&str>,
+    ) -> Result<JwsClaims, JwsDriverError> {
+        let mut last_error: Option<JwsDriverError> = None;
+        for (algorithm, key) in keys {
+            let key = match key {
+                Ok(key) => key,
+                Err(error) => {
+                    last_error = Some(error);
+                    continue;
+                }
+            };
+            let mut validation = Validation::new(algorithm);
+            validation.validate_exp = true;
+            if let Some(issuer) = issuer {
+                validation.set_issuer(&[issuer]);
+                validation.set_required_spec_claims(&["exp", "iss"]);
+            }
+            match decode::<JwsClaims>(credential, &key, &validation) {
+                Ok(data) => return Ok(data.claims),
+                Err(error) => last_error = Some(JwsDriverError::from(error)),
+            }
+        }
+        Err(last_error.unwrap_or(JwsDriverError::KeysNotLoaded))
     }
 
     fn active(&self) -> Result<&ActiveKeys, JwsDriverError> {
@@ -111,46 +209,71 @@ impl TokenBackend for JwsTokenProvider {
     fn set_config(&mut self, _config: Config) {}
 
     fn decode(&self, credential: &str) -> Result<TokenPayload, TokenProviderError> {
+        self.decode_with_issuer(credential).map(|(token, _)| token)
+    }
+
+    /// A token signed by one of this authority's keys is local, whatever its
+    /// `iss` claim says. Otherwise it must verify against the keys of the
+    /// authority it names, and then carries that authority as its issuer; a
+    /// token that names an authority but verifies against none of its keys
+    /// is invalid.
+    fn decode_with_issuer(
+        &self,
+        credential: &str,
+    ) -> Result<(TokenPayload, Option<String>), TokenProviderError> {
         let active = self.active().map_err(TokenProviderError::from)?;
+        let invalid = |source: JwsDriverError| TokenProviderError::InvalidToken {
+            source: Box::new(source),
+        };
 
         // Try Primary first, then Previous (multi-generational tolerance
         // during a rotation's grace window — same principle as ADR 0026
         // §3's JWKS publishing, scoped here to whatever this provider's
         // own key source currently holds).
-        let candidates = std::iter::once(&active.primary).chain(active.previous.iter());
-        let mut last_error: Option<JwsDriverError> = None;
-        for material in candidates {
-            let decoding_key = match to_decoding_key(material) {
-                Ok(key) => key,
-                Err(error) => {
-                    last_error = Some(JwsDriverError::from(error));
-                    continue;
-                }
-            };
-            let mut validation = Validation::new(jwt_algorithm(material.algorithm));
-            validation.validate_exp = true;
-            match decode::<JwsClaims>(credential, &decoding_key, &validation) {
-                Ok(token_data) => {
-                    return token_data.claims.into_token_payload().map_err(|error| {
-                        TokenProviderError::InvalidToken {
-                            source: Box::new(error),
-                        }
-                    });
-                }
-                Err(error) => last_error = Some(JwsDriverError::from(error)),
+        let local = std::iter::once(&active.primary)
+            .chain(active.previous.iter())
+            .map(|material| {
+                (
+                    jwt_algorithm(material.algorithm),
+                    to_decoding_key(material).map_err(JwsDriverError::from),
+                )
+            });
+        let local_error = match Self::verify(credential, local, None) {
+            Ok(claims) => {
+                return claims
+                    .into_token_payload()
+                    .map(|token| (token, None))
+                    .map_err(invalid);
             }
-        }
-        match last_error {
-            Some(source) => Err(TokenProviderError::InvalidToken {
-                source: Box::new(source),
-            }),
-            None => Err(JwsDriverError::KeysNotLoaded.into()),
-        }
+            Err(error) => error,
+        };
+
+        // Not ours. Which authority claims it is read from the unverified
+        // payload only to pick the keys to verify against; the issuer is
+        // enforced by the verification itself.
+        let Some(issuer) = unverified_issuer(credential) else {
+            return Err(invalid(local_error));
+        };
+        let Some(keys) = self.trusted.get(&issuer) else {
+            return Err(invalid(local_error));
+        };
+        let foreign = keys.iter().map(|key| {
+            (
+                jwt_algorithm(key.algorithm),
+                key.decoding_key().map_err(JwsDriverError::from),
+            )
+        });
+        let claims = Self::verify(credential, foreign, Some(&issuer)).map_err(invalid)?;
+        claims
+            .into_token_payload()
+            .map(|token| (token, Some(issuer)))
+            .map_err(invalid)
     }
 
     fn encode(&self, token: &TokenPayload) -> Result<String, TokenProviderError> {
         let active = self.active().map_err(TokenProviderError::from)?;
-        let claims = JwsClaims::try_from(token).map_err(TokenProviderError::from)?;
+        let mut claims = JwsClaims::try_from(token).map_err(TokenProviderError::from)?;
+        claims.iss.clone_from(&self.issuer);
         let encoding_key = to_encoding_key(&active.primary)
             .map_err(JwsDriverError::from)
             .map_err(TokenProviderError::from)?;
@@ -292,5 +415,119 @@ mod tests {
             TokenPayload::Unscoped(payload) if payload.user_id == "previous-key-user"
         ));
         Ok(())
+    }
+
+    fn sample_token() -> TokenPayload {
+        TokenPayload::Unscoped(UnscopedPayload {
+            user_id: "user-1".into(),
+            methods: vec!["password".into()],
+            audit_ids: vec!["abc123".into()],
+            expires_at: chrono::Utc::now() + chrono::Duration::hours(1),
+            issued_at: chrono::Utc::now(),
+            ..Default::default()
+        })
+    }
+
+    /// A provider named `issuer` that trusts `peer` through `peer_key`.
+    async fn mesh_provider(
+        dir: &std::path::Path,
+        issuer: &str,
+        peer: Option<(&str, std::path::PathBuf)>,
+    ) -> JwsTokenProvider {
+        openstack_keystone_jwt_crypto::install().unwrap();
+        let mut config = setup_config(dir);
+        config.issuer = Some(issuer.to_owned());
+        if let Some((name, key)) = peer {
+            config.trusted_authorities.insert(
+                name.to_owned(),
+                TrustedAuthority {
+                    algorithm: "ES256".into(),
+                    public_key_files: vec![key],
+                },
+            );
+        }
+        let mut provider = JwsTokenProvider::new(config);
+        provider.repo.setup(SigningAlgorithm::Es256).await.unwrap();
+        provider.load_keys().await.unwrap();
+        provider
+    }
+
+    #[tokio::test]
+    async fn test_own_token_is_local_even_with_issuer_claim() {
+        let dir = tempfile::tempdir().unwrap();
+        let a = mesh_provider(dir.path(), "authority-a", None).await;
+        let credential = a.encode(&sample_token()).unwrap();
+        let (_, issuer) = a.decode_with_issuer(&credential).unwrap();
+        assert_eq!(issuer, None);
+    }
+
+    #[tokio::test]
+    async fn test_trusted_authority_token_carries_its_issuer() {
+        let dir_a = tempfile::tempdir().unwrap();
+        let dir_b = tempfile::tempdir().unwrap();
+        let a = mesh_provider(dir_a.path(), "authority-a", None).await;
+        let b = mesh_provider(
+            dir_b.path(),
+            "authority-b",
+            Some(("authority-a", dir_a.path().join("public.pem"))),
+        )
+        .await;
+        let credential = a.encode(&sample_token()).unwrap();
+        let (token, issuer) = b.decode_with_issuer(&credential).unwrap();
+        assert_eq!(issuer.as_deref(), Some("authority-a"));
+        assert_eq!(token.user_id(), "user-1");
+    }
+
+    #[tokio::test]
+    async fn test_forged_issuer_is_rejected() {
+        let dir_a = tempfile::tempdir().unwrap();
+        let dir_b = tempfile::tempdir().unwrap();
+        let dir_evil = tempfile::tempdir().unwrap();
+        let _a = mesh_provider(dir_a.path(), "authority-a", None).await;
+        let b = mesh_provider(
+            dir_b.path(),
+            "authority-b",
+            Some(("authority-a", dir_a.path().join("public.pem"))),
+        )
+        .await;
+        // Signed with a key nobody trusts, claiming to be authority-a.
+        let evil = mesh_provider(dir_evil.path(), "authority-a", None).await;
+        let credential = evil.encode(&sample_token()).unwrap();
+        assert!(b.decode_with_issuer(&credential).is_err());
+        assert!(b.decode(&credential).is_err());
+    }
+
+    #[tokio::test]
+    async fn test_trusted_authority_cannot_claim_another_issuer() {
+        // authority-a is trusted, but its key must not vouch for a token that
+        // names authority-c.
+        let dir_a = tempfile::tempdir().unwrap();
+        let dir_b = tempfile::tempdir().unwrap();
+        let a_as_c = mesh_provider(dir_a.path(), "authority-c", None).await;
+        let b = mesh_provider(
+            dir_b.path(),
+            "authority-b",
+            Some(("authority-a", dir_a.path().join("public.pem"))),
+        )
+        .await;
+        let credential = a_as_c.encode(&sample_token()).unwrap();
+        assert!(b.decode_with_issuer(&credential).is_err());
+    }
+
+    #[tokio::test]
+    async fn test_trusted_authority_without_keys_fails_to_load() {
+        openstack_keystone_jwt_crypto::install().unwrap();
+        let dir = tempfile::tempdir().unwrap();
+        let mut config = setup_config(dir.path());
+        config.trusted_authorities.insert(
+            "authority-a".into(),
+            TrustedAuthority {
+                algorithm: "ES256".into(),
+                public_key_files: vec![],
+            },
+        );
+        let mut provider = JwsTokenProvider::new(config);
+        provider.repo.setup(SigningAlgorithm::Es256).await.unwrap();
+        assert!(provider.load_keys().await.is_err());
     }
 }

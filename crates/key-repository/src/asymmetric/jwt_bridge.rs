@@ -83,6 +83,61 @@ pub fn to_decoding_key(material: &KeyMaterial) -> Result<DecodingKey, KeyReposit
     }
 }
 
+/// A public key of another authority, used only to verify the tokens it
+/// signed (ADR 0045 section 9). It holds no private half.
+#[derive(Clone, Debug)]
+pub struct PublicKey {
+    /// The algorithm the key verifies.
+    pub algorithm: SigningAlgorithm,
+    /// SubjectPublicKeyInfo DER.
+    pub public_key_der: Vec<u8>,
+}
+
+impl PublicKey {
+    /// Parse a SubjectPublicKeyInfo PEM.
+    ///
+    /// # Errors
+    ///
+    /// [`KeyRepositoryError::Crypto`] when `pem_text` is not a PEM or the
+    /// key is not an SPKI of `algorithm`.
+    pub fn from_pem(
+        algorithm: SigningAlgorithm,
+        pem_text: &str,
+    ) -> Result<Self, KeyRepositoryError> {
+        let public_key_der = pem::parse(pem_text)
+            .map_err(|e| KeyRepositoryError::Crypto(format!("invalid public key PEM: {e}")))?
+            .into_contents();
+        let key = Self {
+            algorithm,
+            public_key_der,
+        };
+        // Fail on a key of the wrong shape now, not at the first token.
+        key.decoding_key()?;
+        Ok(key)
+    }
+
+    /// The `jsonwebtoken` [`DecodingKey`] of this key.
+    ///
+    /// # Errors
+    ///
+    /// [`KeyRepositoryError::Crypto`] when the key is not an SPKI of its
+    /// algorithm.
+    pub fn decoding_key(&self) -> Result<DecodingKey, KeyRepositoryError> {
+        match self.algorithm {
+            SigningAlgorithm::Es256 => p256_point_from_spki(&self.public_key_der)
+                .map(DecodingKey::from_ec_der)
+                .ok_or_else(|| {
+                    KeyRepositoryError::Crypto("EC public key: not a P-256 SPKI".into())
+                }),
+            SigningAlgorithm::Rs256 => rsa_pkcs1_from_spki(&self.public_key_der)
+                .map(DecodingKey::from_rsa_der)
+                .ok_or_else(|| {
+                    KeyRepositoryError::Crypto("RSA public key: not an RSA SPKI".into())
+                }),
+        }
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use jsonwebtoken::{Header, Validation, decode, encode};

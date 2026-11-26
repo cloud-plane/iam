@@ -35,6 +35,10 @@ use crate::error::JwsDriverError;
 /// The Python-Keystone-compatible v3 JWS claim set.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct JwsClaims {
+    /// Issuer: the authority that signed the token. Absent on tokens of a
+    /// deployment that configures no `[jws_tokens] issuer`.
+    #[serde(skip_serializing_if = "Option::is_none", default)]
+    pub iss: Option<String>,
     /// Subject: the token's `user_id`.
     pub sub: String,
     /// Expiration, Unix seconds.
@@ -82,6 +86,7 @@ impl TryFrom<&TokenPayload> for JwsClaims {
                     audit_ids: &[String],
                     expires_at: DateTime<Utc>,
                     iat: DateTime<Utc>| JwsClaims {
+            iss: None,
             sub: user_id.to_string(),
             exp: to_unix(expires_at),
             iat: to_unix(iat),

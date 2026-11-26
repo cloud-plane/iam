@@ -18,6 +18,7 @@
 //! keys, in a Python-Keystone-compatible on-disk layout (`keystone-manage
 //! create_jws_keypair`) so filesystem keys shared with Python Keystone
 //! nodes work unchanged. Selected via `[token] provider = jws`.
+use std::collections::HashMap;
 use std::path::PathBuf;
 
 use oslo_config::{ConfigSection, register_section};
@@ -36,6 +37,36 @@ pub struct JwsTokensConfig {
     /// real deployment. Mirrors `[fernet_tokens] insecure_allow_null_key`.
     #[serde(default)]
     pub insecure_allow_null_key: bool,
+
+    /// Name of this authority, written as the `iss` claim of the tokens it
+    /// signs. Other authorities that accept its tokens name it the same way
+    /// in `trusted_authorities` and in the revocation feed source. Unset in
+    /// a deployment that is not part of a mesh.
+    #[serde(default)]
+    pub issuer: Option<String>,
+
+    /// `[jws_tokens.trusted_authorities.<issuer>]`: the other authorities
+    /// whose tokens are accepted, keyed by their `iss`. A token is accepted
+    /// from an authority only when it verifies against one of that
+    /// authority's keys, and a revocation received from that authority
+    /// revokes only such tokens (ADR 0045 section 9).
+    #[serde(default)]
+    pub trusted_authorities: HashMap<String, TrustedAuthority>,
+}
+
+/// Keys of another authority.
+#[derive(Debug, Deserialize, Clone)]
+pub struct TrustedAuthority {
+    /// `ES256` (the default) or `RS256`.
+    #[serde(default = "default_algorithm")]
+    pub algorithm: String,
+    /// SubjectPublicKeyInfo PEM files. More than one allows a rotation.
+    #[serde(default)]
+    pub public_key_files: Vec<PathBuf>,
+}
+
+fn default_algorithm() -> String {
+    "ES256".to_owned()
 }
 
 impl ConfigSection for JwsTokensConfig {
@@ -55,6 +86,8 @@ impl Default for JwsTokensConfig {
         Self {
             key_repository: default_jws_key_repository(),
             insecure_allow_null_key: false,
+            issuer: None,
+            trusted_authorities: HashMap::new(),
         }
     }
 }
