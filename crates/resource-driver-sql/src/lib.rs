@@ -90,7 +90,10 @@ impl ProjectCaches {
 
     /// Caches with the limits `limits` gives for the weight of each.
     fn with_limits(limits: impl Fn(CacheKind) -> CacheLimits) -> Self {
-        let tables = table_watermark::PROJECT_TABLES;
+        // Every projection below is read from the `project` row alone, so
+        // the options and tags of a project must not drop them: a counter of
+        // `project_option` or `project_tag` that moves says nothing about it.
+        let tables = table_watermark::PROJECT_ROW_TABLES;
         Self {
             domain_id: ProjectionCache::new(
                 tables,
@@ -254,12 +257,12 @@ impl ResourceBackend for SqlBackend {
             .await
             .context("starting the project create transaction")?;
         let created = project::create(&txn, project).await?;
-        let committed = txn
-            .commit()
+        // No cache is dropped: a new project is in none of them (a missing
+        // row is never cached), and the other entries do not change. A create
+        // that dropped them made every request read its project again.
+        txn.commit()
             .await
-            .context("committing the project create transaction");
-        self.caches().invalidate_refs();
-        committed?;
+            .context("committing the project create transaction")?;
         Ok(created)
     }
 

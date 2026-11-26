@@ -822,17 +822,19 @@ impl AssignmentApi for AssignmentService {
         // The direct and the inheritable grants on the project are separate
         // listings. Each also returns the inheritable assignments of the
         // parent projects, which stay: only the grants on this project go.
-        for inherited in [false, true] {
-            let assignments = self
-                .list_role_assignments(
-                    ctx,
-                    &RoleAssignmentListParameters {
-                        project_id: Some(project_id.to_string()),
-                        inherited: Some(inherited),
-                        ..Default::default()
-                    },
-                )
-                .await?;
+        let list = |inherited: bool| async move {
+            self.list_role_assignments(
+                ctx,
+                &RoleAssignmentListParameters {
+                    project_id: Some(project_id.to_string()),
+                    inherited: Some(inherited),
+                    ..Default::default()
+                },
+            )
+            .await
+        };
+        let (direct, inheritable) = futures_util::join!(list(false), list(true));
+        for (inherited, assignments) in [(false, direct?), (true, inheritable?)] {
             for assignment in assignments
                 .into_iter()
                 .filter(|x| x.target_id == project_id && x.inherited == inherited)
@@ -897,17 +899,19 @@ impl AssignmentApi for AssignmentService {
     ) -> Result<(), AssignmentProviderError> {
         // The direct and the inheritable grants on the domain are separate
         // listings.
-        for inherited in [false, true] {
-            let assignments = self
-                .list_role_assignments(
-                    ctx,
-                    &RoleAssignmentListParameters {
-                        domain_id: Some(domain_id.to_string()),
-                        inherited: Some(inherited),
-                        ..Default::default()
-                    },
-                )
-                .await?;
+        let list = |inherited: bool| async move {
+            self.list_role_assignments(
+                ctx,
+                &RoleAssignmentListParameters {
+                    domain_id: Some(domain_id.to_string()),
+                    inherited: Some(inherited),
+                    ..Default::default()
+                },
+            )
+            .await
+        };
+        let (direct, inheritable) = futures_util::join!(list(false), list(true));
+        for (inherited, assignments) in [(false, direct?), (true, inheritable?)] {
             for assignment in assignments
                 .into_iter()
                 .filter(|x| x.target_id == domain_id && x.inherited == inherited)

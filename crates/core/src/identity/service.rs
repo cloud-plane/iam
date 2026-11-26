@@ -1263,26 +1263,45 @@ impl IdentityApi for IdentityService {
                     Err(err @ IdentityProviderError::UserNotFound(_)) => Err(err),
                     Err(err) => return Err(err),
                 };
-                ctx.state()
-                    .provider
-                    .get_credential_provider()
-                    .delete_credentials_for_user(ctx, user_id)
-                    .await?;
-                ctx.state()
-                    .provider
-                    .get_application_credential_provider()
-                    .delete_application_credentials_for_user(ctx, user_id)
-                    .await?;
-                ctx.state()
-                    .provider
-                    .get_trust_provider()
-                    .delete_trusts_for_user(ctx, user_id)
-                    .await?;
-                ctx.state()
-                    .provider
-                    .get_assignment_provider()
-                    .delete_assignments_for_user(ctx, user_id)
-                    .await?;
+                // The dependents are independent: they run concurrently and
+                // every one of them runs even when another failed. The first
+                // error (in the order below) fails the operation, which a
+                // retry resumes.
+                let provider = &ctx.state().provider;
+                let (credentials, application_credentials, trusts, assignments) = futures_util::join!(
+                    async {
+                        provider
+                            .get_credential_provider()
+                            .delete_credentials_for_user(ctx, user_id)
+                            .await
+                            .map_err(IdentityProviderError::from)
+                    },
+                    async {
+                        provider
+                            .get_application_credential_provider()
+                            .delete_application_credentials_for_user(ctx, user_id)
+                            .await
+                            .map_err(IdentityProviderError::from)
+                    },
+                    async {
+                        provider
+                            .get_trust_provider()
+                            .delete_trusts_for_user(ctx, user_id)
+                            .await
+                            .map_err(IdentityProviderError::from)
+                    },
+                    async {
+                        provider
+                            .get_assignment_provider()
+                            .delete_assignments_for_user(ctx, user_id)
+                            .await
+                            .map_err(IdentityProviderError::from)
+                    },
+                );
+                credentials
+                    .and(application_credentials)
+                    .and(trusts)
+                    .and(assignments)?;
                 deleted
             },
             on_audit_error: |_: AuditDispatchError| IdentityProviderError::Driver("audit dispatch failed".into()),

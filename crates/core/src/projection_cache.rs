@@ -50,12 +50,13 @@
 use std::collections::HashMap;
 use std::future::Future;
 use std::hash::{DefaultHasher, Hash, Hasher};
-use std::sync::RwLock;
 use std::sync::atomic::{AtomicU64, Ordering};
+use std::sync::{Arc, Mutex, RwLock};
 use std::time::{Duration, Instant};
 
 use openstack_keystone_config::Config;
 use sea_orm::DatabaseConnection;
+use tokio::sync::Semaphore;
 
 use openstack_keystone_core_types::freshness::Freshness;
 
@@ -271,6 +272,34 @@ pub struct ProjectionCache<V> {
     weigh: fn(&V) -> usize,
     generations: Vec<AtomicU64>,
     inner: RwLock<Inner<V>>,
+    /// The loads in progress by key, see [`Self::begin_flight`].
+    flights: Mutex<HashMap<String, Arc<Semaphore>>>,
+}
+
+/// The load of a key in progress. Dropping it (also when the load is
+/// cancelled) releases the readers waiting for the result.
+/// Times a reader waits for a load of its key before it loads on its own.
+const MAX_FLIGHT_WAITS: u32 = 3;
+
+struct FlightGuard<'a> {
+    flights: &'a Mutex<HashMap<String, Arc<Semaphore>>>,
+    key: String,
+    done: Arc<Semaphore>,
+}
+
+impl Drop for FlightGuard<'_> {
+    fn drop(&mut self) {
+        if let Ok(mut flights) = self.flights.lock()
+            && flights
+                .get(&self.key)
+                .is_some_and(|running| Arc::ptr_eq(running, &self.done))
+        {
+            flights.remove(&self.key);
+        }
+        // A closed semaphore wakes every waiter, and one that arrives later
+        // does not wait at all.
+        self.done.close();
+    }
 }
 
 /// Approximate bytes an entry takes: the entry itself, the key and the heap
@@ -300,6 +329,74 @@ impl<V: Clone> ProjectionCache<V> {
                 bytes: 0,
                 last_sweep: Instant::now(),
             }),
+            flights: Mutex::new(HashMap::new()),
+        }
+    }
+
+    /// Become the reader that loads `key`, or get the semaphore to wait for
+    /// the reader that already does.
+    ///
+    /// After a write moves the counters every concurrent reader misses at
+    /// once; without this each of them would run the same query. `Ok(None)`
+    /// is a load nobody can wait for (the registry is unusable).
+    fn begin_flight(&self, key: &str) -> Result<Option<FlightGuard<'_>>, Arc<Semaphore>> {
+        let Ok(mut flights) = self.flights.lock() else {
+            return Ok(None);
+        };
+        if let Some(running) = flights.get(key) {
+            return Err(running.clone());
+        }
+        let done = Arc::new(Semaphore::new(0));
+        flights.insert(key.to_string(), done.clone());
+        Ok(Some(FlightGuard {
+            flights: &self.flights,
+            key: key.to_string(),
+            done,
+        }))
+    }
+
+    /// The cached value, or the right to load it.
+    ///
+    /// The reader that claims the key is the only one to load it; the others
+    /// wait for it and look again. Both the claimant and a woken reader look
+    /// at the cache once more: a flight that ended between the first miss and
+    /// the claim has stored the value, and loading it again would let a
+    /// stream of readers reload it one after another. After
+    /// [`MAX_FLIGHT_WAITS`] rounds a reader loads on its own, so a value that
+    /// is never stored does not queue the readers.
+    ///
+    /// `Err` carries the flight (none for a reader that loads on its own)
+    /// and the generation to store the loaded value with.
+    async fn hit_or_flight(
+        &self,
+        watermarks: &TableWatermarks,
+        synced: bool,
+        key: &str,
+        freshness: Freshness,
+    ) -> Result<V, (Option<FlightGuard<'_>>, u64)> {
+        let mut waits = 0;
+        loop {
+            let generation = self.shard(key).load(Ordering::Acquire);
+            if let Some(hit) = self.lookup(watermarks, synced, key, freshness, generation) {
+                return Ok(hit);
+            }
+            match self.begin_flight(key) {
+                Ok(flight) => {
+                    let generation = self.shard(key).load(Ordering::Acquire);
+                    if let Some(hit) = self.lookup(watermarks, synced, key, freshness, generation) {
+                        return Ok(hit);
+                    }
+                    return Err((flight, generation));
+                }
+                Err(running) => {
+                    let _ = running.acquire().await;
+                    waits += 1;
+                    if waits >= MAX_FLIGHT_WAITS {
+                        let generation = self.shard(key).load(Ordering::Acquire);
+                        return Err((None, generation));
+                    }
+                }
+            }
         }
     }
 
@@ -470,6 +567,12 @@ impl<V: Clone> ProjectionCache<V> {
     /// - `freshness`: how stale the result may be.
     /// - `load`: reads the projection from the database. It must not
     ///   depend on anything but the `tables` of the cache.
+    ///
+    /// Concurrent misses of one key share a single load: the others wait for
+    /// it and are served from the entry it stores. A reader the entry does not
+    /// satisfy (the counters moved again, a write invalidated the key) loads
+    /// on its own after the wait, so a waiter never waits for more than one
+    /// load.
     pub async fn get_or_load<E, F, Fut>(
         &self,
         watermarks: &TableWatermarks,
@@ -510,10 +613,11 @@ impl<V: Clone> ProjectionCache<V> {
         F: FnOnce() -> Fut,
         Fut: Future<Output = Result<V, E>>,
     {
-        let generation = self.shard(key).load(Ordering::Acquire);
-        if let Some(hit) = self.lookup(watermarks, synced, key, freshness, generation) {
-            return Ok(hit);
-        }
+        let (_flight, generation) =
+            match self.hit_or_flight(watermarks, synced, key, freshness).await {
+                Ok(hit) => return Ok(hit),
+                Err(claimed) => claimed,
+            };
         // The stamp is taken before the load: the value is at least as new
         // as the counters it is labelled with.
         let stamp = watermarks.stamp(self.tables);
@@ -556,10 +660,11 @@ impl<V: Clone> ProjectionCache<V> {
         F: FnOnce() -> Fut,
         Fut: Future<Output = Result<(V, bool), E>>,
     {
-        let generation = self.shard(key).load(Ordering::Acquire);
-        if let Some(hit) = self.lookup(watermarks, synced, key, freshness, generation) {
-            return Ok(hit);
-        }
+        let (_flight, generation) =
+            match self.hit_or_flight(watermarks, synced, key, freshness).await {
+                Ok(hit) => return Ok(hit),
+                Err(claimed) => claimed,
+            };
         let stamp = watermarks.stamp(self.tables);
         let (value, keep) = load().await?;
         if keep && Self::storable(watermarks, stamp, freshness) {
@@ -601,10 +706,11 @@ impl<V: Clone> ProjectionCache<V> {
         F: FnOnce() -> Fut,
         Fut: Future<Output = Result<Option<V>, E>>,
     {
-        let generation = self.shard(key).load(Ordering::Acquire);
-        if let Some(hit) = self.lookup(watermarks, synced, key, freshness, generation) {
-            return Ok(Some(hit));
-        }
+        let (_flight, generation) =
+            match self.hit_or_flight(watermarks, synced, key, freshness).await {
+                Ok(hit) => return Ok(Some(hit)),
+                Err(claimed) => claimed,
+            };
         let stamp = watermarks.stamp(self.tables);
         let value = load().await?;
         if let Some(value) = &value
@@ -787,6 +893,93 @@ mod tests {
             })
             .await
             .unwrap_or_default()
+    }
+
+    #[tokio::test]
+    async fn concurrent_misses_share_one_load() {
+        let cache = Arc::new(cache(8));
+        let wm = Arc::new(watermarks(1000, 1));
+        let calls = Arc::new(AtomicUsize::new(0));
+        let relaxed = Freshness::MaxStaleness(10 * SEC);
+        let mut tasks = Vec::new();
+        for _ in 0..32 {
+            let (cache, wm, calls) = (cache.clone(), wm.clone(), calls.clone());
+            tasks.push(tokio::spawn(async move {
+                cache
+                    .get_or_load_with::<(), _, _>(&wm, false, "k", relaxed, || async {
+                        calls.fetch_add(1, Ordering::SeqCst);
+                        tokio::time::sleep(Duration::from_millis(50)).await;
+                        Ok(7u32)
+                    })
+                    .await
+            }));
+        }
+        for task in tasks {
+            assert_eq!(task.await.ok(), Some(Ok(7)));
+        }
+        assert_eq!(calls.load(Ordering::SeqCst), 1);
+        assert_eq!(cache.len(), 1);
+        assert!(cache.flights.lock().map(|f| f.is_empty()).unwrap_or(false));
+    }
+
+    #[tokio::test]
+    async fn a_waiter_loads_on_its_own_when_the_result_is_not_stored() {
+        let cache = Arc::new(cache(8));
+        let wm = Arc::new(watermarks(1000, 1));
+        let calls = Arc::new(AtomicUsize::new(0));
+        let relaxed = Freshness::MaxStaleness(10 * SEC);
+        let mut tasks = Vec::new();
+        for _ in 0..4 {
+            let (cache, wm, calls) = (cache.clone(), wm.clone(), calls.clone());
+            tasks.push(tokio::spawn(async move {
+                // The value is volatile: it is never stored.
+                cache
+                    .get_or_load_if_with::<(), _, _>(&wm, false, "k", relaxed, || async {
+                        calls.fetch_add(1, Ordering::SeqCst);
+                        tokio::time::sleep(Duration::from_millis(20)).await;
+                        Ok((7u32, false))
+                    })
+                    .await
+            }));
+        }
+        for task in tasks {
+            assert_eq!(task.await.ok(), Some(Ok(7)));
+        }
+        // Every reader got an answer; none of them waited for a result that
+        // was never stored beyond one load.
+        assert!(calls.load(Ordering::SeqCst) >= 2);
+        assert!(cache.flights.lock().map(|f| f.is_empty()).unwrap_or(false));
+    }
+
+    #[tokio::test]
+    async fn a_cancelled_load_releases_the_waiters() {
+        let cache = Arc::new(cache(8));
+        let wm = Arc::new(watermarks(1000, 1));
+        let relaxed = Freshness::MaxStaleness(10 * SEC);
+        let leader = {
+            let (cache, wm) = (cache.clone(), wm.clone());
+            tokio::spawn(async move {
+                cache
+                    .get_or_load_with::<(), _, _>(&wm, false, "k", relaxed, || async {
+                        tokio::time::sleep(Duration::from_secs(60)).await;
+                        Ok(1u32)
+                    })
+                    .await
+            })
+        };
+        tokio::time::sleep(Duration::from_millis(20)).await;
+        let waiter = {
+            let (cache, wm) = (cache.clone(), wm.clone());
+            tokio::spawn(async move {
+                cache
+                    .get_or_load_with::<(), _, _>(&wm, false, "k", relaxed, || async { Ok(2u32) })
+                    .await
+            })
+        };
+        tokio::time::sleep(Duration::from_millis(20)).await;
+        leader.abort();
+        let got = tokio::time::timeout(Duration::from_secs(5), waiter).await;
+        assert_eq!(got.ok().and_then(Result::ok), Some(Ok(2)));
     }
 
     #[tokio::test]

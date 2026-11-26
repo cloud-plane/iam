@@ -154,8 +154,17 @@ pub async fn authenticate_by_password(
         }
     }
 
-    // Reset the last_active_at for the user that successfully authenticated.
-    user::reset_last_active(db, &user_entry, now).await?;
+    // Record the activity of the user that successfully authenticated, as the
+    // Python keystone does: only when the inactivity check that reads it is on.
+    // Without it nothing uses the column, and every write drops the cached
+    // users.
+    if config
+        .security_compliance
+        .disable_user_account_days_inactive
+        .is_some()
+    {
+        user::reset_last_active(db, &user_entry, now).await?;
+    }
 
     let user_entry = UserResponseBuilder::default()
         .merge_user_data(
@@ -476,8 +485,6 @@ mod tests {
             )])
             // user::get_main_entry() for enabled check
             .append_query_results([vec![user::tests::get_user_mock("user_id")]])
-            // user update res for reset_last_active
-            .append_query_results([vec![user::tests::get_user_mock("user_id")]])
             .into_connection();
         assert!(
             authenticate_by_password(
@@ -494,9 +501,9 @@ mod tests {
             "unlocked user with correct password should be allowed to login"
         );
 
-        // Checking transaction log
+        // Checking transaction log: no inactivity check, no activity write
         let log = db.into_transaction_log();
-        assert_eq!(log.len(), 5);
+        assert_eq!(log.len(), 4);
         assert_eq!(
             log[0],
             Transaction::from_sql_and_values(
@@ -529,7 +536,48 @@ mod tests {
                 ["user_id".into(), 1u64.into()]
             )
         );
+    }
 
+    #[tokio::test]
+    async fn test_authenticate_records_activity_when_inactivity_check_is_on() {
+        let mut config = Config::default();
+        config
+            .security_compliance
+            .disable_user_account_days_inactive = Some(90);
+        let password = String::from("pass");
+        let password_secret = SecretString::from(password.clone());
+        let (lu, pw) = get_local_user_with_password_mock(
+            password_hashing::hash_password(&config, &password_secret)
+                .await
+                .unwrap(),
+        );
+        let db = MockDatabase::new(DatabaseBackend::Postgres)
+            .append_query_results([vec![lu]])
+            .append_query_results([vec![pw]])
+            .append_query_results([user_option::tests::get_user_options_mock(
+                "user_id",
+                &UserOptions::default(),
+            )])
+            .append_query_results([vec![user::tests::get_user_mock("user_id")]])
+            // user update res for reset_last_active
+            .append_query_results([vec![user::tests::get_user_mock("user_id")]])
+            .into_connection();
+        assert!(
+            authenticate_by_password(
+                &config,
+                &db,
+                &UserPasswordAuthRequest {
+                    id: Some("user_id".into()),
+                    password: password.clone().into(),
+                    ..Default::default()
+                },
+            )
+            .await
+            .is_ok()
+        );
+
+        let log = db.into_transaction_log();
+        assert_eq!(log.len(), 5);
         // Verify the UPDATE statement for successful authentication
         let update_debug = format!("{:?}", log[4]);
         assert!(

@@ -334,16 +334,27 @@ impl RoleApi for RoleService {
                     Err(err @ RoleProviderError::RoleNotFound(_)) => Err(err),
                     Err(err) => return Err(err),
                 };
-                ctx.state()
-                    .provider
-                    .get_assignment_provider()
-                    .delete_assignments_for_role(ctx, id)
-                    .await?;
-                ctx.state()
-                    .provider
-                    .get_application_credential_provider()
-                    .delete_application_credentials_for_role(ctx, id)
-                    .await?;
+                // The dependents are independent: they run concurrently and
+                // both run even when one failed. The first error (in the
+                // order below) fails the operation, which a retry resumes.
+                let provider = &ctx.state().provider;
+                let (assignments, application_credentials) = futures_util::join!(
+                    async {
+                        provider
+                            .get_assignment_provider()
+                            .delete_assignments_for_role(ctx, id)
+                            .await
+                            .map_err(RoleProviderError::from)
+                    },
+                    async {
+                        provider
+                            .get_application_credential_provider()
+                            .delete_application_credentials_for_role(ctx, id)
+                            .await
+                            .map_err(RoleProviderError::from)
+                    },
+                );
+                assignments.and(application_credentials)?;
                 deleted
             },
             on_audit_error: |_: AuditDispatchError| RoleProviderError::Driver("audit dispatch failed".into()),
@@ -814,7 +825,12 @@ mod tests {
             .returning(|_, _| Err(AssignmentProviderError::Driver("boom".into())));
         let state = get_mocked_state(
             None,
-            Some(Provider::mocked_builder().mock_assignment(assignment)),
+            Some(
+                Provider::mocked_builder()
+                    .mock_assignment(assignment)
+                    // A failed step does not stop the other one.
+                    .mock_application_credential(appcred_mock_for("rid")),
+            ),
         )
         .await;
         let mut backend = MockRoleBackend::default();
@@ -874,7 +890,12 @@ mod tests {
             .returning(|_, _| Err(AssignmentProviderError::Driver("boom".into())));
         let state = get_mocked_state(
             None,
-            Some(Provider::mocked_builder().mock_assignment(assignment)),
+            Some(
+                Provider::mocked_builder()
+                    .mock_assignment(assignment)
+                    // A failed step does not stop the other one.
+                    .mock_application_credential(appcred_mock_for("rid")),
+            ),
         )
         .await;
         let mut backend = MockRoleBackend::default();

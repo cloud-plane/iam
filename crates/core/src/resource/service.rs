@@ -13,7 +13,9 @@
 // SPDX-License-Identifier: Apache-2.0
 //! # Resource provider
 use async_trait::async_trait;
-use std::collections::HashMap;
+use futures_util::future::join_all;
+use std::cmp::Reverse;
+use std::collections::{BTreeMap, HashMap};
 use std::sync::Arc;
 use uuid::Uuid;
 use validator::Validate;
@@ -30,6 +32,9 @@ use crate::events::AuditDispatchError;
 use crate::plugin_manager::PluginManagerApi;
 use crate::request_cache::{cache_get, cache_remove, cache_set};
 use crate::resource::{ResourceApi, ResourceProviderError, backend::ResourceBackend};
+
+/// Entities of a domain cascade that are deleted at the same time.
+const CASCADE_CONCURRENCY: usize = 8;
 
 /// Request-cache namespace for [`Domain`] lookups by `domain_id`.
 const DOMAIN_CACHE_NS: &str = "resource.domain";
@@ -257,42 +262,99 @@ impl ResourceService {
             }
             depth
         };
-        let mut ordered: Vec<(usize, &str)> = projects
-            .iter()
-            .filter(|x| x.id != domain_id)
-            .map(|x| (depth(&x.id), x.id.as_str()))
-            .collect();
-        ordered.sort_by_key(|a| std::cmp::Reverse(a.0));
-        for (_, id) in ordered {
-            match self.delete_project(ctx, id).await {
-                Ok(()) | Err(ResourceProviderError::ProjectNotFound(_)) => {}
-                Err(err) => return Err(err),
+        // Projects of one depth do not depend on each other and run
+        // concurrently; the levels run deepest first, so a parent is never
+        // deleted before its children.
+        let mut levels: BTreeMap<Reverse<usize>, Vec<&str>> = BTreeMap::new();
+        for project in projects.iter().filter(|x| x.id != domain_id) {
+            levels
+                .entry(Reverse(depth(&project.id)))
+                .or_default()
+                .push(project.id.as_str());
+        }
+        // Every step runs even when another failed; the first error (in the
+        // order of the steps) is returned at the end, which leaves the
+        // domain in place for a retry.
+        let mut first_error: Option<ResourceProviderError> = None;
+        for ids in levels.into_values() {
+            let mut results = Vec::with_capacity(ids.len());
+            for chunk in ids.chunks(CASCADE_CONCURRENCY) {
+                results.extend(join_all(chunk.iter().map(|id| self.delete_project(ctx, id))).await);
+            }
+            for result in results {
+                match result {
+                    Ok(()) | Err(ResourceProviderError::ProjectNotFound(_)) => {}
+                    Err(err) => {
+                        first_error.get_or_insert(err);
+                    }
+                }
+            }
+            // The parents of a project that is still there cannot go.
+            if first_error.is_some() {
+                break;
             }
         }
 
-        for user in &users {
-            match identity.delete_user(ctx, &user.id).await {
+        let (user_results, group_results) = futures_util::join!(
+            async {
+                let mut results = Vec::with_capacity(users.len());
+                for chunk in users.chunks(CASCADE_CONCURRENCY) {
+                    results.extend(
+                        join_all(chunk.iter().map(|user| identity.delete_user(ctx, &user.id)))
+                            .await,
+                    );
+                }
+                results
+            },
+            async {
+                let mut results = Vec::with_capacity(groups.len());
+                for chunk in groups.chunks(CASCADE_CONCURRENCY) {
+                    results.extend(
+                        join_all(
+                            chunk
+                                .iter()
+                                .map(|group| identity.delete_group(ctx, &group.id)),
+                        )
+                        .await,
+                    );
+                }
+                results
+            },
+        );
+        for result in user_results {
+            match result {
                 Ok(())
                 | Err(IdentityProviderError::UserNotFound(_))
                 | Err(IdentityProviderError::Readonly(_)) => {}
-                Err(err) => return Err(err.into()),
+                Err(err) => {
+                    first_error.get_or_insert(err.into());
+                }
             }
         }
-        for group in &groups {
-            match identity.delete_group(ctx, &group.id).await {
+        for result in group_results {
+            match result {
                 Ok(())
                 | Err(IdentityProviderError::GroupNotFound(_))
                 | Err(IdentityProviderError::Readonly(_)) => {}
-                Err(err) => return Err(err.into()),
+                Err(err) => {
+                    first_error.get_or_insert(err.into());
+                }
             }
         }
 
-        ctx.state()
+        // After the users and groups: their deletion revokes grants on the
+        // domain as well.
+        let assignments = ctx
+            .state()
             .provider
             .get_assignment_provider()
             .delete_assignments_for_domain(ctx, domain_id)
-            .await?;
-        Ok(())
+            .await;
+        match (first_error, assignments) {
+            (Some(err), _) => Err(err),
+            (None, Err(err)) => Err(err.into()),
+            (None, Ok(())) => Ok(()),
+        }
     }
 
     /// Reject the operation when the domain is currently immutable and the
@@ -505,21 +567,37 @@ impl ResourceApi for ResourceService {
                     Err(err @ ResourceProviderError::ProjectNotFound(_)) => Err(err),
                     Err(err) => return Err(err),
                 };
-                ctx.state()
-                    .provider
-                    .get_credential_provider()
-                    .delete_credentials_for_project(ctx, id)
-                    .await?;
-                ctx.state()
-                    .provider
-                    .get_application_credential_provider()
-                    .delete_application_credentials_for_project(ctx, id)
-                    .await?;
-                ctx.state()
-                    .provider
-                    .get_assignment_provider()
-                    .delete_assignments_for_project(ctx, id)
-                    .await?;
+                // The dependents are independent: they run concurrently and
+                // every one of them runs even when another failed. The first
+                // error (in the order below) fails the operation, which a
+                // retry resumes.
+                let provider = &ctx.state().provider;
+                let (credentials, application_credentials, assignments) = futures_util::join!(
+                    async {
+                        provider
+                            .get_credential_provider()
+                            .delete_credentials_for_project(ctx, id)
+                            .await
+                            .map_err(ResourceProviderError::from)
+                    },
+                    async {
+                        provider
+                            .get_application_credential_provider()
+                            .delete_application_credentials_for_project(ctx, id)
+                            .await
+                            .map_err(ResourceProviderError::from)
+                    },
+                    async {
+                        provider
+                            .get_assignment_provider()
+                            .delete_assignments_for_project(ctx, id)
+                            .await
+                            .map_err(ResourceProviderError::from)
+                    },
+                );
+                credentials
+                    .and(application_credentials)
+                    .and(assignments)?;
                 deleted
             },
             on_audit_error: |_: AuditDispatchError| ResourceProviderError::Driver("audit dispatch failed".into()),
@@ -1438,6 +1516,76 @@ mod tests {
         );
     }
 
+    /// A failed user delete does not stop the groups and the grants on the
+    /// domain, and the domain itself stays for a retry.
+    #[tokio::test]
+    async fn test_delete_domain_failed_user_does_not_skip_other_steps() {
+        use openstack_keystone_core_types::identity::{
+            GroupBuilder, IdentityProviderError, UserResponseBuilder,
+        };
+
+        let mut identity = crate::identity::MockIdentityProvider::default();
+        identity.expect_list_users().times(1).returning(|_, _| {
+            Ok(vec![
+                UserResponseBuilder::default()
+                    .id("u1")
+                    .domain_id("did")
+                    .enabled(true)
+                    .name("u1")
+                    .build()
+                    .unwrap(),
+            ])
+        });
+        identity
+            .expect_delete_user()
+            .times(1)
+            .returning(|_, _| Err(IdentityProviderError::Driver("boom".into())));
+        identity.expect_list_groups().times(1).returning(|_, _| {
+            Ok(vec![
+                GroupBuilder::default()
+                    .id("g1")
+                    .domain_id("did")
+                    .name("g1")
+                    .build()
+                    .unwrap(),
+            ])
+        });
+        identity
+            .expect_delete_group()
+            .times(1)
+            .returning(|_, _| Ok(()));
+        let mut assignment = crate::assignment::MockAssignmentProvider::default();
+        assignment
+            .expect_delete_assignments_for_domain()
+            .times(1)
+            .returning(|_, _| Ok(()));
+        let state = get_mocked_state(
+            None,
+            Some(
+                Provider::mocked_builder()
+                    .mock_identity(identity)
+                    .mock_assignment(assignment),
+            ),
+        )
+        .await;
+
+        let mut backend = MockResourceBackend::default();
+        backend.expect_get_domain().returning(|_, _| Ok(None));
+        backend
+            .expect_list_projects()
+            .returning(|_, _| Ok(Vec::new()));
+        backend.expect_delete_domain().times(0);
+        let provider = ResourceService::with_backend(Arc::new(backend));
+
+        let res = provider
+            .delete_domain(&ExecutionContext::internal(&state), "did")
+            .await;
+        assert!(
+            matches!(res, Err(ResourceProviderError::IdentityProvider { .. })),
+            "{res:?}"
+        );
+    }
+
     #[tokio::test]
     async fn test_delete_enabled_domain_with_contents_is_refused() {
         use openstack_keystone_core_types::identity::UserResponseBuilder;
@@ -2349,9 +2497,26 @@ mod tests {
                     ),
                 )
             });
+        // A failed step does not stop the others: each one runs once.
+        let mut appcred_mock =
+            crate::application_credential::MockApplicationCredentialProvider::default();
+        appcred_mock
+            .expect_delete_application_credentials_for_project()
+            .times(1)
+            .returning(|_, _| Ok(()));
+        let mut assignment_mock = crate::assignment::MockAssignmentProvider::default();
+        assignment_mock
+            .expect_delete_assignments_for_project()
+            .times(1)
+            .returning(|_, _| Ok(()));
         let state = get_mocked_state(
             None,
-            Some(Provider::mocked_builder().mock_credential(credential_mock)),
+            Some(
+                Provider::mocked_builder()
+                    .mock_credential(credential_mock)
+                    .mock_application_credential(appcred_mock)
+                    .mock_assignment(assignment_mock),
+            ),
         )
         .await;
         let mut backend = MockResourceBackend::default();
