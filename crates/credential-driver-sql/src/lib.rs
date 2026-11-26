@@ -31,6 +31,7 @@ pub mod entity;
 pub mod error;
 pub mod fernet;
 pub mod migrate;
+mod migration;
 pub mod rotate;
 
 #[cfg(any(test, feature = "test-support"))]
@@ -76,6 +77,10 @@ impl SqlDriver for SqlBackend {
     ) -> Result<(), DatabaseError> {
         create_table(connection, schema, crate::entity::prelude::Credential).await?;
         Ok(())
+    }
+
+    fn migrations(&self) -> Vec<Box<dyn sea_orm_migration::MigrationTrait>> {
+        crate::migration::migrations()
     }
 }
 
