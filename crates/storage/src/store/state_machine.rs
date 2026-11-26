@@ -341,6 +341,11 @@ impl FjallStateMachine {
 
     #[allow(clippy::result_large_err)]
     #[tracing::instrument(skip(self))]
+    /// The applied keyspace watermarks (ADR 0048).
+    pub(crate) fn applied_watermarks(&self) -> &Arc<watermark::AppliedWatermarks> {
+        &self.watermarks
+    }
+
     /// Index of the last applied entry, `0` before the first one.
     pub(crate) fn applied_log_index(&self) -> Result<u64, StoreError> {
         Ok(self.get_meta()?.0.map_or(0, |id| id.index))

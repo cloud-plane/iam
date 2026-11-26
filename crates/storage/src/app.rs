@@ -152,6 +152,8 @@ pub struct Storage {
     pub(crate) peer_authz: Arc<PeerAuthz>,
     /// Pending emergency DEK rotations (shared with FjallStateMachine).
     pending_rotations: Arc<Mutex<HashMap<String, crate::store_command::PendingRotation>>>,
+    /// Latest logged index per keyspace (ADR 0048).
+    pub(crate) logged_watermarks: Arc<crate::store::state_machine::watermark::LoggedWatermarks>,
     /// Raft instance.
     pub raft: Raft,
     /// The state machine store for direct reads.

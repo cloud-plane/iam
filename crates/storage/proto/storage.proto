@@ -18,6 +18,8 @@ service StorageService {
   rpc ForwardedPrefixIndex(keystone.api.ForwardedPrefixIndexRequest) returns (keystone.api.ForwardedPrefixIndexResponse) {}
   // Revisions of keyspaces on the leader, forwarded from a follower.
   rpc ForwardedKeyspaceRevisions(keystone.api.ForwardedKeyspaceRevisionsRequest) returns (keystone.api.ForwardedKeyspaceRevisionsResponse) {}
+  // Per-keyspace watermarks at a fresh linearizable read index (ADR 0048).
+  rpc ReadWatermark(keystone.api.ReadWatermarkRequest) returns (keystone.api.ReadWatermarkResponse) {}
   // A node reports a locally-triggered quarantine so the leader can commit it.
   rpc ReportQuarantine(keystone.api.ReportQuarantineRequest) returns (google.protobuf.Empty) {}
 }

@@ -737,6 +737,7 @@ pub async fn init_storage(config_manager: &Arc<ConfigManager>) -> Result<Arc<Sto
     state_machine_store.set_feed_kinds(ds_config.feed_kinds.iter().cloned());
     state_machine_store.set_feed_max_event_bytes(ds_config.feed_max_event_bytes);
     let log_nonce = log_store.nonce_manager();
+    let logged_watermarks = log_store.logged_watermarks();
     tracing::debug!("Raft stores opened; initializing Raft TLS client...");
     let tls_client = init_tls_watcher(config_manager).await?;
     tracing::debug!("Raft TLS client initialized.");
@@ -908,6 +909,7 @@ pub async fn init_storage(config_manager: &Arc<ConfigManager>) -> Result<Arc<Sto
             .map(Duration::from_millis),
         leader_contact: Arc::new(LeaderContact::default()),
         log_nonce,
+        logged_watermarks,
         dek_rotation_days: ds_config.dek_rotation_days,
         feed_retention_days: ds_config.feed_retention_days,
         feed_max_events: ds_config.feed_max_events,
@@ -1114,6 +1116,7 @@ pub async fn get_app_server(storage: &Storage) -> Result<Routes, StoreError> {
         storage.audit_forwarder.clone(),
         storage.current_dek.clone(),
         storage.node_id,
+        storage.logged_watermarks.clone(),
     );
 
     let feed_svc_impl = crate::grpc::feed_service::FeedServiceImpl::new(

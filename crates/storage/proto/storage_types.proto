@@ -76,6 +76,31 @@ message ForwardedKeyspaceRevisionsResponse {
   repeated uint64 revisions = 2;
 }
 
+// Request for the per-keyspace watermarks at a fresh linearizable read index
+// (ADR 0048).
+message ReadWatermarkRequest {
+  // Keyspaces to report. Empty means every keyspace the leader knows.
+  repeated string keyspaces = 1;
+}
+
+// How far a replica must have applied to be current for one keyspace.
+message KeyspaceWatermark {
+  string keyspace = 1;
+  uint64 index = 2;
+}
+
+// Response to ReadWatermark. All watermarks are judged against one read
+// index.
+message ReadWatermarkResponse {
+  // The linearizable read index the leader confirmed.
+  uint64 read_index = 1;
+  // One entry per requested (or known) keyspace.
+  repeated KeyspaceWatermark watermarks = 2;
+  // Watermark of every keyspace that is not listed (a restore or snapshot
+  // install replaced all of them at this index).
+  uint64 default_watermark = 3;
+}
+
 // GetResponse contains the value associated with the requested key.
 message Response {
   // Retrieved value.

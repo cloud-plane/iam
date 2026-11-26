@@ -58,6 +58,11 @@ impl LoggedWatermarks {
         }
     }
 
+    /// Names of the keyspaces with a row.
+    pub fn keyspaces(&self) -> Vec<String> {
+        self.rows.iter().map(|r| r.key().clone()).collect()
+    }
+
     /// Latest logged index for `keyspace`, `0` if none was seen.
     pub fn get(&self, keyspace: &str) -> u64 {
         self.rows.get(keyspace).map_or(0, |v| *v)
@@ -83,10 +88,42 @@ pub fn entry_keyspaces(entry: &crate::pb::raft::Entry) -> Vec<String> {
 /// `logged` covers the entries not applied yet. The bound is capped at `R`:
 /// entries past `R` do not matter to this read, and `R` is always a safe
 /// answer.
-// Used by the ReadWatermark RPC (ADR 0048), not added yet.
-#[allow(dead_code)]
 pub fn committed_watermark(applied: u64, logged: u64, read_index: u64) -> u64 {
     applied.max(logged).min(read_index)
+}
+
+/// Computes the `ReadWatermark` answer at `read_index`.
+///
+/// Returns one `(keyspace, W)` pair per requested keyspace (every known one
+/// when `keyspaces` is empty) and the watermark that holds for all others.
+pub fn read_watermarks(
+    applied: &AppliedWatermarks,
+    logged: &LoggedWatermarks,
+    read_index: u64,
+    keyspaces: &[String],
+) -> (Vec<(String, u64)>, u64) {
+    let names: Vec<String> = if keyspaces.is_empty() {
+        let mut all = applied.keyspaces();
+        for ks in logged.keyspaces() {
+            if !all.contains(&ks) {
+                all.push(ks);
+            }
+        }
+        all.sort();
+        all
+    } else {
+        keyspaces.to_vec()
+    };
+    let rows = names
+        .into_iter()
+        .map(|ks| {
+            let w = committed_watermark(applied.get(&ks), logged.get(&ks), read_index);
+            (ks, w)
+        })
+        .collect();
+    // A name with no row resolves to the floor alone.
+    let default = committed_watermark(applied.get("\0unlisted"), 0, read_index);
+    (rows, default)
 }
 
 /// Builds the `meta` key of the watermark row of `keyspace`.
@@ -99,7 +136,7 @@ pub(super) fn watermark_key(keyspace: &str) -> Vec<u8> {
 
 /// The applied watermarks of one node.
 #[derive(Debug, Default)]
-pub(super) struct AppliedWatermarks {
+pub struct AppliedWatermarks {
     /// Last applied index per keyspace.
     rows: DashMap<String, u64>,
     /// Index of the last restore or snapshot install, which replaces every
@@ -110,7 +147,7 @@ pub(super) struct AppliedWatermarks {
 
 impl AppliedWatermarks {
     /// Loads the persisted rows. A missing row is `0` (rolling upgrade).
-    pub(super) fn from_meta(meta: &Keyspace) -> Result<Self, fjall::Error> {
+    pub fn from_meta(meta: &Keyspace) -> Result<Self, fjall::Error> {
         let rows = DashMap::new();
         for item in meta.prefix(WATERMARK_PREFIX.as_bytes()) {
             let (key, value) = item.into_inner()?;
@@ -130,23 +167,26 @@ impl AppliedWatermarks {
         })
     }
 
-    // Read by the local linearizable read path (ADR 0048), not added yet.
-    #[allow(dead_code)]
     /// `A[keyspace]`, `0` when the keyspace was never touched.
-    pub(super) fn get(&self, keyspace: &str) -> u64 {
+    pub fn get(&self, keyspace: &str) -> u64 {
         let row = self.rows.get(keyspace).map_or(0, |v| *v);
         row.max(self.floor.load(std::sync::atomic::Ordering::Acquire))
     }
 
+    /// Names of the keyspaces with a row.
+    pub fn keyspaces(&self) -> Vec<String> {
+        self.rows.iter().map(|r| r.key().clone()).collect()
+    }
+
     /// Every keyspace was replaced at `index` (restore, snapshot install).
-    pub(super) fn raise_floor(&self, index: u64) {
+    pub fn raise_floor(&self, index: u64) {
         self.floor
             .fetch_max(index, std::sync::atomic::Ordering::AcqRel);
     }
 
     /// Records that entry `index` touched `keyspaces`. Call after the batch
     /// that holds the matching rows committed.
-    pub(super) fn record(&self, keyspaces: &[String], index: u64) {
+    pub fn record(&self, keyspaces: &[String], index: u64) {
         for ks in keyspaces {
             self.rows
                 .entry(ks.clone())
@@ -223,6 +263,22 @@ mod tests {
         assert_eq!(committed_watermark(8, 7, 10), 8);
         assert_eq!(committed_watermark(3, 20, 10), 10);
         assert_eq!(committed_watermark(0, 0, 10), 0);
+    }
+
+    #[test]
+    fn read_watermarks_lists_known_keyspaces_and_caps_at_r() {
+        let applied = AppliedWatermarks::default();
+        let logged = LoggedWatermarks::default();
+        applied.record(&["a".to_string()], 4);
+        logged.record(&["a".to_string(), "b".to_string()], 12);
+        applied.raise_floor(2);
+
+        let (rows, default) = read_watermarks(&applied, &logged, 10, &[]);
+        assert_eq!(rows, vec![("a".to_string(), 10), ("b".to_string(), 10)]);
+        assert_eq!(default, 2);
+
+        let (rows, _) = read_watermarks(&applied, &logged, 10, &["zzz".to_string()]);
+        assert_eq!(rows, vec![("zzz".to_string(), 2)]);
     }
 
     #[test]

@@ -122,7 +122,8 @@ today's behaviour.
 ### Wire
 
 A new unary `StorageService` RPC, `ReadWatermark`, runs the leader's ReadIndex
-and returns `R` with `(keyspace, W)` pairs. The request carries a keyspace
+and returns `R` with `(keyspace, W)` pairs and a `default_watermark` for every
+keyspace not listed (a restore or snapshot install replaced them all). The request carries a keyspace
 filter; an empty filter means all keyspaces, and that is the default. It
 replaces forwarding the read when the follower can serve it locally. The
 existing forwarding path stays as the fallback.
