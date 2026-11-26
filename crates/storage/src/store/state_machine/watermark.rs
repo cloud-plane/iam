@@ -36,6 +36,59 @@ pub(super) const WATERMARK_PREFIX: &str = "_wm:";
 const KS_META: &str = "meta";
 const KS_INDEX: &str = "index";
 
+/// The latest log index that touches each keyspace, as seen by this node's
+/// log store (`W[K]` input, ADR 0048).
+///
+/// Updated in `append`, so it covers entries that are not applied yet, and it
+/// is rebuilt from the log tail on start. A truncated entry is never removed:
+/// the value can then be too high, which only makes a reader wait longer.
+#[derive(Debug, Default)]
+pub struct LoggedWatermarks {
+    rows: DashMap<String, u64>,
+}
+
+impl LoggedWatermarks {
+    /// Records that the entry at `index` touches `keyspaces`.
+    pub fn record(&self, keyspaces: &[String], index: u64) {
+        for ks in keyspaces {
+            self.rows
+                .entry(ks.clone())
+                .and_modify(|v| *v = (*v).max(index))
+                .or_insert(index);
+        }
+    }
+
+    /// Latest logged index for `keyspace`, `0` if none was seen.
+    pub fn get(&self, keyspace: &str) -> u64 {
+        self.rows.get(keyspace).map_or(0, |v| *v)
+    }
+}
+
+/// Keyspaces a log entry touches; empty for entries without a command
+/// (blank and membership entries).
+pub fn entry_keyspaces(entry: &crate::pb::raft::Entry) -> Vec<String> {
+    entry
+        .app_data
+        .as_deref()
+        .and_then(|raw| StoreCommand::unpack(raw).ok())
+        .map(|cmd| touched_keyspaces(&cmd))
+        .unwrap_or_default()
+}
+
+/// `W[K](R)`: how far a replica must have applied to be current for a
+/// keyspace at read index `read_index`.
+///
+/// `applied` is the leader's own `A[K]`, which stands for every entry the
+/// leader applied (including ones from before the log tail it scanned);
+/// `logged` covers the entries not applied yet. The bound is capped at `R`:
+/// entries past `R` do not matter to this read, and `R` is always a safe
+/// answer.
+// Used by the ReadWatermark RPC (ADR 0048), not added yet.
+#[allow(dead_code)]
+pub fn committed_watermark(applied: u64, logged: u64, read_index: u64) -> u64 {
+    applied.max(logged).min(read_index)
+}
+
 /// Builds the `meta` key of the watermark row of `keyspace`.
 pub(super) fn watermark_key(keyspace: &str) -> Vec<u8> {
     let mut out = Vec::with_capacity(WATERMARK_PREFIX.len() + keyspace.len());
@@ -119,7 +172,7 @@ pub(super) fn encode(index: u64) -> UserKey {
 /// tied to a user keyspace maps to `meta` (engine state) or `index`. Missing
 /// a keyspace here would let a replica serve a stale linearizable read, so
 /// when unsure, add it.
-pub(super) fn touched_keyspaces(command: &StoreCommand) -> Vec<String> {
+pub(crate) fn touched_keyspaces(command: &StoreCommand) -> Vec<String> {
     let StoreCommand::Transaction(mutations) = command else {
         // Restore chunks stage in `meta`; `RestoreApply` replaces everything
         // and is handled by the caller (every watermark is set to the index).
@@ -163,6 +216,23 @@ pub(super) fn touched_keyspaces(command: &StoreCommand) -> Vec<String> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn committed_watermark_is_capped_at_the_read_index() {
+        assert_eq!(committed_watermark(3, 7, 10), 7);
+        assert_eq!(committed_watermark(8, 7, 10), 8);
+        assert_eq!(committed_watermark(3, 20, 10), 10);
+        assert_eq!(committed_watermark(0, 0, 10), 0);
+    }
+
+    #[test]
+    fn logged_is_monotone() {
+        let w = LoggedWatermarks::default();
+        w.record(&["a".to_string()], 9);
+        w.record(&["a".to_string()], 4);
+        assert_eq!(w.get("a"), 9);
+        assert_eq!(w.get("b"), 0);
+    }
 
     #[test]
     fn key_has_no_nul() {

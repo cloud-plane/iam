@@ -67,7 +67,7 @@ mod sites;
 mod snapshot;
 mod snapshot_file;
 mod status;
-mod watermark;
+pub(crate) mod watermark;
 
 pub(crate) use self::keyspace_drop::keyspace_drop_allowed;
 pub use self::outbox::{FeedCursor, FeedGrants, OutboxClass, OutboxEvent};
@@ -341,6 +341,11 @@ impl FjallStateMachine {
 
     #[allow(clippy::result_large_err)]
     #[tracing::instrument(skip(self))]
+    /// Index of the last applied entry, `0` before the first one.
+    pub(crate) fn applied_log_index(&self) -> Result<u64, StoreError> {
+        Ok(self.get_meta()?.0.map_or(0, |id| id.index))
+    }
+
     fn get_meta(
         &self,
     ) -> Result<(Option<LogIdOf<TypeConfig>>, StoredMembershipOf<TypeConfig>), StoreError> {

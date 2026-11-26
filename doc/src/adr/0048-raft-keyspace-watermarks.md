@@ -101,16 +101,23 @@ both or neither, so `A[K]` can never be ahead of the data.
 
 ### Maintaining `W[K]` on the leader
 
-The leader keeps `last_proposed[K]`, the index of the latest entry it appended
-that touches `K`, updated on the write path before the entry is applied. A read
-at index `R` uses `min(last_proposed[K], R)`. Entries beyond `R` make the bound
-larger than the true value up to `R`, never smaller, so the error is extra
-waiting, not staleness.
+The log index of an entry is only known once it is appended, so the map is
+filled by the log store's `append`, on every node, not on the propose path.
+`last_logged[K]` is the index of the latest appended entry that touches `K`.
+It is recorded before the append callback fires, so no entry can commit
+without its keyspaces being in the map.
 
-On leader change the new leader has no map. It rebuilds `last_proposed` by
-scanning its log from `last_applied` to the tail. Until the rebuild finishes it
-answers with `W[K] = R`, which is the behaviour of today (wait for everything).
-The conservative value is always safe.
+A read at index `R` uses
+`W[K](R) = min(R, max(A_leader[K], last_logged[K]))`. `A_leader[K]` stands for
+every entry the leader already applied, which the log scan below does not
+cover. Entries beyond `R` make the bound larger than the true value up to `R`,
+never smaller, so the error is extra waiting, not staleness. A truncated
+entry is never removed from the map, for the same reason.
+
+On start the log store scans the retained log after `last_applied` and fills
+the map before the node serves reads. A node that becomes leader already holds
+the map, because every node appends. `R` is always a safe answer, which is
+today's behaviour.
 
 ### Wire
 

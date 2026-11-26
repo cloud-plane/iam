@@ -722,6 +722,17 @@ pub async fn init_storage(config_manager: &Arc<ConfigManager>) -> Result<Arc<Sto
         quarantine_rx,
     ) = crate::new::<crate::TypeConfig, _>(ds_config.path.clone(), ds_config.node_id, kek.clone())
         .await?;
+    // ADR 0048: track the latest logged index per keyspace, and rebuild it
+    // from the log tail that is not applied yet.
+    let mut log_store =
+        log_store.with_watermark_extractor(crate::store::state_machine::watermark::entry_keyspaces);
+    let last_applied = state_machine_store
+        .applied_log_index()
+        .map_err(|e| StoreError::Other(eyre!("cannot read last applied index: {e}")))?;
+    log_store
+        .rebuild_logged_watermarks(last_applied)
+        .await
+        .map_err(|e| StoreError::Other(eyre!("cannot rebuild keyspace watermarks: {e}")))?;
     state_machine_store.set_write_rate_threshold(ds_config.write_rate_threshold);
     state_machine_store.set_feed_kinds(ds_config.feed_kinds.iter().cloned());
     state_machine_store.set_feed_max_event_bytes(ds_config.feed_max_event_bytes);
