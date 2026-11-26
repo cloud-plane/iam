@@ -480,6 +480,10 @@ impl FjallStateMachine {
         self.reload_site_registry()
             .map_err(|e| io::Error::other(e.to_string()))?;
 
+        // Every keyspace was replaced: projections built on the old data are
+        // stale.
+        self.revisions.install();
+
         drop(_lifecycle_guard);
 
         Ok(manifest)

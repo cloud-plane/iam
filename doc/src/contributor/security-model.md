@@ -356,6 +356,29 @@ mode, turns the binding into decoration. **Where:**
 `crates/keystone/src/api/v4/oauth2/resource_dpop.rs`,
 `policy/oauth2/settings/`.
 
+### I12 — Revocation freshness fails closed for tokens of other authorities
+
+A token issued by another authority (ADR 0045) is revoked there, and the
+revocation reaches this authority over a priority stream. When that stream has
+not been heard from within `[revoke] revocation_max_staleness` (30 seconds by
+default), or never was, keystone sets `input.credentials.revocation_stale` from
+the validation of the token (`revoke::is_issuer_stale`, kept on the
+`SecurityContext`). Policies of **sensitive actions** import
+`data.common.revocation` and require `revocation_common.fresh` in every `allow`
+rule; reads and low-risk actions keep working during a partition. The flag is
+never derived from the token scope or from client input, and an unknown or
+unreachable stream is stale, not fresh. A foreign revocation event revokes only
+tokens whose issuer is its origin, and the origin is the configured
+subscription, never the event body.
+
+Today the sensitive set is `identity.trust.create`,
+`identity.credential.{create,update}` and `identity.user.{update,delete}`; a new
+policy that creates a standing credential or changes who can authenticate must
+join it. Tokens of this authority are never stale.
+
+Where it lives: `crates/core/src/revoke/stream_health.rs`,
+`policy/revocation/common.rego`, `crates/revoke-driver-raft`.
+
 ## 5. Delegated-auth specifics
 
 Trust, application-credential, and EC2 are authentication _methods_, each with
@@ -510,6 +533,9 @@ carries it, ticked by the reviewer, not just this prose reference.
 - [ ] New delegation-sensitive policy rule? Is the fact it needs **projected
       onto `Credentials` from the chain**, and does the rule anchor on
       `delegated_project_id` + carry the scope-drift tripwire (I2/I3)?
+- [ ] New policy for an action that creates a standing credential or changes
+      who can authenticate? Does every `allow` rule require
+      `revocation_common.fresh` (I12)?
 - [ ] New scope shape or redemption path for a delegated auth? Are effective
       roles still **bounded by the delegation** (I4)? Add a test that a
       _restricted_ delegation cannot exceed its roles via the new path.

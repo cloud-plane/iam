@@ -36,13 +36,28 @@ pub struct RevokeProvider {
     pub caching: bool,
 
     /// Entry point for the token revocation backend driver in the
-    /// `keystone.revoke` namespace. Keystone only provides a `sql` driver.
+    /// `keystone.revoke` namespace: `sql` (the default) or `raft`, which keeps
+    /// the events in the distributed storage and emits them to the priority
+    /// outbox of the change feed when `feed_kinds` lists `revocation`.
     #[serde(default = "default_sql_driver")]
     pub driver: String,
     /// The number of seconds after a token has expired before a corresponding
     /// revocation event may be purged from the backend.
     #[serde(default = "default_expiration_buffer")]
     pub expiration_buffer: usize,
+
+    /// Seconds after which the revocation stream of another authority counts
+    /// as stale, when no heartbeat arrived from it after the events before it
+    /// were applied. While it is stale, the policies of sensitive actions deny
+    /// requests that carry a token issued by that authority
+    /// (`input.credentials.revocation_stale`). The revocation bound of the
+    /// mesh is 30 seconds.
+    ///
+    /// Not in effect yet: the token carries no issuer and no node starts a
+    /// feed consumer for another authority, so no request is ever marked
+    /// stale.
+    #[serde(default = "default_revocation_max_staleness")]
+    pub revocation_max_staleness: u64,
 }
 
 impl Default for RevokeProvider {
@@ -52,8 +67,13 @@ impl Default for RevokeProvider {
             caching: default_true(),
             driver: default_sql_driver(),
             expiration_buffer: default_expiration_buffer(),
+            revocation_max_staleness: default_revocation_max_staleness(),
         }
     }
+}
+
+fn default_revocation_max_staleness() -> u64 {
+    30
 }
 
 fn default_expiration_buffer() -> usize {

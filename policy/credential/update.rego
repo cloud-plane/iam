@@ -3,6 +3,8 @@
 # description: Policy for updating a credential
 package identity.credential.update
 
+import data.common.revocation as revocation_common
+
 import data.common.credential as credential_common
 
 # Update credential.
@@ -26,16 +28,19 @@ import data.common.credential as credential_common
 default allow := false
 
 allow if {
+	revocation_common.fresh
 	"admin" in input.credentials.roles
 }
 
 allow if {
+	revocation_common.fresh
 	input.credentials.is_admin
 }
 
 # METADATA
 # description: "A non-delegated caller may update their own credential."
 allow if {
+	revocation_common.fresh
 	"member" in input.credentials.roles
 	not input.credentials.is_delegated
 	input.existing.credential.user_id == input.credentials.user_id
@@ -44,6 +49,7 @@ allow if {
 # METADATA
 # description: "A delegated caller may update their own credential only when it stays bound to the delegation's own project."
 allow if {
+	revocation_common.fresh
 	"member" in input.credentials.roles
 	input.credentials.is_delegated
 	input.existing.credential.user_id == input.credentials.user_id

@@ -441,6 +441,25 @@ impl StorageService for StorageServiceImpl {
         }))
     }
 
+    // Forwarded keyspace revisions from follower to leader.
+    #[tracing::instrument(level = "trace", skip(self))]
+    async fn forwarded_keyspace_revisions(
+        &self,
+        request: Request<pb::api::ForwardedKeyspaceRevisionsRequest>,
+    ) -> Result<Response<pb::api::ForwardedKeyspaceRevisionsResponse>, Status> {
+        self.authz.require(&request, &[PeerRole::Node])?;
+        self.ensure_leader_linearizable().await?;
+        let req = request.into_inner();
+        Ok(Response::new(pb::api::ForwardedKeyspaceRevisionsResponse {
+            instance: self.state_machine_store.revision_instance(),
+            revisions: req
+                .keyspaces
+                .iter()
+                .map(|k| self.state_machine_store.keyspace_revision(k))
+                .collect(),
+        }))
+    }
+
     // Forwarded prefix-index scan from follower to leader.
     #[tracing::instrument(level = "trace", skip(self))]
     async fn forwarded_prefix_index(

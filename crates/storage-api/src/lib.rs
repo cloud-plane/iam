@@ -490,6 +490,11 @@ pub enum Mutation {
         value: Option<Vec<u8>>,
         /// Sensitivity of the value.
         tier: DataTier,
+        /// Put the event in the priority outbox, which the feed serves on a
+        /// faster, leader-backed stream. For kinds that must reach every
+        /// authority within seconds (revocations).
+        #[serde(default)]
+        priority: bool,
     },
 }
 
@@ -645,6 +650,50 @@ pub trait StorageApi: Send + Sync {
         _consistency: ReadConsistency,
     ) -> Result<Option<StoreDataEnvelope<Vec<u8>>>, StoreError> {
         self.get_by_key(key, keyspace).await
+    }
+
+    /// An opaque revision of `keyspace` on this node: equal values from two
+    /// calls mean the keyspace did not change between them. For drivers that
+    /// keep a small keyspace in memory.
+    ///
+    /// Returns `None` when this node cannot vouch for the keyspace at the
+    /// requested consistency (a follower asked for a linearizable answer, or
+    /// a storage without revisions); the caller then reads through. Revisions
+    /// are only comparable with ones reported by the same node.
+    async fn keyspace_revision(
+        &self,
+        _keyspace: &str,
+        _consistency: ReadConsistency,
+    ) -> Result<Option<u64>, StoreError> {
+        Ok(None)
+    }
+
+    /// [`Self::keyspace_revision`] for several keyspaces at once, with one
+    /// confirmation of leadership. The values are opaque: compare the whole
+    /// vector with an earlier one. Unlike [`Self::keyspace_revision`], a
+    /// follower vouches too, by asking the leader.
+    ///
+    /// The default asks for each keyspace in turn.
+    async fn keyspace_revisions(
+        &self,
+        keyspaces: &[&str],
+        consistency: ReadConsistency,
+    ) -> Result<Option<Vec<u64>>, StoreError> {
+        let mut out = Vec::with_capacity(keyspaces.len());
+        for keyspace in keyspaces {
+            match self.keyspace_revision(keyspace, consistency).await? {
+                Some(r) => out.push(r),
+                None => return Ok(None),
+            }
+        }
+        Ok(Some(out))
+    }
+
+    /// Whether `Emit` of `kind` is accepted on this node (`feed_kinds`).
+    /// A driver that emits as a side effect checks it, so the feed being off
+    /// never fails its writes.
+    fn feed_kind_enabled(&self, _kind: &str) -> bool {
+        false
     }
 
     /// Initializes the Raft cluster with the given node configuration.

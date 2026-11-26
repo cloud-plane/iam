@@ -297,6 +297,9 @@ pub enum MutationInner {
     PruneOutbox {
         /// Newest log index to delete.
         upto_index: u64,
+        /// Prune the priority outbox instead of the normal one.
+        #[serde(default)]
+        priority: bool,
     },
 
     /// Start a new feed epoch with a value chosen by the proposer, so every
@@ -347,6 +350,9 @@ pub enum MutationInner {
         value: Option<serde_bytes::ByteBuf>,
         /// Data tier (0 to 3); Tier 2 and 3 are refused.
         tier: u8,
+        /// The event belongs to the priority outbox.
+        #[serde(default)]
+        priority: bool,
     },
 }
 
@@ -418,6 +424,7 @@ impl MutationInner {
                 op,
                 value,
                 tier,
+                priority,
             } => MutationInner::Emit {
                 kind,
                 domain_id,
@@ -425,6 +432,7 @@ impl MutationInner {
                 op,
                 value: value.map(serde_bytes::ByteBuf::from),
                 tier: tier as u8,
+                priority,
             },
         })
     }

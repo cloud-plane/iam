@@ -319,3 +319,57 @@ mod loader {
         assert_eq!(set.len(), 1);
     }
 }
+
+/// A request whose token depends on a stale revocation stream is denied for
+/// the sensitive actions (ADR 0045 section 9) and unaffected otherwise.
+#[test]
+fn test_stale_revocation_denies_sensitive_actions() {
+    let e = enforcer();
+    let trust = |stale: Option<bool>| {
+        let mut credentials = json!({"roles": ["member"], "user_id": "u1"});
+        if let Some(stale) = stale {
+            credentials["revocation_stale"] = json!(stale);
+        }
+        json!({"credentials": credentials, "target": {"trust": {"trustor_user_id": "u1"}}})
+    };
+    // No flag (a token of this authority) and an explicit false.
+    for stale in [None, Some(false)] {
+        assert!(
+            e.evaluate("identity/trust/create", trust(stale))
+                .unwrap()
+                .allow()
+        );
+    }
+    assert!(
+        !e.evaluate("identity/trust/create", trust(Some(true)))
+            .unwrap()
+            .allow()
+    );
+
+    // Even an admin cannot delete a user on stale revocation state.
+    let delete = |stale: bool| {
+        json!({
+            "credentials": {"roles": ["admin"], "is_admin": true, "revocation_stale": stale},
+            "target": null,
+            "existing": {"user": {"id": "u", "domain_id": "d"}}
+        })
+    };
+    assert!(
+        e.evaluate("identity/user/delete", delete(false))
+            .unwrap()
+            .allow()
+    );
+    assert!(
+        !e.evaluate("identity/user/delete", delete(true))
+            .unwrap()
+            .allow()
+    );
+
+    // A read is not sensitive.
+    let show = json!({
+        "credentials": {"roles": ["admin"], "is_admin": false, "domain_id": "x", "revocation_stale": true},
+        "target": null,
+        "existing": {"role": {"id": "r", "domain_id": "d"}}
+    });
+    assert!(e.evaluate("identity/role/show", show).unwrap().allow());
+}

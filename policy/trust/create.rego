@@ -3,6 +3,8 @@
 # description: Policy for creating a trust
 package identity.trust.create
 
+import data.common.revocation as revocation_common
+
 import data.common.trust as trust_common
 
 # Create trust.
@@ -37,6 +39,7 @@ default allow := false
 #   roles being delegated is checked provider-side
 #   (`TrustService::create_trust`), not here.
 allow if {
+	revocation_common.fresh
 	trust_common.is_trustor(input.target.trust)
 	trust_common.not_delegated_or_bound_to_own_project(object.get(input.target.trust, "project_id", null))
 }

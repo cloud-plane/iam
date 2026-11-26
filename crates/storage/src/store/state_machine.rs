@@ -61,6 +61,7 @@ mod outbox;
 mod quarantine;
 mod raft_sm;
 mod restore;
+mod revision;
 mod rotation;
 mod sites;
 mod snapshot;
@@ -68,7 +69,7 @@ mod snapshot_file;
 mod status;
 
 pub(crate) use self::keyspace_drop::keyspace_drop_allowed;
-pub use self::outbox::{FeedCursor, FeedGrants, OutboxEvent};
+pub use self::outbox::{FeedCursor, FeedGrants, OutboxClass, OutboxEvent};
 pub(crate) use self::restore::MAX_LIVE_RESTORE_SIZE;
 pub(crate) use self::rotation::{
     DEK_REVOKED_PENDING_PREFIX, DEK_REVOKED_PREFIX, META_DEK_CURRENT, unix_now,
@@ -228,6 +229,8 @@ pub struct FjallStateMachine {
     feed_kinds: Arc<RwLock<HashSet<String>>>,
     /// Largest `Emit` event, checked where a transaction is proposed.
     feed_max_event_bytes: Arc<std::sync::atomic::AtomicUsize>,
+    /// Node-local keyspace revisions (see `revision`).
+    revisions: Arc<revision::KeyspaceRevisions>,
 }
 
 /// Default for `[distributed_storage] feed_max_event_bytes`.
@@ -467,6 +470,7 @@ impl FjallStateMachine {
             ),
             audit: std::sync::OnceLock::new(),
             write_rate_threshold: Arc::new(AtomicU32::new(DEFAULT_WRITE_RATE_THRESHOLD)),
+            revisions: Arc::new(revision::KeyspaceRevisions::default()),
             feed_kinds: Arc::new(RwLock::new(HashSet::new())),
             feed_max_event_bytes: Arc::new(std::sync::atomic::AtomicUsize::new(
                 DEFAULT_FEED_MAX_EVENT_BYTES,

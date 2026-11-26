@@ -162,8 +162,9 @@ fn mutation_layouts() {
             op: FeedOp::Set,
             value: Some(vec![2]),
             tier: DataTier::Internal,
+            priority: false,
         },
-        "81a4456d697496a16ba1649101a35365749102a8496e7465726e616c",
+        "81a4456d697497a16ba1649101a35365749102a8496e7465726e616cc2",
     );
     assert_wire(
         "Mutation::DropKeyspace",

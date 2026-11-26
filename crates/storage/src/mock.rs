@@ -20,12 +20,30 @@ use std::sync::Mutex;
 use async_trait::async_trait;
 
 use crate::ApiStoreError;
+use crate::FeedOp;
 use crate::StorageApi;
 use crate::StoreError;
 use crate::StoreResponse;
 use crate::Violation;
 use crate::store_command::*;
 use crate::types::{Metadata, StoreDataEnvelope};
+
+/// An `Emit` the mock committed.
+#[derive(Clone, Debug, PartialEq)]
+pub struct EmittedEvent {
+    /// Feed kind.
+    pub kind: String,
+    /// Owning domain.
+    pub domain_id: Option<String>,
+    /// Record key.
+    pub key: Vec<u8>,
+    /// What happened to the record.
+    pub op: FeedOp,
+    /// Value of a `Set`.
+    pub value: Option<Vec<u8>>,
+    /// Priority outbox.
+    pub priority: bool,
+}
 
 /// In-memory storage that implements the `StorageApi` trait.
 ///
@@ -46,6 +64,14 @@ pub struct MockStorage {
     metadata: Mutex<HashMap<String, Vec<u8>>>,
     /// This node's simulated Raft node id. Defaults to `0`.
     node_id: Mutex<u64>,
+    /// Every `Emit` that was committed, in order.
+    emitted: Mutex<Vec<EmittedEvent>>,
+    /// Feed kinds the simulated node enables.
+    feed_kinds: Mutex<std::collections::HashSet<String>>,
+    /// keyspace -> revision, and the source of new revisions.
+    revisions: Mutex<(u64, HashMap<String, u64>)>,
+    /// Number of `prefix` reads, for tests of read-through caches.
+    prefix_reads: std::sync::atomic::AtomicUsize,
 }
 
 fn lock<'a, T>(m: &'a Mutex<T>) -> Result<std::sync::MutexGuard<'a, T>, StoreError> {
@@ -55,6 +81,31 @@ fn lock<'a, T>(m: &'a Mutex<T>) -> Result<std::sync::MutexGuard<'a, T>, StoreErr
 }
 
 impl MockStorage {
+    /// Enables `kind` for `Emit`, as `feed_kinds` does on a node.
+    pub fn enable_feed_kind(&self, kind: &str) {
+        if let Ok(mut kinds) = lock(&self.feed_kinds) {
+            kinds.insert(kind.to_owned());
+        }
+    }
+
+    /// The `Emit` mutations committed so far.
+    pub fn emitted(&self) -> Vec<EmittedEvent> {
+        lock(&self.emitted).map(|e| e.clone()).unwrap_or_default()
+    }
+
+    /// How many times `prefix` was called.
+    pub fn prefix_reads(&self) -> usize {
+        self.prefix_reads.load(std::sync::atomic::Ordering::SeqCst)
+    }
+
+    fn touch(&self, keyspace: &str) {
+        if let Ok(mut r) = lock(&self.revisions) {
+            r.0 += 1;
+            let revision = r.0;
+            r.1.insert(keyspace.to_owned(), revision);
+        }
+    }
+
     /// Create a value under `key` only if the key does not already exist.
     /// Returns a `Violation` with type "CONFLICT" when the key already exists.
     /// When a violation occurs, the write is skipped.
@@ -235,6 +286,8 @@ impl StorageApi for MockStorage {
         prefix: &[u8],
         keyspace: Option<&str>,
     ) -> Result<Vec<(String, StoreDataEnvelope<Vec<u8>>)>, ApiStoreError> {
+        self.prefix_reads
+            .fetch_add(1, std::sync::atomic::Ordering::SeqCst);
         let ks = keyspace.unwrap_or("data").to_string();
         let prefix_str = String::from_utf8(prefix.to_vec())?;
 
@@ -347,6 +400,16 @@ impl StorageApi for MockStorage {
             .iter()
             .any(|m| !matches!(m, Mutation::DropKeyspace { .. }));
 
+        let touched: Vec<String> = mutations
+            .iter()
+            .filter_map(|m| match m {
+                Mutation::Set { keyspace, .. }
+                | Mutation::Remove { keyspace, .. }
+                | Mutation::CreateIfAbsent { keyspace, .. }
+                | Mutation::DropKeyspace { keyspace } => Some(keyspace.clone()),
+                _ => None,
+            })
+            .collect();
         let mut data = lock(&self.data)?;
         let mut metadata_map = lock(&self.metadata)?;
         let mut indexes = lock(&self.indexes)?;
@@ -444,8 +507,33 @@ impl StorageApi for MockStorage {
                     indexes.insert(key, ());
                 }
 
-                // The mock keeps no outbox.
-                Mutation::Emit { .. } => {}
+                // The mock keeps no outbox, only a record of what was emitted.
+                Mutation::Emit {
+                    kind,
+                    domain_id,
+                    key,
+                    op,
+                    value,
+                    priority,
+                    ..
+                } => {
+                    if !lock(&self.feed_kinds)?.contains(&kind) {
+                        violations.push(Violation {
+                            r#type: "FEED_KIND_DISABLED".to_string(),
+                            subject: kind,
+                            description: "feed kind is not enabled".to_string(),
+                        });
+                    } else {
+                        lock(&self.emitted)?.push(EmittedEvent {
+                            kind,
+                            domain_id,
+                            key,
+                            op,
+                            value,
+                            priority,
+                        });
+                    }
+                }
 
                 Mutation::DropKeyspace { keyspace } => {
                     let mixed = has_non_drop;
@@ -479,10 +567,32 @@ impl StorageApi for MockStorage {
             }
         }
 
+        drop((data, metadata_map, indexes));
+        for keyspace in &touched {
+            self.touch(keyspace);
+        }
         Ok(StoreResponse {
             value: None,
             violations,
         })
+    }
+
+    fn feed_kind_enabled(&self, kind: &str) -> bool {
+        lock(&self.feed_kinds).is_ok_and(|kinds| kinds.contains(kind))
+    }
+
+    async fn keyspace_revision(
+        &self,
+        keyspace: &str,
+        _consistency: crate::ReadConsistency,
+    ) -> Result<Option<u64>, ApiStoreError> {
+        Ok(Some(
+            lock(&self.revisions)?
+                .1
+                .get(keyspace)
+                .copied()
+                .unwrap_or_default(),
+        ))
     }
 }
 

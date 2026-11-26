@@ -42,6 +42,12 @@ fn other(msg: String) -> StoreError {
 
 const BACKOFF_MIN: Duration = Duration::from_secs(1);
 const BACKOFF_MAX: Duration = Duration::from_secs(60);
+/// A session that lasted this long, after receiving from the source, resets
+/// the reconnect backoff.
+const HEALTHY_SESSION: Duration = Duration::from_secs(10);
+/// Reconnect cap of a priority stream: the revocation bound is 30 s, so a
+/// dropped stream must be back well within it.
+const PRIORITY_BACKOFF_MAX: Duration = Duration::from_secs(5);
 
 /// One feed event, decoded.
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -71,6 +77,12 @@ pub trait FeedSink: Send + Sync {
     /// storage, and a `Set` replaces. The consumer adds its cursor update to
     /// the same transaction.
     fn mutations(&self, event: &FeedEventData) -> Result<Vec<Mutation>, StoreError>;
+
+    /// The stream has caught up with the source: a heartbeat arrived, which
+    /// the source sends only when it has no event left for this consumer, and
+    /// every batch before it is applied. A sink that tracks how fresh its
+    /// mirror is records it here.
+    fn on_head(&self) {}
 
     /// Called when the source says the cursor cannot be resumed, before the
     /// consumer subscribes afresh. A sink that mirrors a kind clears or
@@ -110,6 +122,9 @@ pub struct FeedConsumerConfig {
     pub kinds: Vec<String>,
     /// Identifies the source in the cursor keyspace.
     pub name: String,
+    /// Subscribe to the priority outbox of the source (revocations). It has
+    /// a cursor of its own, and the consumer reconnects within seconds.
+    pub priority: bool,
     /// `host:port` of any voter of the source authority.
     pub source_addr: String,
 }
@@ -140,11 +155,21 @@ impl FeedConsumer {
         }
     }
 
+    /// Key of the cursor record: the two outboxes of a source have separate
+    /// positions and epochs.
+    fn cursor_key(&self) -> Vec<u8> {
+        if self.config.priority {
+            format!("{}#priority", self.config.name).into_bytes()
+        } else {
+            self.config.name.clone().into_bytes()
+        }
+    }
+
     /// The stored cursor and its record revision.
     pub async fn load_cursor(&self) -> Result<Option<(CursorRecord, u64)>, StoreError> {
         let Some(env) = self
             .storage
-            .get_by_key(self.config.name.as_bytes(), Some(FEED_CURSOR_KEYSPACE))
+            .get_by_key(&self.cursor_key(), Some(FEED_CURSOR_KEYSPACE))
             .await?
         else {
             return Ok(None);
@@ -193,7 +218,7 @@ impl FeedConsumer {
         .map_err(|e| other(format!("encoding the feed cursor: {e}")))?;
         mutations.push(Mutation::Set {
             expected_revision: stored.map(|(_, rev)| rev),
-            key: self.config.name.as_bytes().to_vec(),
+            key: self.cursor_key(),
             keyspace: FEED_CURSOR_KEYSPACE.to_owned(),
             metadata: Metadata::new(),
             value: record,
@@ -205,11 +230,16 @@ impl FeedConsumer {
     /// Connects, resumes from the stored cursor and applies events until the
     /// stream ends or the source resets the cursor.
     pub async fn run_once(&self) -> Result<RunOutcome, StoreError> {
-        self.session(&mut false).await
+        self.session(&mut false, &mut false).await
     }
 
-    /// [`Self::run_once`], setting `progressed` once an event was applied.
-    async fn session(&self, progressed: &mut bool) -> Result<RunOutcome, StoreError> {
+    /// [`Self::run_once`], setting `progressed` once an event was applied and
+    /// `heard` once the source sent anything.
+    async fn session(
+        &self,
+        progressed: &mut bool,
+        heard: &mut bool,
+    ) -> Result<RunOutcome, StoreError> {
         let cursor = self.load_cursor().await?.map(|(c, _)| c);
         let channel = self
             .tls
@@ -224,6 +254,7 @@ impl FeedConsumer {
                 cursor_position: cursor.map_or(0, |c| u32::from(c.position)),
                 kinds: self.config.kinds.clone(),
                 domains: self.config.domains.clone(),
+                priority: self.config.priority,
             })
             .await
             .map_err(|e| other(format!("subscribing to the feed: {e}")))?
@@ -235,8 +266,12 @@ impl FeedConsumer {
                 .map_err(|e| other(format!("feed stream: {e}")))?;
             match message.and_then(|m| m.message) {
                 None => return Ok(RunOutcome::Ended),
-                Some(Message::Head(_)) => {}
+                Some(Message::Head(_)) => {
+                    *heard = true;
+                    self.sink.on_head();
+                }
                 Some(Message::Events(batch)) => {
+                    *heard = true;
                     let events = batch
                         .events
                         .into_iter()
@@ -267,7 +302,7 @@ impl FeedConsumer {
                     if let Some((_, revision)) = self.load_cursor().await? {
                         self.storage
                             .transaction(vec![Mutation::Remove {
-                                key: self.config.name.as_bytes().to_vec(),
+                                key: self.cursor_key(),
                                 keyspace: FEED_CURSOR_KEYSPACE.to_owned(),
                                 expected_revision: Some(revision),
                             }])
@@ -281,15 +316,23 @@ impl FeedConsumer {
 
     /// Keeps the subscription running until `stop` completes. A session that
     /// fails, ends or is reset waits before the next one, longer each time
-    /// (up to a minute) until a session applies an event.
+    /// (up to a minute, five seconds on a priority stream) until a session
+    /// applies an event or stays up for a while.
     pub async fn run(&self, stop: impl std::future::Future<Output = ()>) {
         tokio::pin!(stop);
         let mut backoff = BACKOFF_MIN;
+        let max_backoff = if self.config.priority {
+            PRIORITY_BACKOFF_MAX
+        } else {
+            BACKOFF_MAX
+        };
         loop {
             let mut progressed = false;
+            let mut heard = false;
+            let started = tokio::time::Instant::now();
             let outcome = tokio::select! {
                 () = &mut stop => return,
-                r = self.session(&mut progressed) => r,
+                r = self.session(&mut progressed, &mut heard) => r,
             };
             if let Err(e) = &outcome {
                 tracing::warn!(
@@ -298,6 +341,11 @@ impl FeedConsumer {
                     "feed subscription failed"
                 );
             }
+            // A stream that was healthy for a while and then dropped is not a
+            // failing source: reconnect at once rather than after a long wait.
+            // A session that never heard from the source (a connect or a
+            // subscribe that hung) is not healthy, however long it took.
+            progressed |= heard && started.elapsed() > HEALTHY_SESSION;
             if progressed {
                 backoff = BACKOFF_MIN;
             }
@@ -306,7 +354,7 @@ impl FeedConsumer {
                 () = tokio::time::sleep(backoff) => {}
             }
             if !progressed {
-                backoff = (backoff * 2).min(BACKOFF_MAX);
+                backoff = (backoff * 2).min(max_backoff);
             }
         }
     }

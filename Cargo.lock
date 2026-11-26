@@ -4988,6 +4988,7 @@ dependencies = [
  "openstack-keystone-policy-regorus",
  "openstack-keystone-policy-store-driver-sql",
  "openstack-keystone-resource-driver-sql",
+ "openstack-keystone-revoke-driver-raft",
  "openstack-keystone-revoke-driver-sql",
  "openstack-keystone-role-driver-sql",
  "openstack-keystone-scim-driver-raft",
@@ -5795,6 +5796,23 @@ dependencies = [
  "tracing",
  "uuid",
  "validator",
+]
+
+[[package]]
+name = "openstack-keystone-revoke-driver-raft"
+version = "0.1.0"
+dependencies = [
+ "async-trait",
+ "chrono",
+ "inventory",
+ "openstack-keystone-core",
+ "openstack-keystone-core-types",
+ "openstack-keystone-distributed-storage",
+ "rmp-serde",
+ "serde",
+ "tokio",
+ "tracing",
+ "uuid",
 ]
 
 [[package]]

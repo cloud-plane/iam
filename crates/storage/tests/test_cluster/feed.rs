@@ -29,6 +29,30 @@ fn emit(kind: &str, domain: &str, key: &str, tier: DataTier) -> Mutation {
         op: FeedOp::Set,
         value: Some(key.as_bytes().to_vec()),
         tier,
+        priority: false,
+    }
+}
+
+fn emit_priority(kind: &str, domain: &str, key: &str) -> Mutation {
+    match emit(kind, domain, key, DataTier::Internal) {
+        Mutation::Emit {
+            kind,
+            domain_id,
+            key,
+            op,
+            value,
+            tier,
+            ..
+        } => Mutation::Emit {
+            kind,
+            domain_id,
+            key,
+            op,
+            value,
+            tier,
+            priority: true,
+        },
+        other => other,
     }
 }
 
@@ -118,7 +142,10 @@ async fn test_emit_inner() -> Result<()> {
         .transaction(vec![emit("registry", "d1", "later", DataTier::Internal)])
         .await?;
     let upto = events[1].0.index;
-    let cmd = StoreCommand::Transaction(vec![MutationInner::PruneOutbox { upto_index: upto }]);
+    let cmd = StoreCommand::Transaction(vec![MutationInner::PruneOutbox {
+        upto_index: upto,
+        priority: false,
+    }]);
     node.storage
         .raft
         .client_write(pb::api::CommandRequest::try_from(cmd)?)
@@ -487,7 +514,10 @@ async fn test_subscribe_inner() -> Result<()> {
     node.storage
         .raft
         .client_write(pb::api::CommandRequest::try_from(
-            StoreCommand::Transaction(vec![MutationInner::PruneOutbox { upto_index: last.0 }]),
+            StoreCommand::Transaction(vec![MutationInner::PruneOutbox {
+                upto_index: last.0,
+                priority: false,
+            }]),
         )?)
         .await?;
     for index in [last.0 - 1, last.0] {
@@ -565,6 +595,155 @@ async fn test_subscribe_inner() -> Result<()> {
         .await
         .expect_err("all grants revoked");
     assert_eq!(tonic::Code::PermissionDenied, err.code());
+    Ok(())
+}
+
+/// Priority events live in their own outbox with their own floor, and the
+/// priority stream carries only them.
+#[serial_test::serial]
+#[test]
+fn test_priority_outbox_is_separate() {
+    TypeConfig::run(async {
+        test_priority_inner().await.unwrap();
+    });
+}
+
+async fn test_priority_inner() -> Result<()> {
+    use openstack_keystone_distributed_storage::OutboxClass;
+    use openstack_keystone_distributed_storage::protobuf::raft::feed_service_client::FeedServiceClient;
+    use pb::raft::feed_message::Message;
+
+    const PORT: u16 = FEED_PORT_BASE + 180;
+    let provider = openstack_keystone_tls_provider::provider();
+    let _ = rustls::crypto::CryptoProvider::install_default(provider);
+    let pki = TestPki::new()?;
+    let node_cert = pki.leaf(Some(&format!("{ROLE_SAN_PREFIX}node")))?;
+    let op_cert = pki.leaf(Some(&format!("{ROLE_SAN_PREFIX}storage-operator")))?;
+    let feed_cert = pki.leaf(Some(&format!("{ROLE_SAN_PREFIX}feed-consumer")))?;
+    let node = Arc::new(
+        InstanceHolder::new_with_ds_config(1, |path| DistributedStorageConfiguration {
+            tls_role_san_prefix: Some(ROLE_SAN_PREFIX.to_string()),
+            feed_kinds: vec!["registry".into(), "revocation".into()],
+            ..get_ds_config_with_port(
+                1,
+                PORT,
+                path,
+                pki.tls_configuration(&node_cert)
+                    .expect("tls configuration"),
+            )
+        })
+        .await?,
+    );
+    spawn_raft_app(&node).await;
+    let mut admin = ClusterAdminServiceClient::new(connect_as(&pki, &op_cert, 1, PORT).await?);
+    admin
+        .init(pb::raft::InitRequest {
+            nodes: vec![new_node_with_port(1, PORT)],
+        })
+        .await?;
+    wait_for_leader(&mut admin, 1).await;
+    let svid = format!("{ROLE_SAN_PREFIX}feed-consumer");
+    for kind in ["registry", "revocation"] {
+        admin
+            .set_feed_grant(pb::raft::FeedGrantRequest {
+                grant: Some(pb::raft::FeedGrant {
+                    svid: svid.clone(),
+                    kind: kind.into(),
+                    has_domain: false,
+                    domain_id: String::new(),
+                }),
+            })
+            .await?;
+    }
+
+    node.storage
+        .transaction(vec![
+            emit("registry", "d1", "a", DataTier::Internal),
+            emit_priority("revocation", "d1", "r1"),
+            emit_priority("revocation", "d1", "r2"),
+        ])
+        .await?;
+    let sm = node.storage.state_machine_store();
+    let keys = |class| -> Result<Vec<Vec<u8>>> {
+        Ok(sm
+            .outbox_events_after_in(class, None, 10)?
+            .into_iter()
+            .map(|(_, e)| e.key)
+            .collect())
+    };
+    assert_eq!(vec![b"a".to_vec()], keys(OutboxClass::Normal)?);
+    assert_eq!(
+        vec![b"r1".to_vec(), b"r2".to_vec()],
+        keys(OutboxClass::Priority)?
+    );
+
+    // The priority stream carries the priority events only, and beats at 1 s
+    // although the node's feed heartbeat is longer.
+    serve_feed(&node, PORT + 10, &svid).await?;
+    let mut client = FeedServiceClient::new(connect_as(&pki, &feed_cert, 1, PORT + 10).await?);
+    let mut stream = client
+        .subscribe(pb::raft::SubscribeRequest {
+            priority: true,
+            ..Default::default()
+        })
+        .await?
+        .into_inner();
+    let Message::Events(events) = next_message(&mut stream).await? else {
+        panic!("expected events");
+    };
+    let got: Vec<_> = events.events.iter().map(|e| e.key.clone()).collect();
+    assert_eq!(vec![b"r1".to_vec(), b"r2".to_vec()], got);
+    let head = tokio::time::timeout(Duration::from_millis(2500), async {
+        loop {
+            match stream.message().await {
+                Ok(Some(m)) => {
+                    if let Some(Message::Head(h)) = m.message {
+                        return Some(h);
+                    }
+                }
+                _ => return None,
+            }
+        }
+    })
+    .await?;
+    assert!(head.is_some(), "no priority heartbeat within 2.5 s");
+
+    // A write moves the revision of its keyspace and no other.
+    let rev = |ks: &'static str| {
+        let storage = node.storage.clone();
+        async move {
+            storage
+                .keyspace_revision(
+                    ks,
+                    openstack_keystone_distributed_storage::ReadConsistency::Linearizable,
+                )
+                .await
+        }
+    };
+    let (a0, b0) = (rev("rev_a").await?, rev("rev_b").await?);
+    assert!(a0.is_some(), "the leader vouches for its keyspaces");
+    node.storage
+        .set_value("k".into(), make_env("v")?, Some("rev_a".into()), None)
+        .await?;
+    assert!(rev("rev_a").await? > a0);
+    assert_eq!(b0, rev("rev_b").await?);
+
+    // Pruning one outbox leaves the other and its floor alone.
+    let upto = sm.outbox_events_after_in(OutboxClass::Priority, None, 10)?[0]
+        .0
+        .index;
+    let cmd = StoreCommand::Transaction(vec![MutationInner::PruneOutbox {
+        upto_index: upto,
+        priority: true,
+    }]);
+    node.storage
+        .raft
+        .client_write(pb::api::CommandRequest::try_from(cmd)?)
+        .await?;
+    assert!(keys(OutboxClass::Priority)?.is_empty());
+    assert_eq!(upto + 1, sm.feed_floor_in(OutboxClass::Priority)?);
+    assert_eq!(0, sm.feed_floor_in(OutboxClass::Normal)?);
+    assert_eq!(vec![b"a".to_vec()], keys(OutboxClass::Normal)?);
     Ok(())
 }
 
@@ -648,7 +827,11 @@ async fn test_feed_replicated_inner() -> Result<()> {
 
     // A prune is applied by every voter, and raises the floor everywhere.
     let upto = want.0[1].0.index;
-    write(vec![MutationInner::PruneOutbox { upto_index: upto }]).await?;
+    write(vec![MutationInner::PruneOutbox {
+        upto_index: upto,
+        priority: false,
+    }])
+    .await?;
     let want = snapshot(&leader)?;
     assert_eq!(1, want.0.len());
     for node in &nodes[1..] {
@@ -662,6 +845,31 @@ async fn test_feed_replicated_inner() -> Result<()> {
             snapshot(&s)?
         );
     }
+
+    // A follower vouches for keyspace revisions through the leader, and
+    // reports the leader's, not its own: a write moves them.
+    use openstack_keystone_distributed_storage::ReadConsistency::Linearizable;
+    let follower = nodes[1].storage().clone();
+    let before = follower
+        .keyspace_revisions(&["fr_a", "fr_b"], Linearizable)
+        .await?;
+    assert!(before.is_some(), "a follower vouches through the leader");
+    assert_eq!(
+        before,
+        leader
+            .keyspace_revisions(&["fr_a", "fr_b"], Linearizable)
+            .await?
+    );
+    leader
+        .set_value("k".into(), make_env("v")?, Some("fr_a".into()), None)
+        .await?;
+    let after = follower
+        .keyspace_revisions(&["fr_a", "fr_b"], Linearizable)
+        .await?;
+    assert_ne!(before, after);
+    let (b, a) = (before.unwrap_or_default(), after.unwrap_or_default());
+    assert_eq!(b[0], a[0], "same leader instance");
+    assert_eq!(b[2], a[2], "the other keyspace did not move");
     Ok(())
 }
 
@@ -779,6 +987,7 @@ async fn test_consumer_inner() -> Result<()> {
             source_addr: get_addr_with_port(1, SRC + 10).to_string(),
             kinds: vec!["registry".into()],
             domains: vec![],
+            ..Default::default()
         },
         Arc::new(Mirror),
     ));
@@ -873,5 +1082,162 @@ async fn test_consumer_inner() -> Result<()> {
         .await?;
     assert_eq!(RunOutcome::Reset, consumer.run_once().await?);
     assert!(consumer.load_cursor().await?.is_none());
+    Ok(())
+}
+
+/// A priority consumer follows the priority outbox only, with a cursor of its
+/// own.
+#[serial_test::serial]
+#[test]
+fn test_priority_consumer_follows_the_priority_outbox() {
+    TypeConfig::run(async {
+        test_priority_consumer_inner().await.unwrap();
+    });
+}
+
+async fn test_priority_consumer_inner() -> Result<()> {
+    use openstack_keystone_distributed_storage::feed_consumer::FeedConsumerConfig;
+
+    const SRC: u16 = FEED_PORT_BASE + 200;
+    const DST: u16 = FEED_PORT_BASE + 220;
+    let provider = openstack_keystone_tls_provider::provider();
+    let _ = rustls::crypto::CryptoProvider::install_default(provider);
+    let pki = TestPki::new()?;
+    let node_cert = pki.leaf(Some(&format!("{ROLE_SAN_PREFIX}node")))?;
+    let op_cert = pki.leaf(Some(&format!("{ROLE_SAN_PREFIX}storage-operator")))?;
+    let feed_cert = pki.leaf(Some(&format!("{ROLE_SAN_PREFIX}feed-consumer")))?;
+
+    let src = Arc::new(
+        InstanceHolder::new_with_ds_config(1, |path| DistributedStorageConfiguration {
+            tls_role_san_prefix: Some(ROLE_SAN_PREFIX.to_string()),
+            feed_kinds: vec!["revocation".into()],
+            ..get_ds_config_with_port(
+                1,
+                SRC,
+                path,
+                pki.tls_configuration(&node_cert)
+                    .expect("tls configuration"),
+            )
+        })
+        .await?,
+    );
+    spawn_raft_app(&src).await;
+    let dst = Arc::new(
+        InstanceHolder::new_with_ds_config(1, |path| DistributedStorageConfiguration {
+            tls_role_san_prefix: Some(ROLE_SAN_PREFIX.to_string()),
+            ..get_ds_config_with_port(
+                1,
+                DST,
+                path,
+                pki.tls_configuration(&feed_cert)
+                    .expect("tls configuration"),
+            )
+        })
+        .await?,
+    );
+    spawn_raft_app(&dst).await;
+    for port in [SRC, DST] {
+        let mut admin = ClusterAdminServiceClient::new(connect_as(&pki, &op_cert, 1, port).await?);
+        admin
+            .init(pb::raft::InitRequest {
+                nodes: vec![new_node_with_port(1, port)],
+            })
+            .await?;
+        wait_for_leader(&mut admin, 1).await;
+    }
+    ClusterAdminServiceClient::new(connect_as(&pki, &op_cert, 1, SRC).await?)
+        .set_feed_grant(pb::raft::FeedGrantRequest {
+            grant: Some(pb::raft::FeedGrant {
+                svid: format!("{ROLE_SAN_PREFIX}feed-consumer"),
+                kind: "revocation".into(),
+                has_domain: false,
+                domain_id: String::new(),
+            }),
+        })
+        .await?;
+
+    // One event in each outbox: only the priority one may arrive.
+    src.storage
+        .transaction(vec![
+            emit("revocation", "d1", "normal", DataTier::Internal),
+            emit_priority("revocation", "d1", "urgent"),
+        ])
+        .await?;
+
+    serve_feed(&src, SRC + 10, &format!("{ROLE_SAN_PREFIX}feed-consumer")).await?;
+    let consumer = Arc::new(dst.storage.feed_consumer(
+        FeedConsumerConfig {
+            name: "src".into(),
+            source_addr: get_addr_with_port(1, SRC + 10).to_string(),
+            kinds: vec!["revocation".into()],
+            priority: true,
+            ..Default::default()
+        },
+        Arc::new(Mirror),
+    ));
+    let (stop_tx, stop_rx) = tokio::sync::oneshot::channel::<()>();
+    let runner = {
+        let consumer = consumer.clone();
+        tokio::spawn(async move {
+            consumer
+                .run(async {
+                    let _ = stop_rx.await;
+                })
+                .await;
+        })
+    };
+    let mirrored = |key: &'static str| {
+        let dst = dst.clone();
+        async move {
+            for _ in 0..100 {
+                if dst
+                    .storage
+                    .get_by_key(key.as_bytes(), Some("mirror"))
+                    .await
+                    .ok()
+                    .flatten()
+                    .is_some()
+                {
+                    return true;
+                }
+                TypeConfig::sleep(Duration::from_millis(100)).await;
+            }
+            false
+        }
+    };
+    assert!(
+        mirrored("urgent").await,
+        "the priority event did not arrive"
+    );
+    // Later priority events stream in too.
+    src.storage
+        .transaction(vec![emit_priority("revocation", "d1", "urgent2")])
+        .await?;
+    assert!(
+        mirrored("urgent2").await,
+        "a later priority event was missed"
+    );
+    assert!(
+        dst.storage
+            .get_by_key(b"normal", Some("mirror"))
+            .await?
+            .is_none(),
+        "the normal outbox must not reach a priority consumer"
+    );
+    // The cursor is stored under its own key.
+    assert!(
+        dst.storage
+            .get_by_key(b"src#priority", Some("feed_cursor"))
+            .await?
+            .is_some()
+    );
+    assert!(
+        dst.storage
+            .get_by_key(b"src", Some("feed_cursor"))
+            .await?
+            .is_none()
+    );
+    let _ = stop_tx.send(());
+    let _ = runner.await;
     Ok(())
 }

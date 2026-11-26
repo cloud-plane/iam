@@ -92,6 +92,12 @@ pub struct RevocationEventCreate {
 
     #[builder(default)]
     pub user_id: Option<String>,
+
+    /// Domain that owns the event, for the change feed: the domain of the
+    /// revoked user. Unlike `domain_id` it is not matched against tokens. An
+    /// event without an owner reaches only subscribers granted every domain.
+    #[builder(default)]
+    pub owner_domain_id: Option<String>,
 }
 
 impl RevocationEventCreate {
@@ -155,6 +161,12 @@ pub struct RevocationEventListParameters {
     /// User_id to match against.
     #[builder(default)]
     pub user_ids: Option<Vec<String>>,
+
+    /// Authority that issued the token (its `iss` claim), `None` for a token
+    /// of this authority. A driver that stores events of other authorities
+    /// matches them only against tokens issued by the same authority.
+    #[builder(default)]
+    pub issuer: Option<String>,
 }
 
 impl RevocationEventListParametersBuilder {
@@ -196,6 +208,7 @@ impl TryFrom<&FernetToken> for RevocationEventCreate {
                 None
             },
             user_id: None,
+            owner_domain_id: None,
         })
     }
 }

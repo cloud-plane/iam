@@ -151,6 +151,28 @@ impl Storage {
         }
     }
 
+    /// Forward a keyspace revisions read to the leader via gRPC. The result
+    /// starts with the leader's instance id.
+    pub(super) async fn forwarded_keyspace_revisions(
+        &self,
+        leader_id: u64,
+        leader_addr: String,
+        keyspaces: &[&str],
+    ) -> Result<Vec<u64>, ApiStoreError> {
+        let channel = self.get_or_create_channel(leader_id, leader_addr).await?;
+        let mut client = StorageServiceClient::new(channel);
+        let resp = client
+            .forwarded_keyspace_revisions(pb::api::ForwardedKeyspaceRevisionsRequest {
+                keyspaces: keyspaces.iter().map(|k| (*k).to_owned()).collect(),
+            })
+            .await
+            .map_err(|status| forwarded_status_error("forwarded revisions failed", status))?
+            .into_inner();
+        let mut out = vec![resp.instance];
+        out.extend(resp.revisions);
+        Ok(out)
+    }
+
     /// Forward a `prefix_index` scan to the leader via gRPC.
     #[tracing::instrument(name = "storage.forwarded_prefix_index", level = "debug", skip_all)]
     pub(super) async fn forwarded_prefix_index(

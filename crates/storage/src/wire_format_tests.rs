@@ -205,8 +205,11 @@ fn mutation_inner_layouts() {
     );
     assert_wire(
         "MutationInner::PruneOutbox",
-        &MutationInner::PruneOutbox { upto_index: 7 },
-        "81ab5072756e654f7574626f789107",
+        &MutationInner::PruneOutbox {
+            upto_index: 7,
+            priority: true,
+        },
+        "81ab5072756e654f7574626f789207c3",
     );
     assert_wire(
         "MutationInner::SetFeedEpoch",
@@ -240,8 +243,9 @@ fn mutation_inner_layouts() {
             op: openstack_keystone_storage_api::FeedOp::Remove,
             value: None,
             tier: 1,
+            priority: false,
         },
-        "81a4456d697496a16ba164c40101a652656d6f7665c001",
+        "81a4456d697497a16ba164c40101a652656d6f7665c001c2",
     );
     assert_wire(
         "MutationInner::Quarantine",
@@ -309,4 +313,29 @@ fn audit_record_json_key_order() {
         r#"{"timestamp":1700000000,"event_type":"DEK_ROTATION","actor":"op","node_id":3,"dek_version":4,"details":{"k":"v"}}"#,
         "AuditRecord: the JSON key order changed"
     );
+}
+
+/// Entries proposed before the `priority` flag existed are shorter; they must
+/// still decode, as normal-outbox events.
+#[test]
+fn emit_and_prune_without_priority_still_decode() {
+    let emit: MutationInner =
+        rmp_serde::from_slice(&unhex("81a4456d697496a16ba164c40101a652656d6f7665c001"))
+            .expect("an Emit without the priority flag decodes");
+    assert!(matches!(
+        emit,
+        MutationInner::Emit {
+            priority: false,
+            ..
+        }
+    ));
+    let prune: MutationInner = rmp_serde::from_slice(&unhex("81ab5072756e654f7574626f789107"))
+        .expect("a PruneOutbox without the priority flag decodes");
+    assert!(matches!(
+        prune,
+        MutationInner::PruneOutbox {
+            upto_index: 7,
+            priority: false
+        }
+    ));
 }
