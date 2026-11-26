@@ -67,6 +67,7 @@ mod sites;
 mod snapshot;
 mod snapshot_file;
 mod status;
+mod watermark;
 
 pub(crate) use self::keyspace_drop::keyspace_drop_allowed;
 pub use self::outbox::{FeedCursor, FeedGrants, OutboxClass, OutboxEvent};
@@ -175,6 +176,8 @@ pub struct FjallStateMachine {
     /// a Fjall partition existing.
     ephemeral: DashMap<String, EphemeralKeyspace>,
     index: Keyspace,
+    /// Applied keyspace watermarks `A[K]` (ADR 0048).
+    watermarks: Arc<watermark::AppliedWatermarks>,
     /// Key Encryption Key used to unwrap new DEKs on InstallDek apply.
     kek: Arc<dyn KekProvider>,
     /// Serializes non-core keyspace lifecycle changes (`drop_keyspace`)
@@ -445,7 +448,9 @@ impl FjallStateMachine {
             .await,
         ));
 
+        let watermarks = Arc::new(watermark::AppliedWatermarks::from_meta(&meta)?);
         let sm = Self {
+            watermarks,
             db,
             snapshot_dir,
             node_id,

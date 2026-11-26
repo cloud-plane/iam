@@ -49,7 +49,7 @@ questions and live in different places.
 
 | Watermark                | Meaning                                                                                           | Where                                                                  |
 | ------------------------ | ------------------------------------------------------------------------------------------------- | ---------------------------------------------------------------------- |
-| **Applied** `A[K]`       | Index of the last **applied** entry that touched keyspace `K`.                                    | Every node, in the reserved keyspace `_watermark`, persisted.          |
+| **Applied** `A[K]`       | Index of the last **applied** entry that touched keyspace `K`.                                    | Every node, in `meta` under `_wm:<keyspace>`, persisted.               |
 | **Committed** `W[K](R)`  | Index of the latest entry at or below read index `R` that touches `K`, applied or not.            | The leader, in memory, updated when an entry is proposed or appended.  |
 
 `A[K]` is deterministic: every node derives it from the same log, so two nodes
@@ -161,10 +161,11 @@ keyspace.
 - **Cost of the table.** One extra small write per applied entry (a row per
   touched keyspace), in the batch that already exists. The in-memory leader map
   is bounded by the number of keyspaces.
-- **Rolling upgrade.** An old node has no `_watermark`. A node treats a missing
+- **Rolling upgrade.** An old node has no `_wm:` rows. A node treats a missing
   `A[K]` as `0`, which never satisfies `A[K] >= W[S]` for `W > 0`, so it falls
-  back to waiting or forwarding. `_watermark` must be added to
-  `RESERVED_KEYSPACES` so callers cannot write it. Leaders that do not serve
+  back to waiting or forwarding. The rows live in `meta` under
+  `_wm:`, which has no NUL byte and so cannot collide with a record's
+  `<keyspace>\0<key>` metadata key. Leaders that do not serve
   `ReadWatermark` make the follower forward as today.
 - **Relation to ADR 0047.** Both answer "is my copy current?" with a monotone
   counter per unit of data. The SQL counters are bumped by triggers and polled;
