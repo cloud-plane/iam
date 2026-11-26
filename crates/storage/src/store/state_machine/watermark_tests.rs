@@ -14,7 +14,6 @@
 use futures::stream;
 use openraft::storage::RaftStateMachine;
 
-use super::test_support::*;
 use super::watermark::{WATERMARK_PREFIX, watermark_key};
 use super::*;
 use crate::store_command::{MutationInner, StoreCommand};

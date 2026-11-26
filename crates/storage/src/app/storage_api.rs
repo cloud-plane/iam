@@ -397,7 +397,6 @@ impl StorageApi for Storage {
         if let Some(res) = self
             .try_follower_read(&[keyspace.unwrap_or("data")], || {
                 self.local_get(key, keyspace, DataTier::Secret)
-                    .map_err(ApiStoreError::from)
             })
             .await
         {
@@ -504,7 +503,6 @@ impl StorageApi for Storage {
         if let Some(res) = self
             .try_follower_read(&[keyspace.unwrap_or("data")], || {
                 self.local_prefix(prefix, keyspace, DataTier::Secret)
-                    .map_err(ApiStoreError::from)
             })
             .await
         {

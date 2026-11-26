@@ -33,6 +33,9 @@ use crate::StoreError;
 use crate::store::state_machine::watermark::LoggedWatermarks;
 use crate::types::FjallNoncePersistence;
 
+/// Maps a log entry to the keyspaces it touches (ADR 0048).
+pub type KeyspaceExtractor<C> = fn(&EntryOf<C>) -> Vec<String>;
+
 pub(crate) const KEY_VOTE: &[u8] = b"vote";
 pub(crate) const KEY_PURGED: &[u8] = b"purged";
 
@@ -74,7 +77,7 @@ where
     logged: Arc<LoggedWatermarks>,
     /// Maps an entry to the keyspaces it touches; unset until the caller
     /// that knows the concrete entry type installs it.
-    extract: Option<fn(&EntryOf<C>) -> Vec<String>>,
+    extract: Option<KeyspaceExtractor<C>>,
 }
 
 impl<C> FjallLogStore<C>
@@ -303,7 +306,7 @@ where
 
     /// Installs the function that maps an entry to the keyspaces it touches,
     /// which feeds [`Self::logged_watermarks`] on every append.
-    pub fn with_watermark_extractor(mut self, extract: fn(&EntryOf<C>) -> Vec<String>) -> Self {
+    pub fn with_watermark_extractor(mut self, extract: KeyspaceExtractor<C>) -> Self {
         self.extract = Some(extract);
         self
     }
