@@ -19,7 +19,10 @@
 //! [`WATERMARK_PREFIX`] and written in the same batch as the entry's data, so
 //! it can never be ahead of the data after a crash.
 //!
-//! The table only records progress; nothing reads it for a decision yet.
+//! `meta` also holds a persisted floor ([`FLOOR_KEY`]): the index of the last
+//! restore or snapshot install, which replaced every keyspace. Per-record
+//! metadata is tracked per keyspace as `meta:<keyspace>` ([`record_meta_keyspace`]);
+//! engine state (DEKs, quarantine, sites, outbox) is tracked as `meta`.
 
 use dashmap::DashMap;
 use fjall::{Keyspace, UserKey};
@@ -36,6 +39,27 @@ pub(super) const WATERMARK_PREFIX: &str = "_wm:";
 const KS_META: &str = "meta";
 const KS_INDEX: &str = "index";
 
+/// Wildcard recorded for a log entry that cannot be decoded: it may touch
+/// any keyspace, so it raises the watermark of every keyspace.
+pub(crate) const KS_ALL: &str = "*";
+
+/// `meta` key of the persisted restore/install floor.
+///
+/// It does not start with [`WATERMARK_PREFIX`], so the row scan never sees it.
+pub(super) const FLOOR_KEY: &[u8] = b"_wmfloor";
+
+/// Name of the pseudo keyspace for the per-record metadata of `keyspace`.
+///
+/// Per-record metadata lives in the `meta` keyspace. Tracking it per user
+/// keyspace keeps a write to one keyspace from making every other
+/// keyspace's reads wait.
+pub(crate) fn record_meta_keyspace(keyspace: &str) -> String {
+    format!("{KS_META}:{keyspace}")
+}
+
+/// Pseudo keyspace of engine state in `meta` (DEKs, quarantine, sites, ...).
+pub(crate) const ENGINE_KEYSPACE: &str = KS_META;
+
 /// The latest log index that touches each keyspace, as seen by this node's
 /// log store (`W[K]` input, ADR 0048).
 ///
@@ -45,12 +69,19 @@ const KS_INDEX: &str = "index";
 #[derive(Debug, Default)]
 pub struct LoggedWatermarks {
     rows: DashMap<String, u64>,
+    /// Highest index of an entry that may touch any keyspace ([`KS_ALL`]).
+    all: std::sync::atomic::AtomicU64,
 }
 
 impl LoggedWatermarks {
     /// Records that the entry at `index` touches `keyspaces`.
     pub fn record(&self, keyspaces: &[String], index: u64) {
         for ks in keyspaces {
+            if ks == KS_ALL {
+                self.all
+                    .fetch_max(index, std::sync::atomic::Ordering::AcqRel);
+                continue;
+            }
             self.rows
                 .entry(ks.clone())
                 .and_modify(|v| *v = (*v).max(index))
@@ -63,21 +94,26 @@ impl LoggedWatermarks {
         self.rows.iter().map(|r| r.key().clone()).collect()
     }
 
-    /// Latest logged index for `keyspace`, `0` if none was seen.
+    /// Latest logged index for `keyspace`, `0` if none was seen. Entries
+    /// that could not be decoded count for every keyspace.
     pub fn get(&self, keyspace: &str) -> u64 {
-        self.rows.get(keyspace).map_or(0, |v| *v)
+        let row = self.rows.get(keyspace).map_or(0, |v| *v);
+        row.max(self.all.load(std::sync::atomic::Ordering::Acquire))
     }
 }
 
 /// Keyspaces a log entry touches; empty for entries without a command
-/// (blank and membership entries).
+/// (blank and membership entries). An entry whose command cannot be decoded
+/// is assumed to touch every keyspace ([`KS_ALL`]): the state machine treats
+/// the same failure as fatal, so being conservative here only delays reads.
 pub fn entry_keyspaces(entry: &crate::pb::raft::Entry) -> Vec<String> {
-    entry
-        .app_data
-        .as_deref()
-        .and_then(|raw| StoreCommand::unpack(raw).ok())
-        .map(|cmd| touched_keyspaces(&cmd))
-        .unwrap_or_default()
+    match entry.app_data.as_deref() {
+        None => Vec::new(),
+        Some(raw) => match StoreCommand::unpack(raw) {
+            Ok(cmd) => touched_keyspaces(&cmd),
+            Err(_) => vec![KS_ALL.to_string()],
+        },
+    }
 }
 
 /// `W[K](R)`: how far a replica must have applied to be current for a
@@ -122,7 +158,11 @@ pub fn read_watermarks(
         })
         .collect();
     // A name with no row resolves to the floor alone.
-    let default = committed_watermark(applied.get("\0unlisted"), 0, read_index);
+    let default = committed_watermark(
+        applied.get("\0unlisted"),
+        logged.get("\0unlisted"),
+        read_index,
+    );
     (rows, default)
 }
 
@@ -160,14 +200,19 @@ pub struct AppliedWatermarks {
     /// Last applied index per keyspace.
     rows: DashMap<String, u64>,
     /// Index of the last restore or snapshot install, which replaces every
-    /// keyspace. Kept in memory only: after a restart it is lost, which makes
-    /// `get` lower, never higher, so the table stays safe.
+    /// keyspace. Persisted under [`FLOOR_KEY`]: a lower value after a
+    /// restart would let the leader under-report `W[K]`.
     floor: std::sync::atomic::AtomicU64,
 }
 
 impl AppliedWatermarks {
-    /// Loads the persisted rows. A missing row is `0` (rolling upgrade).
-    pub fn from_meta(meta: &Keyspace) -> Result<Self, fjall::Error> {
+    /// Loads the persisted rows and floor.
+    ///
+    /// A node that has neither (data written before watermarks existed)
+    /// cannot tell when its keyspaces were last written, so it takes
+    /// `last_applied` as the floor, persisted so that it survives the first
+    /// apply after the upgrade.
+    pub fn from_meta(meta: &Keyspace, last_applied: u64) -> Result<Self, fjall::Error> {
         let rows = DashMap::new();
         for item in meta.prefix(WATERMARK_PREFIX.as_bytes()) {
             let (key, value) = item.into_inner()?;
@@ -181,9 +226,17 @@ impl AppliedWatermarks {
                 rows.insert(name.to_string(), index);
             }
         }
+        let floor = match meta.get(FLOOR_KEY)? {
+            Some(raw) => decode(&raw).unwrap_or(last_applied),
+            None if rows.is_empty() => last_applied,
+            None => 0,
+        };
+        if meta.get(FLOOR_KEY)?.is_none() {
+            meta.insert(FLOOR_KEY, encode(floor))?;
+        }
         Ok(Self {
             rows,
-            floor: std::sync::atomic::AtomicU64::new(0),
+            floor: std::sync::atomic::AtomicU64::new(floor),
         })
     }
 
@@ -250,11 +303,14 @@ pub(crate) fn touched_keyspaces(command: &StoreCommand) -> Vec<String> {
             | MutationInner::Set { keyspace, .. }
             | MutationInner::CreateIfAbsent { keyspace, .. } => {
                 // Per-record metadata lives in `meta`, so a tier lookup
-                // reads both.
+                // reads both; it is tracked per keyspace.
                 push(keyspace);
-                push(KS_META);
+                push(&record_meta_keyspace(keyspace));
             }
-            MutationInner::DropKeyspace { keyspace } => push(keyspace),
+            MutationInner::DropKeyspace { keyspace } => {
+                push(keyspace);
+                push(&record_meta_keyspace(keyspace));
+            }
             MutationInner::RemoveIndex { .. } | MutationInner::SetIndex { .. } => push(KS_INDEX),
             MutationInner::ClearQuarantine { .. }
             | MutationInner::Quarantine { .. }
@@ -327,6 +383,23 @@ mod tests {
     }
 
     #[test]
+    fn undecodable_entry_raises_every_keyspace() {
+        let entry = crate::pb::raft::Entry {
+            term: 1,
+            index: 9,
+            membership: None,
+            app_data: Some(vec![0xff, 0xfe, 0xfd]),
+        };
+        let logged = LoggedWatermarks::default();
+        let touched = entry_keyspaces(&entry);
+        assert_eq!(touched, vec![KS_ALL.to_string()]);
+        logged.record(&touched, 9);
+        assert_eq!(logged.get("anything"), 9);
+        let (_, default) = read_watermarks(&AppliedWatermarks::default(), &logged, 20, &[]);
+        assert_eq!(default, 9);
+    }
+
+    #[test]
     fn key_has_no_nul() {
         assert!(!watermark_key("data").contains(&0u8));
     }
@@ -363,7 +436,7 @@ mod tests {
                 expected_revision: None,
             },
         ]);
-        assert_eq!(touched_keyspaces(&cmd), vec!["k", "meta"]);
+        assert_eq!(touched_keyspaces(&cmd), vec!["k", "meta:k"]);
     }
 
     #[test]
@@ -374,6 +447,6 @@ mod tests {
                 keyspace: "x".into(),
             },
         ]);
-        assert_eq!(touched_keyspaces(&cmd), vec!["index", "x"]);
+        assert_eq!(touched_keyspaces(&cmd), vec!["index", "x", "meta:x"]);
     }
 }

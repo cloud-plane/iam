@@ -93,9 +93,20 @@ keyspace the entry mutates:
 - `drop_keyspace` (the row for `K` is bumped, then removed with the keyspace);
 - writes to ephemeral (in-memory) keyspaces, which are rebuilt from the log on
   restart: their `A[K]` is held in memory and is `last_applied` after a restart;
-- writes to `meta`. A tier lookup reads `meta` and the data keyspace, so a read
-  includes both in `S`;
-- snapshot install sets `A[K] = snapshot.last_applied` for every keyspace.
+- per-record metadata. A tier lookup reads `meta` and the data keyspace. The
+  metadata of keyspace `K` is tracked as the pseudo keyspace `meta:K`, so a
+  write to one keyspace does not make reads of another wait. A read of `K`
+  checks `K`, `meta:K` and `meta`;
+- engine state in `meta` (DEKs, quarantine, sites, outbox, feed grants) is
+  tracked as the pseudo keyspace `meta`, which every read also checks. These
+  mutations are rare (`Emit` comes from the revoke driver only, not from every
+  write);
+- restore and snapshot install replace every keyspace. They set a persisted
+  **floor** (`meta` key `_wmfloor`), the index of the install, and
+  `A[K] = max(row, floor)` for every `K`. The floor is written in the same
+  batch as the replaced state, so a restart cannot lose it. A leader that lost
+  it would under-report `W[K]` and let a follower that never applied the
+  restore look current.
 
 Writing the table in the same batch as `last_applied_log` makes a crash leave
 both or neither, so `A[K]` can never be ahead of the data.
@@ -107,6 +118,10 @@ filled by the log store's `append`, on every node, not on the propose path.
 `last_logged[K]` is the index of the latest appended entry that touches `K`. It
 is recorded before the append callback fires, so no entry can commit without its
 keyspaces being in the map.
+
+An entry whose command cannot be decoded is recorded under the wildcard `*`,
+which raises `W[K]` of every keyspace. The state machine treats the same
+failure as fatal, so the wildcard only delays reads.
 
 A read at index `R` uses `W[K](R) = min(R, max(A_leader[K], last_logged[K]))`.
 `A_leader[K]` stands for every entry the leader already applied, which the log
@@ -168,9 +183,12 @@ keyspace.
 - **Cost of the table.** One extra small write per applied entry (a row per
   touched keyspace), in the batch that already exists. The in-memory leader map
   is bounded by the number of keyspaces.
-- **Rolling upgrade.** An old node has no `_wm:` rows. A node treats a missing
-  `A[K]` as `0`, which never satisfies `A[K] >= W[S]` for `W > 0`, so it falls
-  back to waiting or forwarding. The rows live in `meta` under `_wm:`, which has
+- **Rolling upgrade.** An old node has no `_wm:` rows. On first start with the
+  feature, a node with no rows and no floor sets its floor to `last_applied`
+  and persists it: it cannot tell when its keyspaces were last written, so it
+  reports them as written at `last_applied`. Without this the leader would
+  answer `W[K] = 0` for keyspaces last written before the upgrade, and a
+  lagging follower with `A[K] = 0` would look current. The rows live in `meta` under `_wm:`, which has
   no NUL byte and so cannot collide with a record's `<keyspace>\0<key>` metadata
   key. Leaders that do not serve `ReadWatermark` make the follower forward as
   today.

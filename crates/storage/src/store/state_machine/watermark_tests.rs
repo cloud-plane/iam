@@ -56,7 +56,8 @@ fn apply_bumps_every_touched_keyspace_and_only_those() {
 
     assert_eq!(sm.watermarks.get("a"), 6);
     assert_eq!(sm.watermarks.get("b"), 6);
-    assert_eq!(sm.watermarks.get("meta"), 6);
+    assert_eq!(sm.watermarks.get("meta:a"), 6);
+    assert_eq!(sm.watermarks.get("meta:b"), 6);
     assert_eq!(sm.watermarks.get("index"), 7);
     assert_eq!(sm.watermarks.get("untouched"), 0);
     // The persisted rows agree with memory.
@@ -70,9 +71,33 @@ fn apply_bumps_every_touched_keyspace_and_only_those() {
 fn watermarks_survive_a_reload_from_meta() {
     let (sm, _td) = make_seeded_sm(0x0a);
     apply_tx(&sm, 3, vec![remove("a", 1)]);
-    let reloaded = super::watermark::AppliedWatermarks::from_meta(&sm.meta).expect("load");
+    let reloaded = super::watermark::AppliedWatermarks::from_meta(&sm.meta, 3).expect("load");
     assert_eq!(reloaded.get("a"), 3);
     assert_eq!(reloaded.get("b"), 0);
+}
+
+#[test]
+fn node_without_rows_floors_at_last_applied() {
+    let (sm, _td) = make_seeded_sm(0x0a);
+    // A node from before watermarks: no rows and no floor row.
+    sm.meta.remove(super::watermark::FLOOR_KEY).expect("remove");
+    let w = super::watermark::AppliedWatermarks::from_meta(&sm.meta, 50).expect("load");
+    assert_eq!(w.get("anything"), 50);
+    // The floor is persisted, so a later reload keeps it once rows exist.
+    apply_tx(&sm, 60, vec![remove("a", 1)]);
+    let again = super::watermark::AppliedWatermarks::from_meta(&sm.meta, 60).expect("load");
+    assert_eq!(again.get("untouched"), 50);
+    assert_eq!(again.get("a"), 60);
+}
+
+#[test]
+fn floor_survives_a_reload() {
+    let (sm, _td) = make_seeded_sm(0x0a);
+    sm.meta
+        .insert(super::watermark::FLOOR_KEY, super::watermark::encode(100))
+        .expect("write floor");
+    let reloaded = super::watermark::AppliedWatermarks::from_meta(&sm.meta, 0).expect("load");
+    assert_eq!(reloaded.get("never-written"), 100);
 }
 
 #[test]
@@ -80,8 +105,8 @@ fn rejected_transaction_does_not_move_a_watermark() {
     let (sm, _td) = make_seeded_sm(0x0a);
     // `meta` is reserved: apply() reports a violation and commits nothing.
     apply_tx(&sm, 4, vec![remove("meta", 1)]);
-    assert_eq!(sm.watermarks.get("meta"), 0);
-    assert_eq!(row(&sm, "meta"), None);
+    assert_eq!(sm.watermarks.get("meta:meta"), 0);
+    assert_eq!(row(&sm, "meta:meta"), None);
 }
 
 #[test]

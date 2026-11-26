@@ -339,8 +339,6 @@ impl FjallStateMachine {
         )
     }
 
-    #[allow(clippy::result_large_err)]
-    #[tracing::instrument(skip(self))]
     /// The applied keyspace watermarks (ADR 0048).
     pub(crate) fn applied_watermarks(&self) -> &Arc<watermark::AppliedWatermarks> {
         &self.watermarks
@@ -351,6 +349,8 @@ impl FjallStateMachine {
         Ok(self.get_meta()?.0.map_or(0, |id| id.index))
     }
 
+    #[allow(clippy::result_large_err)]
+    #[tracing::instrument(skip(self))]
     fn get_meta(
         &self,
     ) -> Result<(Option<LogIdOf<TypeConfig>>, StoredMembershipOf<TypeConfig>), StoreError> {
@@ -458,7 +458,15 @@ impl FjallStateMachine {
             .await,
         ));
 
-        let watermarks = Arc::new(watermark::AppliedWatermarks::from_meta(&meta)?);
+        let last_applied = meta
+            .get(KEY_LAST_APPLIED_LOG)?
+            .map(|x| deserialize::<LogIdOf<TypeConfig>>(&x))
+            .transpose()?
+            .map_or(0, |id| id.index);
+        let watermarks = Arc::new(watermark::AppliedWatermarks::from_meta(
+            &meta,
+            last_applied,
+        )?);
         let sm = Self {
             watermarks,
             db,

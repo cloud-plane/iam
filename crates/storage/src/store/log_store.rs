@@ -680,10 +680,6 @@ mod tests {
         out
     }
 
-    /// Regression test for GitHub #1297 item 1: `purge` used to write
-    /// `KEY_PURGED` first and then remove entries one by one, so a crash
-    /// mid-way could leave `last_purged_log_id` ahead of entries that
-    /// still physically existed. Both must now land in one `Batch` commit.
     /// Writes entry `index` that removes key 1 in each of `keyspaces`, the
     /// way `append` stores it.
     fn put_entry(store: &FjallLogStore<crate::TypeConfig>, index: u64, keyspaces: &[&str]) {
@@ -729,11 +725,16 @@ mod tests {
         assert_eq!(logged.get("a"), 3);
         assert_eq!(logged.get("b"), 4);
         assert_eq!(logged.get("c"), 4);
-        assert_eq!(logged.get("meta"), 4);
+        assert_eq!(logged.get("meta:a"), 3);
+        assert_eq!(logged.get("meta:c"), 4);
         // Entry 2 is applied; its keyspaces are covered by the applied table.
         assert_eq!(logged.get("never"), 0);
     }
 
+    /// Regression test for GitHub #1297 item 1: `purge` used to write
+    /// `KEY_PURGED` first and then remove entries one by one, so a crash
+    /// mid-way could leave `last_purged_log_id` ahead of entries that
+    /// still physically existed. Both must now land in one `Batch` commit.
     #[tokio::test]
     async fn purge_removes_entries_up_to_and_including_the_log_id() {
         let (mut store, _td) = make_store();

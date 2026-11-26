@@ -1163,6 +1163,15 @@ impl RaftStateMachine<TypeConfig> for Arc<FjallStateMachine> {
                         super::watermark::encode(last_applied_log.index),
                     );
                 }
+                // A restore replaces every keyspace; the floor goes in the
+                // same batch so a restart cannot lose it.
+                if matches!(restore_applied, Some(true)) {
+                    batch.insert(
+                        &self.meta,
+                        super::watermark::FLOOR_KEY,
+                        super::watermark::encode(last_applied_log.index),
+                    );
+                }
                 batch
                     .commit()
                     .map_err(|e| io::Error::other(e.to_string()))?;
@@ -1424,10 +1433,15 @@ impl RaftStateMachine<TypeConfig> for Arc<FjallStateMachine> {
         let manifest = self
             .install_payload(
                 payload,
-                RaftBookkeeping::Install(last_applied_bytes, last_membership_bytes),
+                RaftBookkeeping::Install(
+                    last_applied_bytes,
+                    last_membership_bytes,
+                    meta.last_log_id.as_ref().map(|l| l.index()),
+                ),
             )
             .await?;
         if let Some(last) = meta.last_log_id.as_ref() {
+            // The persisted floor went in the install batch itself.
             self.watermarks.raise_floor(last.index());
         }
 

@@ -26,8 +26,7 @@ use super::admin::forwarded_status_error;
 use super::*;
 use crate::store::state_machine::watermark::replica_is_current;
 
-/// Keyspace holding per-record metadata, read together with the data.
-const META_KEYSPACE: &str = "meta";
+use crate::store::state_machine::watermark::{ENGINE_KEYSPACE, record_meta_keyspace};
 
 impl Storage {
     /// Leader id and address when another node is leader.
@@ -77,8 +76,16 @@ impl Storage {
         }
         let (leader_id, leader_addr) = self.remote_leader()?;
         let mut names: Vec<String> = keyspaces.iter().map(|k| (*k).to_string()).collect();
-        if !names.iter().any(|n| n == META_KEYSPACE) {
-            names.push(META_KEYSPACE.to_string());
+        // A read also depends on the per-record metadata of each keyspace and
+        // on engine state (DEKs, quarantine), both kept in `meta`.
+        for ks in keyspaces {
+            let meta = record_meta_keyspace(ks);
+            if !names.contains(&meta) {
+                names.push(meta);
+            }
+        }
+        if !names.iter().any(|n| n == ENGINE_KEYSPACE) {
+            names.push(ENGINE_KEYSPACE.to_string());
         }
         let metrics = self.state_machine_store.raft_prometheus_metrics();
         let served = self.try_follower_read_inner(leader_id, leader_addr, &names, &read);
@@ -114,27 +121,35 @@ impl Storage {
             .map(|w| (w.keyspace, w.index))
             .collect();
         let applied = self.state_machine_store.applied_watermarks();
-        for attempt in 0..self.ensure_linearizable_retries.max(1) {
+        let attempts = self.ensure_linearizable_retries.max(1);
+        for attempt in 0..attempts {
             if replica_is_current(applied, &rows, resp.default_watermark, names) {
                 // `A[S]` must not move while the read runs, or `meta` and the
                 // data may come from different entries.
                 let before: Vec<u64> = names.iter().map(|k| applied.get(k)).collect();
                 let res = read();
                 let after: Vec<u64> = names.iter().map(|k| applied.get(k)).collect();
-                match res {
-                    Ok(Some(v)) if before == after => return Some(v),
-                    _ => return None,
+                if before == after {
+                    // A miss or a read error is for the forwarding path.
+                    return match res {
+                        Ok(Some(v)) => Some(v),
+                        _ => None,
+                    };
                 }
+                // An apply raced the read: try again.
+            } else {
+                debug!(
+                    attempt = attempt + 1,
+                    read_index = resp.read_index,
+                    "follower read: replica not caught up yet"
+                );
             }
-            debug!(
-                attempt = attempt + 1,
-                read_index = resp.read_index,
-                "follower read: replica not caught up yet"
-            );
-            TypeConfig::sleep(Duration::from_millis(
-                self.ensure_linearizable_retry_delay_ms,
-            ))
-            .await;
+            if attempt + 1 < attempts {
+                TypeConfig::sleep(Duration::from_millis(
+                    self.ensure_linearizable_retry_delay_ms,
+                ))
+                .await;
+            }
         }
         None
     }
