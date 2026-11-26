@@ -15,12 +15,13 @@
 //!
 //! Deleting a project removes its credentials by `project_id`. Without an index
 //! each delete scans the whole table.
+use openstack_keystone_core::migration_index::{create_index, drop_index};
 use sea_orm_migration::prelude::*;
 
-use crate::entity::{credential, prelude::Credential};
-
-/// Name of the index.
+/// Table, name of the index and its column.
+const TABLE: &str = "credential";
 const INDEX: &str = "ix_credential_project_id";
+const COLUMN: &str = "project_id";
 
 #[derive(DeriveMigrationName)]
 pub struct Migration;
@@ -28,27 +29,10 @@ pub struct Migration;
 #[async_trait::async_trait]
 impl MigrationTrait for Migration {
     async fn up(&self, manager: &SchemaManager) -> Result<(), DbErr> {
-        manager
-            .create_index(
-                Index::create()
-                    .name(INDEX)
-                    .table(Credential)
-                    .col(credential::Column::ProjectId)
-                    .if_not_exists()
-                    .to_owned(),
-            )
-            .await
+        create_index(manager, TABLE, INDEX, &[COLUMN]).await
     }
 
     async fn down(&self, manager: &SchemaManager) -> Result<(), DbErr> {
-        manager
-            .drop_index(
-                Index::drop()
-                    .name(INDEX)
-                    .table(Credential)
-                    .if_exists()
-                    .to_owned(),
-            )
-            .await
+        drop_index(manager, TABLE, INDEX).await
     }
 }
