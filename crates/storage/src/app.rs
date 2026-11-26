@@ -80,6 +80,7 @@ use openstack_keystone_storage_api::Node;
 mod admin;
 mod dek_rotation;
 mod feed_retention;
+mod follower_read;
 mod init;
 mod storage_api;
 
@@ -124,6 +125,8 @@ pub struct Storage {
     /// `[distributed_storage] local_reads_mode`: whether a consumer's
     /// `ReadConsistency::Local` request is honored for Tier 0/1 records.
     pub(crate) local_reads_mode: LocalReadsMode,
+    /// `[distributed_storage] follower_linearizable_reads` (ADR 0048).
+    pub(crate) follower_linearizable_reads: bool,
     /// `[distributed_storage] local_read_max_staleness_ms`.
     pub(crate) local_read_max_staleness: Option<Duration>,
     /// Last contact with a Raft leader, fed by the Raft gRPC service.
@@ -152,6 +155,8 @@ pub struct Storage {
     pub(crate) peer_authz: Arc<PeerAuthz>,
     /// Pending emergency DEK rotations (shared with FjallStateMachine).
     pending_rotations: Arc<Mutex<HashMap<String, crate::store_command::PendingRotation>>>,
+    /// Latest logged index per keyspace (ADR 0048).
+    pub(crate) logged_watermarks: Arc<crate::store::state_machine::watermark::LoggedWatermarks>,
     /// Raft instance.
     pub raft: Raft,
     /// The state machine store for direct reads.

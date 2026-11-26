@@ -392,6 +392,17 @@ impl StorageApi for Storage {
             return Ok(res);
         }
 
+        // ADR 0048: a follower whose copy of the keyspace is current reads
+        // it itself, after the leader confirmed leadership.
+        if let Some(res) = self
+            .try_follower_read(&[keyspace.unwrap_or("data")], || {
+                self.local_get(key, keyspace, DataTier::Secret)
+            })
+            .await
+        {
+            return Ok(res);
+        }
+
         // Check ReadIndex first. On the leader we can safely proceed to
         // local reads. On a follower ReadIndex returns ForwardToLeader and
         // we forward the entire read to the leader – which already has the
@@ -489,6 +500,15 @@ impl StorageApi for Storage {
             return Ok(res);
         }
 
+        if let Some(res) = self
+            .try_follower_read(&[keyspace.unwrap_or("data")], || {
+                self.local_prefix(prefix, keyspace, DataTier::Secret)
+            })
+            .await
+        {
+            return Ok(res);
+        }
+
         // On the leader, ReadIndex guarantees linearizable read. On a follower,
         // ReadIndex returns ForwardToLeader, so we forward the prefix scan to
         // the leader via gRPC. The retry loop also handles transient
@@ -515,6 +535,25 @@ impl StorageApi for Storage {
     ///
     /// A `Result` containing a vector of keys, or an `ApiStoreError`.
     async fn prefix_index(&self, prefix: &[u8]) -> Result<Vec<String>, ApiStoreError> {
+        let scan = || -> Result<Vec<String>, StoreError> {
+            self.state_machine_store
+                .index()
+                .prefix(prefix)
+                .map(|item| -> Result<String, StoreError> {
+                    let key = item.key()?;
+                    Ok(String::from_utf8(key.to_vec())?)
+                })
+                .collect()
+        };
+
+        // ADR 0048: a follower whose copy of the index is current scans it.
+        if let Some(res) = self
+            .try_follower_read(&["index"], || scan().map(Some).map_err(ApiStoreError::from))
+            .await
+        {
+            return Ok(res);
+        }
+
         // On the leader, ReadIndex guarantees linearizable read. On a follower,
         // ReadIndex returns ForwardToLeader, so we forward the prefix-index
         // scan to the leader via gRPC. The retry loop also handles transient
@@ -530,16 +569,7 @@ impl StorageApi for Storage {
         }
 
         // Leader path: local index scan.
-        let res: Result<Vec<String>, StoreError> = self
-            .state_machine_store
-            .index()
-            .prefix(prefix)
-            .map(|item| -> Result<String, StoreError> {
-                let key = item.key()?;
-                Ok(String::from_utf8(key.to_vec())?)
-            })
-            .collect();
-        Ok(res?)
+        Ok(scan()?)
     }
 
     async fn readiness(&self) -> Result<StorageReadiness, ApiStoreError> {

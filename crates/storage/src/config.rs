@@ -107,6 +107,15 @@ pub struct DistributedStorageConfiguration {
     #[serde(default)]
     pub local_reads_mode: LocalReadsMode,
 
+    /// Let a follower serve a linearizable read itself when its copy of the
+    /// keyspace is current (ADR 0048). The follower asks the leader for the
+    /// per-keyspace watermark, which costs one ReadIndex round trip, instead
+    /// of forwarding the whole read. Off (default) forwards every read to the
+    /// leader. Tier 2/3 data keeps its invariant: nothing is read before the
+    /// leader confirmed leadership.
+    #[serde(default)]
+    pub follower_linearizable_reads: bool,
+
     /// Upper bound, in milliseconds, on how long a non-leader node may have
     /// gone without contact from a leader and still serve a
     /// `ReadConsistency::Local` read (ADR 0045 §2). Past it the read falls
@@ -1052,6 +1061,7 @@ impl Default for DistributedStorageConfiguration {
             ensure_linearizable_retries: default_ensure_linearizable_retries(),
             ensure_linearizable_retry_delay_ms: default_ensure_linearizable_retry_delay_ms(),
             local_reads_mode: LocalReadsMode::default(),
+            follower_linearizable_reads: false,
             local_read_max_staleness_ms: None,
             raft_heartbeat_interval_ms: default_raft_heartbeat_interval_ms(),
             raft_election_timeout_min_ms: default_raft_election_timeout_min_ms(),

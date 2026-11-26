@@ -254,7 +254,7 @@ impl Storage {
     /// # Returns
     /// A `Result` containing the `Channel`, or a `StoreError`.
     #[tracing::instrument(name = "storage.get_or_create_channel", level = "debug", skip_all)]
-    async fn get_or_create_channel(
+    pub(super) async fn get_or_create_channel(
         &self,
         target: u64,
         addr: String,
@@ -607,7 +607,7 @@ impl Storage {
 /// Transport-level failures (leader gone, connection reset, timeout) are
 /// `Unavailable` so the caller re-resolves the leader and retries; anything
 /// else is a hard failure.
-fn forwarded_status_error(what: &str, status: tonic::Status) -> ApiStoreError {
+pub(super) fn forwarded_status_error(what: &str, status: tonic::Status) -> ApiStoreError {
     match status.code() {
         Code::Unavailable | Code::DeadlineExceeded | Code::Cancelled | Code::Unknown => {
             ApiStoreError::Unavailable(StorageUnavailable::new(format!("{what}: {status}")))

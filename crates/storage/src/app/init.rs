@@ -722,10 +722,22 @@ pub async fn init_storage(config_manager: &Arc<ConfigManager>) -> Result<Arc<Sto
         quarantine_rx,
     ) = crate::new::<crate::TypeConfig, _>(ds_config.path.clone(), ds_config.node_id, kek.clone())
         .await?;
+    // ADR 0048: track the latest logged index per keyspace, and rebuild it
+    // from the log tail that is not applied yet.
+    let mut log_store =
+        log_store.with_watermark_extractor(crate::store::state_machine::watermark::entry_keyspaces);
+    let last_applied = state_machine_store
+        .applied_log_index()
+        .map_err(|e| StoreError::Other(eyre!("cannot read last applied index: {e}")))?;
+    log_store
+        .rebuild_logged_watermarks(last_applied)
+        .await
+        .map_err(|e| StoreError::Other(eyre!("cannot rebuild keyspace watermarks: {e}")))?;
     state_machine_store.set_write_rate_threshold(ds_config.write_rate_threshold);
     state_machine_store.set_feed_kinds(ds_config.feed_kinds.iter().cloned());
     state_machine_store.set_feed_max_event_bytes(ds_config.feed_max_event_bytes);
     let log_nonce = log_store.nonce_manager();
+    let logged_watermarks = log_store.logged_watermarks();
     tracing::debug!("Raft stores opened; initializing Raft TLS client...");
     let tls_client = init_tls_watcher(config_manager).await?;
     tracing::debug!("Raft TLS client initialized.");
@@ -892,11 +904,13 @@ pub async fn init_storage(config_manager: &Arc<ConfigManager>) -> Result<Arc<Sto
         ensure_linearizable_retries: ds_config.ensure_linearizable_retries,
         ensure_linearizable_retry_delay_ms: ds_config.ensure_linearizable_retry_delay_ms,
         local_reads_mode: ds_config.local_reads_mode,
+        follower_linearizable_reads: ds_config.follower_linearizable_reads,
         local_read_max_staleness: ds_config
             .local_read_max_staleness_ms
             .map(Duration::from_millis),
         leader_contact: Arc::new(LeaderContact::default()),
         log_nonce,
+        logged_watermarks,
         dek_rotation_days: ds_config.dek_rotation_days,
         feed_retention_days: ds_config.feed_retention_days,
         feed_max_events: ds_config.feed_max_events,
@@ -1103,6 +1117,7 @@ pub async fn get_app_server(storage: &Storage) -> Result<Routes, StoreError> {
         storage.audit_forwarder.clone(),
         storage.current_dek.clone(),
         storage.node_id,
+        storage.logged_watermarks.clone(),
     );
 
     let feed_svc_impl = crate::grpc::feed_service::FeedServiceImpl::new(

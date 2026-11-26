@@ -74,6 +74,10 @@ impl RaftStateMachine<TypeConfig> for Arc<FjallStateMachine> {
                 .as_ref()
                 .map(|raw| StoreCommand::unpack(raw))
                 .transpose()?;
+            let touched = command
+                .as_ref()
+                .map(super::watermark::touched_keyspaces)
+                .unwrap_or_default();
             // Keyspaces this entry writes; they get a new revision once the
             // batch is committed.
             let written_keyspaces: Vec<String> = match &command {
@@ -86,6 +90,7 @@ impl RaftStateMachine<TypeConfig> for Arc<FjallStateMachine> {
                 _ => Vec::new(),
             };
             let mut restore_outcome: Option<Result<(), RestoreError>> = None;
+            let mut restore_applied: Option<bool> = None;
             let mut unwrapped_deks: HashMap<Vec<u8>, Zeroizing<[u8; 32]>> = HashMap::new();
             let mut unwrap_failures: HashMap<Vec<u8>, String> = HashMap::new();
             // Re-wrapped DEK envelopes of a `SetSites`, old envelope to new.
@@ -197,6 +202,7 @@ impl RaftStateMachine<TypeConfig> for Arc<FjallStateMachine> {
                             Err(RestoreError::Fatal(io::Error::other("restore not run")))
                         }) {
                             Ok(()) => {
+                                restore_applied = Some(true);
                                 self.reset_feed(last_applied_log.index)
                                     .map_err(|e| io::Error::other(e.to_string()))?;
                                 vec![]
@@ -1149,9 +1155,30 @@ impl RaftStateMachine<TypeConfig> for Arc<FjallStateMachine> {
             };
 
             if !has_violations {
+                // `A[K]` rows go in the batch of the data they describe.
+                for ks in &touched {
+                    batch.insert(
+                        &self.meta,
+                        super::watermark::watermark_key(ks),
+                        super::watermark::encode(last_applied_log.index),
+                    );
+                }
+                // A restore replaces every keyspace; the floor goes in the
+                // same batch so a restart cannot lose it.
+                if matches!(restore_applied, Some(true)) {
+                    batch.insert(
+                        &self.meta,
+                        super::watermark::FLOOR_KEY,
+                        super::watermark::encode(last_applied_log.index),
+                    );
+                }
                 batch
                     .commit()
                     .map_err(|e| io::Error::other(e.to_string()))?;
+                self.watermarks.record(&touched, last_applied_log.index);
+                if matches!(restore_applied, Some(true)) {
+                    self.watermarks.raise_floor(last_applied_log.index);
+                }
 
                 self.revisions
                     .touch(written_keyspaces.iter().map(String::as_str));
@@ -1406,9 +1433,17 @@ impl RaftStateMachine<TypeConfig> for Arc<FjallStateMachine> {
         let manifest = self
             .install_payload(
                 payload,
-                RaftBookkeeping::Install(last_applied_bytes, last_membership_bytes),
+                RaftBookkeeping::Install(
+                    last_applied_bytes,
+                    last_membership_bytes,
+                    meta.last_log_id.as_ref().map(|l| l.index()),
+                ),
             )
             .await?;
+        if let Some(last) = meta.last_log_id.as_ref() {
+            // The persisted floor went in the install batch itself.
+            self.watermarks.raise_floor(last.index());
+        }
 
         let snapshot_idx: u64 = rand::rng().random_range(0..1000);
         let snapshot_id = if let Some(last) = meta.last_log_id.as_ref() {

@@ -67,6 +67,7 @@ mod sites;
 mod snapshot;
 mod snapshot_file;
 mod status;
+pub(crate) mod watermark;
 
 pub(crate) use self::keyspace_drop::keyspace_drop_allowed;
 pub use self::outbox::{FeedCursor, FeedGrants, OutboxClass, OutboxEvent};
@@ -175,6 +176,8 @@ pub struct FjallStateMachine {
     /// a Fjall partition existing.
     ephemeral: DashMap<String, EphemeralKeyspace>,
     index: Keyspace,
+    /// Applied keyspace watermarks `A[K]` (ADR 0048).
+    watermarks: Arc<watermark::AppliedWatermarks>,
     /// Key Encryption Key used to unwrap new DEKs on InstallDek apply.
     kek: Arc<dyn KekProvider>,
     /// Serializes non-core keyspace lifecycle changes (`drop_keyspace`)
@@ -336,6 +339,16 @@ impl FjallStateMachine {
         )
     }
 
+    /// The applied keyspace watermarks (ADR 0048).
+    pub(crate) fn applied_watermarks(&self) -> &Arc<watermark::AppliedWatermarks> {
+        &self.watermarks
+    }
+
+    /// Index of the last applied entry, `0` before the first one.
+    pub(crate) fn applied_log_index(&self) -> Result<u64, StoreError> {
+        Ok(self.get_meta()?.0.map_or(0, |id| id.index))
+    }
+
     #[allow(clippy::result_large_err)]
     #[tracing::instrument(skip(self))]
     fn get_meta(
@@ -445,7 +458,17 @@ impl FjallStateMachine {
             .await,
         ));
 
+        let last_applied = meta
+            .get(KEY_LAST_APPLIED_LOG)?
+            .map(|x| deserialize::<LogIdOf<TypeConfig>>(&x))
+            .transpose()?
+            .map_or(0, |id| id.index);
+        let watermarks = Arc::new(watermark::AppliedWatermarks::from_meta(
+            &meta,
+            last_applied,
+        )?);
         let sm = Self {
+            watermarks,
             db,
             snapshot_dir,
             node_id,
@@ -614,6 +637,8 @@ mod keyspace_gc_tests;
 
 #[cfg(test)]
 mod ephemeral_tests;
+#[cfg(test)]
+mod watermark_tests;
 
 #[cfg(test)]
 mod snapshot_tests;

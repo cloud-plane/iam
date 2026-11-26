@@ -73,7 +73,12 @@ pub struct StorageServiceImpl {
     pub(crate) raft_node: Raft,
     /// Direct access to the state machine store for forwarded reads.
     state_machine_store: Arc<StateMachineStore>,
+    /// Latest logged index per keyspace (ADR 0048).
+    logged_watermarks: Arc<crate::store::state_machine::watermark::LoggedWatermarks>,
 }
+
+/// Most keyspaces one `ReadWatermark` request may name.
+const MAX_WATERMARK_KEYSPACES: usize = 256;
 
 /// Validate a `ReportQuarantine` request against the current membership.
 ///
@@ -173,6 +178,7 @@ impl StorageServiceImpl {
         audit: AuditForwarder,
         current_dek: Arc<RwLock<Arc<DekEpoch>>>,
         node_id: u64,
+        logged_watermarks: Arc<crate::store::state_machine::watermark::LoggedWatermarks>,
     ) -> Self {
         Self {
             raft_node,
@@ -182,6 +188,7 @@ impl StorageServiceImpl {
             current_dek,
             node_id,
             quarantine_limiter: RateLimiter::keyed(Quota::per_hour(QUARANTINE_REPORTS_PER_HOUR)),
+            logged_watermarks,
         }
     }
 }
@@ -485,6 +492,47 @@ impl StorageService for StorageServiceImpl {
 
         Ok(Response::new(pb::api::ForwardedPrefixIndexResponse {
             keys: items,
+        }))
+    }
+
+    /// Per-keyspace watermarks at a fresh linearizable read index (ADR 0048).
+    ///
+    /// Leader-only: runs ReadIndex, which confirms leadership with a quorum, so
+    /// a partitioned old leader cannot answer. The caller may serve a read
+    /// locally once its applied watermark covers the keyspace's value.
+    ///
+    /// # Security
+    /// Requires the node role. The response holds log indexes only.
+    #[tracing::instrument(level = "trace", skip(self))]
+    async fn read_watermark(
+        &self,
+        request: Request<pb::api::ReadWatermarkRequest>,
+    ) -> Result<Response<pb::api::ReadWatermarkResponse>, Status> {
+        self.authz.require(&request, &[PeerRole::Node])?;
+        let req = request.into_inner();
+        if req.keyspaces.len() > MAX_WATERMARK_KEYSPACES {
+            return Err(Status::invalid_argument("too many keyspaces"));
+        }
+        let read_index = self
+            .raft_node
+            .ensure_linearizable(ReadPolicy::ReadIndex)
+            .await
+            .map_err(|e| Status::unavailable(format!("not linearizable leader: {e}")))?
+            .log_id()
+            .index;
+        let (rows, default_watermark) = crate::store::state_machine::watermark::read_watermarks(
+            self.state_machine_store.applied_watermarks(),
+            &self.logged_watermarks,
+            read_index,
+            &req.keyspaces,
+        );
+        Ok(Response::new(pb::api::ReadWatermarkResponse {
+            read_index,
+            watermarks: rows
+                .into_iter()
+                .map(|(keyspace, index)| pb::api::KeyspaceWatermark { keyspace, index })
+                .collect(),
+            default_watermark,
         }))
     }
 

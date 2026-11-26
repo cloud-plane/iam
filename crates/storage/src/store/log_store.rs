@@ -30,7 +30,11 @@ use openstack_keystone_storage_crypto::{
 };
 
 use crate::StoreError;
+use crate::store::state_machine::watermark::LoggedWatermarks;
 use crate::types::FjallNoncePersistence;
+
+/// Maps a log entry to the keyspaces it touches (ADR 0048).
+pub type KeyspaceExtractor<C> = fn(&EntryOf<C>) -> Vec<String>;
 
 pub(crate) const KEY_VOTE: &[u8] = b"vote";
 pub(crate) const KEY_PURGED: &[u8] = b"purged";
@@ -69,6 +73,11 @@ where
     /// reused by the restored DEKs, so they are tried by version when the
     /// regular lookup fails.
     shadow_deks: Arc<Mutex<Vec<Arc<DekEpoch>>>>,
+    /// Latest log index per keyspace (ADR 0048), shared with readers.
+    logged: Arc<LoggedWatermarks>,
+    /// Maps an entry to the keyspaces it touches; unset until the caller
+    /// that knows the concrete entry type installs it.
+    extract: Option<KeyspaceExtractor<C>>,
 }
 
 impl<C> FjallLogStore<C>
@@ -263,6 +272,8 @@ where
             old_deks,
             revoked_deks,
             shadow_deks: Arc::default(),
+            logged: Arc::default(),
+            extract: None,
             nonce_mgr: Arc::new(Mutex::new(nonce_mgr)),
             _p: Default::default(),
         })
@@ -290,6 +301,38 @@ where
         let bytes = serde_json::to_vec(value)?;
         self.meta.insert(key, bytes)?;
         self.db.persist(PersistMode::SyncAll)?;
+        Ok(())
+    }
+
+    /// Installs the function that maps an entry to the keyspaces it touches,
+    /// which feeds [`Self::logged_watermarks`] on every append.
+    pub fn with_watermark_extractor(mut self, extract: KeyspaceExtractor<C>) -> Self {
+        self.extract = Some(extract);
+        self
+    }
+
+    /// The per-keyspace latest logged index (ADR 0048).
+    pub fn logged_watermarks(&self) -> Arc<LoggedWatermarks> {
+        self.logged.clone()
+    }
+
+    /// Rebuilds [`Self::logged_watermarks`] from the retained log after
+    /// `last_applied`. Until it ran, the map is incomplete, so call it before
+    /// the node serves reads.
+    pub async fn rebuild_logged_watermarks(&mut self, last_applied: u64) -> Result<(), io::Error>
+    where
+        <C::LeaderId as RaftLeaderId>::Committed: Clone + Into<u64>,
+    {
+        let Some(extract) = self.extract else {
+            return Ok(());
+        };
+        let entries = self
+            .try_get_log_entries(last_applied.saturating_add(1)..)
+            .await?;
+        for entry in entries {
+            let index = entry.log_id().index();
+            self.logged.record(&extract(&entry), index);
+        }
         Ok(())
     }
 
@@ -377,6 +420,11 @@ where
             self.logs
                 .insert(index.to_be_bytes(), stored)
                 .map_err(|e| io::Error::other(e.to_string()))?;
+            // Recorded before `callback` fires, so an entry is never
+            // committed without its keyspaces being in the map.
+            if let Some(extract) = self.extract {
+                self.logged.record(&extract(&entry), index);
+            }
         }
         self.db
             .persist(PersistMode::SyncAll)
@@ -633,6 +681,57 @@ mod tests {
             .collect();
         out.sort_unstable();
         out
+    }
+
+    /// Writes entry `index` that removes key 1 in each of `keyspaces`, the
+    /// way `append` stores it.
+    fn put_entry(store: &FjallLogStore<crate::TypeConfig>, index: u64, keyspaces: &[&str]) {
+        use crate::store_command::{MutationInner, StoreCommand};
+        let cmd = StoreCommand::Transaction(
+            keyspaces
+                .iter()
+                .map(|ks| MutationInner::Remove {
+                    key: vec![1],
+                    keyspace: (*ks).to_string(),
+                    expected_revision: None,
+                })
+                .collect(),
+        );
+        let entry = crate::pb::raft::Entry {
+            term: 1,
+            index,
+            membership: None,
+            app_data: Some(cmd.pack().expect("pack")),
+        };
+        let plaintext = serde_json::to_vec(&entry).expect("encode");
+        let stored = store.encrypt_entry(1, index, &plaintext).expect("encrypt");
+        store
+            .logs
+            .insert(index.to_be_bytes(), stored)
+            .expect("seed log entry");
+    }
+
+    /// The map is rebuilt from the entries after `last_applied` only.
+    #[tokio::test]
+    async fn rebuild_logged_watermarks_scans_the_unapplied_tail() {
+        let (store, _td) = make_store();
+        let mut store =
+            store.with_watermark_extractor(crate::store::state_machine::watermark::entry_keyspaces);
+        put_entry(&store, 1, &["a"]);
+        put_entry(&store, 2, &["b"]);
+        put_entry(&store, 3, &["a"]);
+        put_entry(&store, 4, &["c", "b"]);
+
+        store.rebuild_logged_watermarks(2).await.expect("rebuild");
+
+        let logged = store.logged_watermarks();
+        assert_eq!(logged.get("a"), 3);
+        assert_eq!(logged.get("b"), 4);
+        assert_eq!(logged.get("c"), 4);
+        assert_eq!(logged.get("meta:a"), 3);
+        assert_eq!(logged.get("meta:c"), 4);
+        // Entry 2 is applied; its keyspaces are covered by the applied table.
+        assert_eq!(logged.get("never"), 0);
     }
 
     /// Regression test for GitHub #1297 item 1: `purge` used to write

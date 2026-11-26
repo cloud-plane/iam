@@ -111,8 +111,9 @@ pub(super) async fn shadow_epochs<'a>(
 /// bookkeeping (`last_applied_log`, `last_membership`, snapshot history).
 pub(super) enum RaftBookkeeping {
     /// Snapshot install: record the snapshot's `(last_applied_log,
-    /// last_membership)`.
-    Install(Option<Vec<u8>>, Vec<u8>),
+    /// last_membership)` and the watermark floor (the snapshot's last index),
+    /// in the same batch as the replaced state.
+    Install(Option<Vec<u8>>, Vec<u8>, Option<u64>),
     /// Restore into a live cluster: keep this node's own bookkeeping so the
     /// membership and apply position are unchanged.
     Keep,
@@ -427,9 +428,16 @@ impl FjallStateMachine {
         }
 
         match bookkeeping {
-            RaftBookkeeping::Install(last_applied_bytes, last_membership_bytes) => {
+            RaftBookkeeping::Install(last_applied_bytes, last_membership_bytes, floor) => {
                 if let Some(bytes) = last_applied_bytes {
                     batch.insert(&self.meta, KEY_LAST_APPLIED_LOG, bytes);
+                }
+                if let Some(index) = floor {
+                    batch.insert(
+                        &self.meta,
+                        super::watermark::FLOOR_KEY,
+                        super::watermark::encode(index),
+                    );
                 }
                 batch.insert(&self.meta, KEY_LAST_MEMBERSHIP, last_membership_bytes);
             }
