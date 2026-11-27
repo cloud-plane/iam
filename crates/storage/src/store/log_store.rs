@@ -734,6 +734,57 @@ mod tests {
         assert_eq!(logged.get("never"), 0);
     }
 
+    /// `append` itself records every entry's keyspaces before it reports
+    /// the flush, so no committed entry is missing from the map.
+    #[tokio::test]
+    async fn append_records_the_keyspaces_before_the_flush_callback() {
+        use crate::store_command::{MutationInner, StoreCommand};
+        use openraft::async_runtime::{AsyncRuntime, Oneshot};
+        use openraft::storage::{IOFlushed, RaftLogStorage};
+
+        let (store, _td) = make_store();
+        let mut store =
+            store.with_watermark_extractor(crate::store::state_machine::watermark::entry_keyspaces);
+        let entry = |index: u64, ks: &str| {
+            let cmd = StoreCommand::Transaction(vec![MutationInner::Remove {
+                key: vec![1],
+                keyspace: ks.to_string(),
+                expected_revision: None,
+            }]);
+            crate::pb::raft::Entry {
+                term: 1,
+                index,
+                membership: None,
+                app_data: Some(cmd.pack().expect("pack")),
+            }
+        };
+
+        let (tx, rx) = <<<crate::TypeConfig as openraft::RaftTypeConfig>::AsyncRuntime as AsyncRuntime>::Oneshot as Oneshot>::channel::<
+            Result<(), io::Error>,
+        >();
+        store
+            .append(
+                vec![entry(1, "a"), entry(2, "b"), entry(3, "a")],
+                IOFlushed::<crate::TypeConfig>::signal(tx),
+            )
+            .await
+            .expect("append");
+        rx.await.expect("flushed").expect("flush result");
+
+        let logged = store.logged_watermarks();
+        assert_eq!(logged.get("a"), 3);
+        assert_eq!(logged.get("b"), 2);
+        assert_eq!(logged.get("meta:a"), 3);
+        assert_eq!(logged.get("never"), 0);
+        // An entry that is later truncated stays in the map: it may only
+        // make a reader wait longer, never read stale data.
+        store
+            .truncate_after(Some(crate::types::LogId::new(1u64, 1u64)))
+            .await
+            .expect("truncate");
+        assert_eq!(store.logged_watermarks().get("a"), 3);
+    }
+
     /// Regression test for GitHub #1297 item 1: `purge` used to write
     /// `KEY_PURGED` first and then remove entries one by one, so a crash
     /// mid-way could leave `last_purged_log_id` ahead of entries that

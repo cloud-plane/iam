@@ -331,17 +331,7 @@ pub async fn get_by_key_retrying(
     key: &[u8],
     keyspace: Option<&str>,
 ) -> Result<Option<StoreDataEnvelope<Vec<u8>>>> {
-    let mut last_err = None;
-    for _ in 0..50 {
-        match storage.get_by_key(key, keyspace).await {
-            Ok(v) => return Ok(v),
-            Err(e) => {
-                last_err = Some(e);
-                TypeConfig::sleep(Duration::from_millis(100)).await;
-            }
-        }
-    }
-    Err(last_err.expect("at least one attempt").into())
+    retrying(|| storage.get_by_key(key, keyspace)).await
 }
 
 /// Asserts that `storage` serves exactly the records written by
@@ -581,6 +571,28 @@ impl RestartableNode {
         let tls = get_client_tls_config(&self.config)?;
         new_admin_client(self.config.node_cluster_addr.clone(), &tls).await
     }
+}
+
+/// Retries `op` across transient errors (election in progress, a new leader
+/// without quorum acknowledgement yet). Only use it for idempotent
+/// operations: an error does not prove the operation was not applied.
+pub async fn retrying<F, Fut, T, E>(mut op: F) -> Result<T>
+where
+    F: FnMut() -> Fut,
+    Fut: std::future::Future<Output = Result<T, E>>,
+    E: Into<eyre::Report>,
+{
+    let mut last = None;
+    for _ in 0..50 {
+        match op().await {
+            Ok(v) => return Ok(v),
+            Err(e) => {
+                last = Some(e.into());
+                TypeConfig::sleep(Duration::from_millis(100)).await;
+            }
+        }
+    }
+    Err(last.unwrap_or_else(|| eyre::eyre!("no attempt made")))
 }
 
 /// `set_value` that retries while an election is still in progress.
