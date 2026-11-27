@@ -192,3 +192,90 @@ async fn test_follower_failover_inner() -> Result<()> {
     assert_eq!("rewritten", got.try_deserialize::<String>()?.data);
     Ok(())
 }
+
+const FOLLOWER_SHAPES_PORT_BASE: u16 = 2550;
+
+/// The read shapes the `*-raft` drivers use -- point reads and prefix scans
+/// over several keyspaces, the index, and a Tier 3 record -- survive a leader
+/// failover with follower reads on. After the kill every survivor serves the
+/// exact acknowledged content, and a change on the new leader (a removal, an
+/// index removal and a new record in another keyspace) is visible on the
+/// other survivor at once.
+#[serial_test::serial]
+#[test]
+fn test_follower_reads_cover_driver_read_shapes_across_failover() {
+    TypeConfig::run(test_follower_shapes_inner()).unwrap();
+}
+
+async fn test_follower_shapes_inner() -> Result<()> {
+    const NUM: usize = 120;
+    let mut nodes = start_three_node_cluster_with(FOLLOWER_SHAPES_PORT_BASE, |config| {
+        config.follower_linearizable_reads = true;
+    })
+    .await?;
+
+    let old_leader = nodes[0].storage().clone();
+    write_records_concurrently(&old_leader, NUM).await?;
+    write_index_and_sensitive_records(&old_leader).await?;
+    nodes[0].kill().await;
+
+    let mut new_leader_id = 0;
+    for _ in 0..300 {
+        if let Some(l) = nodes[1].storage().current_leader()
+            && l != 1
+        {
+            new_leader_id = l;
+            break;
+        }
+        TypeConfig::sleep(Duration::from_millis(100)).await;
+    }
+    assert_ne!(0, new_leader_id, "no new leader within 30 seconds");
+
+    let survivors = [nodes[1].storage().clone(), nodes[2].storage().clone()];
+    for (i, storage) in survivors.iter().enumerate() {
+        assert_serves_all_records(storage, NUM, &format!("survivor {i}")).await?;
+    }
+
+    let new_leader = survivors
+        .iter()
+        .find(|s| s.node_id() == new_leader_id)
+        .ok_or_else(|| eyre::eyre!("new leader is not a survivor"))?
+        .clone();
+    let other = survivors
+        .iter()
+        .find(|s| s.node_id() != new_leader_id)
+        .ok_or_else(|| eyre::eyre!("no other survivor"))?
+        .clone();
+
+    // k3 lives in the default keyspace (`test_keyspace(3)` is `None`).
+    // Removals and the plain `set_value` are idempotent, so retrying after
+    // an error whose outcome is unknown (timeout, lost response) is safe.
+    retrying(|| new_leader.remove("k3".to_string(), None)).await?;
+    retrying(|| new_leader.remove_index("idx:0".to_string())).await?;
+    retrying(|| {
+        new_leader.set_value(
+            "fresh".to_string(),
+            make_env("fresh-value").expect("encode"),
+            Some("ks_alpha".to_string()),
+            None,
+        )
+    })
+    .await?;
+
+    assert!(
+        get_by_key_retrying(&other, b"k3", None).await?.is_none(),
+        "the removed record is still served by the other survivor"
+    );
+    let index = retrying(|| other.prefix_index("idx:".as_bytes())).await?;
+    assert_eq!(19, index.len(), "index removal is not visible yet");
+    let fresh = get_by_key_retrying(&other, b"fresh", Some("ks_alpha"))
+        .await?
+        .ok_or_else(|| eyre::eyre!("new record is not visible on the other survivor"))?;
+    assert_eq!("fresh-value", fresh.try_deserialize::<String>()?.data);
+    let listed = retrying(|| other.prefix("fresh".as_bytes(), Some("ks_alpha"))).await?;
+    assert_eq!(1, listed.len());
+    // The untouched keyspace is unaffected by the writes above.
+    let beta = retrying(|| other.prefix("k".as_bytes(), Some("ks_beta"))).await?;
+    assert_eq!(NUM / 3, beta.len());
+    Ok(())
+}

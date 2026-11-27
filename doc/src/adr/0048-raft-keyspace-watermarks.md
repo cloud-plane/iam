@@ -221,7 +221,10 @@ keyspace.
 
 - The wait the watermark avoided is not measured; only the served and fallback
   counts are exported. Add it before the default is changed.
-- The failover test runs on the three-node cluster harness of `crates/storage`.
-  The `*-raft` driver crates are not covered separately.
+- The failover tests run on the three-node cluster harness of `crates/storage`.
+  They use the storage calls the `*-raft` drivers make (point reads and prefix
+  scans over several keyspaces, the index and a Tier 3 record), but the driver
+  crates are not run against a multi-node cluster; `test_integration` uses a
+  single node.
 - `prefix` and `get_by_key` use the watermark; reads that already run on the
   leader are unchanged.
