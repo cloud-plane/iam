@@ -12,15 +12,20 @@
 //
 // SPDX-License-Identifier: Apache-2.0
 //! # OAuth2 subcommand of the keystone-manage cli.
+//!
+//! Every subcommand talks to the admin API over the admin Unix socket via
+//! [`build_admin_client`]. Each one splits its work into a `*_with_client`
+//! method that takes the HTTP client and base URL, so it can be unit tested
+//! against a mock server, and a `take_action` that wires in the real admin
+//! client.
 
 use async_trait::async_trait;
 use clap::{Parser, Subcommand};
-use color_eyre::{Report, eyre::WrapErr, eyre::eyre};
+use color_eyre::{Report, eyre::eyre};
 use percent_encoding::{AsciiSet, CONTROLS, utf8_percent_encode};
-use reqwest::Client;
-use spiffe_rustls::{authorizer, mtls_client};
+use reqwest::Response;
 
-use openstack_keystone_config::{Config, LoadedConfig};
+use openstack_keystone_config::LoadedConfig;
 
 mod client;
 mod confirm_rotate_signing_key;
@@ -92,12 +97,12 @@ const PATH_SEGMENT: &AsciiSet = &CONTROLS
     .add(b'}')
     .add(b'\\');
 
-/// Build `https://localhost/v4/oauth2/{domain}/{segments...}`,
-/// percent-encoding every path segment so that operator input cannot alter
-/// the request path or query.
-fn domain_url(domain: &str, segments: &[&str]) -> String {
+/// Build `{base_url}/v4/oauth2/{domain}/{segments...}`, percent-encoding every
+/// path segment so that operator input cannot alter the request path or
+/// query.
+fn domain_url(base_url: &str, domain: &str, segments: &[&str]) -> String {
     let mut url = format!(
-        "https://localhost/v4/oauth2/{}",
+        "{base_url}/v4/oauth2/{}",
         utf8_percent_encode(domain, PATH_SEGMENT)
     );
     for segment in segments {
@@ -107,33 +112,28 @@ fn domain_url(domain: &str, segments: &[&str]) -> String {
     url
 }
 
-/// Build a `reqwest::Client` bound to the admin interface's Unix domain
-/// socket, authenticating via SPIFFE mTLS. Mirrors `bootstrap.rs`: a request
-/// over the admin UDS with a valid SVID auto-authenticates as `SystemAdmin`
-/// (`crates/core/src/api/auth.rs`), so no bearer/Fernet token is needed.
-async fn get_admin_client(config: &Config) -> Result<Client, Report> {
-    let admin_if = config.interface_admin.as_ref().ok_or_else(|| {
-        eyre!("admin interface not configured; oauth2 commands require [interface_admin]")
-    })?;
-
-    let source = crate::common::admin_x509_source(admin_if.admin_svid.as_deref()).await?;
-    let client_config = mtls_client(source.clone())
-        .authorize(authorizer::any())
-        .build()
-        .wrap_err("Building SPIFFE mTLS client config failed")?;
-
-    Client::builder()
-        .unix_socket(admin_if.listener.socket_path.clone())
-        .tls_backend_preconfigured(client_config)
-        .build()
-        .wrap_err("Building reqwest client failed")
+/// Turn a non-2xx admin API response into an error that carries the status
+/// and the response body. `action` names the operation in the message.
+async fn ensure_success(res: Response, action: &str) -> Result<Response, Report> {
+    let status = res.status();
+    if status.is_success() {
+        return Ok(res);
+    }
+    let body = res
+        .text()
+        .await
+        .unwrap_or_else(|e| format!("<unreadable response body: {e}>"));
+    Err(eyre!("{action} failed: {status} ({body})"))
 }
 
 #[cfg(test)]
 mod tests {
     use clap::Parser;
 
+    use openstack_keystone_config::Config;
+
     use super::*;
+    use crate::common::build_admin_client;
 
     #[derive(Parser)]
     struct Wrapper {
@@ -166,10 +166,25 @@ mod tests {
         ));
     }
 
+    #[test]
+    fn test_domain_url_encodes_segments() {
+        assert_eq!(
+            domain_url("https://localhost", "d1", &[]),
+            "https://localhost/v4/oauth2/d1"
+        );
+        assert_eq!(
+            domain_url("https://localhost", "d/1?x", &["clients", "p#1"]),
+            "https://localhost/v4/oauth2/d%2F1%3Fx/clients/p%231"
+        );
+        assert_eq!(
+            domain_url("https://localhost", "d", &["../x"]),
+            "https://localhost/v4/oauth2/d/..%2Fx"
+        );
+    }
+
     #[tokio::test]
-    async fn test_get_admin_client_rejects_missing_admin_interface_config() {
-        let cfg = Config::default();
-        let err = get_admin_client(&cfg).await.unwrap_err();
+    async fn test_admin_client_requires_admin_interface() {
+        let err = build_admin_client(&Config::default()).await.unwrap_err();
         assert!(
             err.to_string().contains("admin interface not configured"),
             "unexpected error: {err}"

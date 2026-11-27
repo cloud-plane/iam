@@ -17,6 +17,7 @@
 use std::io;
 use std::path::Path;
 
+use clap::ValueEnum;
 use color_eyre::eyre::{WrapErr, eyre};
 use comfy_table::{ContentArrangement, Table, presets::UTF8_FULL};
 use eyre::Result;
@@ -25,6 +26,7 @@ use sea_orm::ConnectOptions;
 use sea_orm::Database;
 use sea_orm::DatabaseConnection;
 use secrecy::ExposeSecret;
+use serde::Serialize;
 use serde::de::DeserializeOwned;
 use spiffe_rustls::{authorizer, mtls_client};
 use tracing_subscriber::{
@@ -162,6 +164,23 @@ pub fn print_attribute_table(rows: Vec<(&str, String)>) {
         table.add_row(vec![attribute.to_string(), value]);
     }
     println!("{table}");
+}
+
+/// Output format of commands that can print either a table or the raw API
+/// response.
+#[derive(Clone, Copy, Debug, Default, ValueEnum)]
+pub enum OutputFormat {
+    /// Human readable table or message.
+    #[default]
+    Text,
+    /// The API response as pretty-printed JSON.
+    Json,
+}
+
+/// Print a value as pretty-printed JSON.
+pub fn print_json<T: Serialize + ?Sized>(value: &T) -> Result<()> {
+    println!("{}", serde_json::to_string_pretty(value)?);
+    Ok(())
 }
 
 /// Plain `reqwest` client for unit tests. reqwest has no built-in rustls

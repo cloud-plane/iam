@@ -14,15 +14,17 @@
 
 use async_trait::async_trait;
 use clap::Parser;
-use color_eyre::{Report, eyre::WrapErr, eyre::eyre};
+use color_eyre::{Report, eyre::WrapErr};
+use reqwest::Client;
 
 use openstack_keystone_api_types::v4::oauth2_key::{
     ConfirmRotateSigningKeyRequest, ConfirmRotateSigningKeyResponse,
 };
 use openstack_keystone_config::LoadedConfig;
 
-use super::get_admin_client;
+use super::{domain_url, ensure_success};
 use crate::PerformAction;
+use crate::common::{ADMIN_BASE_URL, build_admin_client};
 
 /// Confirm a pending emergency signing-key rotation (dual-control second
 /// factor).
@@ -49,38 +51,40 @@ pub(super) struct ConfirmRotateSigningKeyCommand {
     pub revoke_jtis: Vec<String>,
 }
 
-#[async_trait]
-impl PerformAction for ConfirmRotateSigningKeyCommand {
-    async fn take_action(self, config: &LoadedConfig) -> Result<(), Report> {
-        let client = get_admin_client(config).await?;
-
+impl ConfirmRotateSigningKeyCommand {
+    /// Confirm the rotation through a pre-built admin client.
+    pub(super) async fn confirm_with_client(
+        &self,
+        client: &Client,
+        base_url: &str,
+    ) -> Result<ConfirmRotateSigningKeyResponse, Report> {
         let res = client
-            .post(format!(
-                "https://localhost/v4/oauth2/{}/confirm-rotate-signing-key",
-                self.domain
+            .post(domain_url(
+                base_url,
+                &self.domain,
+                &["confirm-rotate-signing-key"],
             ))
             .json(&ConfirmRotateSigningKeyRequest {
                 rotation_id: self.rotation_id.clone(),
-                revoke_jtis: self.revoke_jtis,
+                revoke_jtis: self.revoke_jtis.clone(),
             })
             .send()
             .await
             .wrap_err("confirm-rotate-signing-key request failed")?;
+        let res = ensure_success(res, "confirm-rotate-signing-key").await?;
+        Ok(res.json().await?)
+    }
+}
 
-        if !res.status().is_success() {
-            return Err(eyre!(
-                "confirm-rotate-signing-key failed: {} ({})",
-                res.status(),
-                res.text().await.unwrap_or_default()
-            ));
-        }
-
-        let body: ConfirmRotateSigningKeyResponse = res.json().await?;
+#[async_trait]
+impl PerformAction for ConfirmRotateSigningKeyCommand {
+    async fn take_action(self, config: &LoadedConfig) -> Result<(), Report> {
+        let client = build_admin_client(config).await?;
+        let body = self.confirm_with_client(&client, ADMIN_BASE_URL).await?;
         println!(
             "Emergency signing-key rotation {} confirmed for domain {}. New kid: {}",
             self.rotation_id, self.domain, body.kid
         );
-
         Ok(())
     }
 }
@@ -88,6 +92,7 @@ impl PerformAction for ConfirmRotateSigningKeyCommand {
 #[cfg(test)]
 mod tests {
     use clap::Parser;
+    use httpmock::{Method, MockServer};
 
     use super::*;
 
@@ -123,18 +128,54 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn test_take_action_rejects_missing_admin_interface_config() {
-        let cfg = LoadedConfig::new(Default::default());
-        let command = ConfirmRotateSigningKeyCommand {
+    async fn test_confirm_posts_rotation_and_jtis() {
+        let server = MockServer::start();
+        server.mock(|when, then| {
+            when.method(Method::POST)
+                .path("/v4/oauth2/domain-1/confirm-rotate-signing-key")
+                .json_body(serde_json::json!({
+                    "rotation_id": "rot-1",
+                    "revoke_jtis": ["jti-a"]
+                }));
+            then.status(200)
+                .header("content-type", "application/json")
+                .json_body_obj(&serde_json::json!({"kid": "kid-3"}));
+        });
+
+        let cmd = ConfirmRotateSigningKeyCommand {
+            domain: "domain-1".to_string(),
+            rotation_id: "rot-1".to_string(),
+            revoke_jtis: vec!["jti-a".to_string()],
+        };
+        let body = cmd
+            .confirm_with_client(&crate::common::test_client(), &server.base_url())
+            .await
+            .unwrap();
+        assert_eq!(body.kid, "kid-3");
+    }
+
+    #[tokio::test]
+    async fn test_confirm_reports_expired_rotation() {
+        let server = MockServer::start();
+        server.mock(|when, then| {
+            when.method(Method::POST)
+                .path("/v4/oauth2/domain-1/confirm-rotate-signing-key");
+            then.status(404).body("rotation expired");
+        });
+
+        let cmd = ConfirmRotateSigningKeyCommand {
             domain: "domain-1".to_string(),
             rotation_id: "rot-1".to_string(),
             revoke_jtis: vec![],
         };
-
-        let err = command.take_action(&cfg).await.unwrap_err();
+        let err = cmd
+            .confirm_with_client(&crate::common::test_client(), &server.base_url())
+            .await
+            .unwrap_err();
         assert!(
-            err.to_string().contains("admin interface not configured"),
-            "unexpected error: {err}"
+            err.to_string()
+                .contains("confirm-rotate-signing-key failed")
         );
+        assert!(err.to_string().contains("rotation expired"));
     }
 }

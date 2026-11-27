@@ -14,13 +14,15 @@
 
 use async_trait::async_trait;
 use clap::Parser;
-use color_eyre::{Report, eyre::WrapErr, eyre::eyre};
+use color_eyre::{Report, eyre::WrapErr};
+use reqwest::Client;
 
 use openstack_keystone_api_types::v4::oauth2_key::ListLocalEmergencyCandidatesResponse;
 use openstack_keystone_config::LoadedConfig;
 
-use super::get_admin_client;
+use super::{domain_url, ensure_success};
 use crate::PerformAction;
+use crate::common::{ADMIN_BASE_URL, build_admin_client, print_list_table};
 
 /// List node-local, quorum-bypass emergency signing-key rotation candidates
 /// on the responding node (ADR 0028 §6).
@@ -37,29 +39,32 @@ pub(super) struct ListLocalEmergencyCandidatesCommand {
     pub domain: String,
 }
 
-#[async_trait]
-impl PerformAction for ListLocalEmergencyCandidatesCommand {
-    async fn take_action(self, config: &LoadedConfig) -> Result<(), Report> {
-        let client = get_admin_client(config).await?;
-
+impl ListLocalEmergencyCandidatesCommand {
+    /// Fetch the candidates through a pre-built admin client.
+    pub(super) async fn list_with_client(
+        &self,
+        client: &Client,
+        base_url: &str,
+    ) -> Result<ListLocalEmergencyCandidatesResponse, Report> {
         let res = client
-            .get(format!(
-                "https://localhost/v4/oauth2/{}/local-emergency-candidates",
-                self.domain
+            .get(domain_url(
+                base_url,
+                &self.domain,
+                &["local-emergency-candidates"],
             ))
             .send()
             .await
             .wrap_err("list-local-emergency-candidates request failed")?;
+        let res = ensure_success(res, "list-local-emergency-candidates").await?;
+        Ok(res.json().await?)
+    }
+}
 
-        if !res.status().is_success() {
-            return Err(eyre!(
-                "list-local-emergency-candidates failed: {} ({})",
-                res.status(),
-                res.text().await.unwrap_or_default()
-            ));
-        }
-
-        let body: ListLocalEmergencyCandidatesResponse = res.json().await?;
+#[async_trait]
+impl PerformAction for ListLocalEmergencyCandidatesCommand {
+    async fn take_action(self, config: &LoadedConfig) -> Result<(), Report> {
+        let client = build_admin_client(config).await?;
+        let body = self.list_with_client(&client, ADMIN_BASE_URL).await?;
         if body.candidates.is_empty() {
             println!(
                 "No local emergency candidates on this node for domain {}.",
@@ -68,21 +73,35 @@ impl PerformAction for ListLocalEmergencyCandidatesCommand {
             return Ok(());
         }
 
-        for c in &body.candidates {
-            println!(
-                "rotation_id={}\n  initiator={}\n  justification={}\n  created_at_unix={}\n  origin_node_id={}\n  conflicted={}\n  revoked={}\n",
-                c.rotation_id,
-                c.initiator,
-                c.justification,
-                c.created_at_unix,
-                c.origin_node_id
-                    .map(|n| n.to_string())
-                    .unwrap_or_else(|| "local".to_string()),
-                c.conflicted,
-                c.revoked,
-            );
-        }
-
+        let rows = body
+            .candidates
+            .into_iter()
+            .map(|c| {
+                vec![
+                    c.rotation_id,
+                    c.initiator,
+                    c.justification,
+                    c.created_at_unix.to_string(),
+                    c.origin_node_id
+                        .map(|n| n.to_string())
+                        .unwrap_or_else(|| "local".to_string()),
+                    c.conflicted.to_string(),
+                    c.revoked.to_string(),
+                ]
+            })
+            .collect();
+        print_list_table(
+            vec![
+                "Rotation ID",
+                "Initiator",
+                "Justification",
+                "Created At (unix)",
+                "Origin Node",
+                "Conflicted",
+                "Revoked",
+            ],
+            rows,
+        );
         Ok(())
     }
 }
@@ -90,6 +109,7 @@ impl PerformAction for ListLocalEmergencyCandidatesCommand {
 #[cfg(test)]
 mod tests {
     use clap::Parser;
+    use httpmock::{Method, MockServer};
 
     use super::*;
 
@@ -106,16 +126,57 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn test_take_action_rejects_missing_admin_interface_config() {
-        let cfg = LoadedConfig::new(Default::default());
-        let command = ListLocalEmergencyCandidatesCommand {
+    async fn test_list_returns_candidates() {
+        let server = MockServer::start();
+        server.mock(|when, then| {
+            when.method(Method::GET)
+                .path("/v4/oauth2/domain-1/local-emergency-candidates");
+            then.status(200)
+                .header("content-type", "application/json")
+                .json_body_obj(&serde_json::json!({
+                    "candidates": [{
+                        "rotation_id": "rot-1",
+                        "initiator": "ops",
+                        "justification": "outage",
+                        "created_at_unix": 1700000000,
+                        "origin_node_id": null,
+                        "conflicted": true,
+                        "revoked": false
+                    }]
+                }));
+        });
+
+        let cmd = ListLocalEmergencyCandidatesCommand {
             domain: "domain-1".to_string(),
         };
+        let body = cmd
+            .list_with_client(&crate::common::test_client(), &server.base_url())
+            .await
+            .unwrap();
+        assert_eq!(body.candidates.len(), 1);
+        assert_eq!(body.candidates[0].rotation_id, "rot-1");
+        assert!(body.candidates[0].conflicted);
+    }
 
-        let err = command.take_action(&cfg).await.unwrap_err();
+    #[tokio::test]
+    async fn test_list_reports_server_error() {
+        let server = MockServer::start();
+        server.mock(|when, then| {
+            when.method(Method::GET)
+                .path("/v4/oauth2/domain-1/local-emergency-candidates");
+            then.status(403).body("forbidden");
+        });
+
+        let cmd = ListLocalEmergencyCandidatesCommand {
+            domain: "domain-1".to_string(),
+        };
+        let err = cmd
+            .list_with_client(&crate::common::test_client(), &server.base_url())
+            .await
+            .unwrap_err();
         assert!(
-            err.to_string().contains("admin interface not configured"),
-            "unexpected error: {err}"
+            err.to_string()
+                .contains("list-local-emergency-candidates failed")
         );
     }
 }

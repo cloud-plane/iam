@@ -15,15 +15,17 @@
 
 use async_trait::async_trait;
 use clap::{Parser, Subcommand};
-use color_eyre::{Report, eyre::WrapErr, eyre::eyre};
+use color_eyre::{Report, eyre::WrapErr};
+use reqwest::Client;
 
 use openstack_keystone_api_types::v4::oauth2_revocation::{Oauth2Session, Oauth2SessionList};
 use openstack_keystone_config::LoadedConfig;
 
-use super::client::OutputFormat;
-use super::get_admin_client;
+use super::{domain_url, ensure_success};
 use crate::PerformAction;
-use crate::common::print_list_table;
+use crate::common::{
+    ADMIN_BASE_URL, OutputFormat, build_admin_client, print_json, print_list_table,
+};
 
 /// Table headers of the session listing.
 const SESSION_HEADERS: [&str; 6] = [
@@ -90,32 +92,31 @@ pub(super) struct ListCommand {
     format: OutputFormat,
 }
 
-#[async_trait]
-impl PerformAction for ListCommand {
-    async fn take_action(self, config: &LoadedConfig) -> Result<(), Report> {
-        let client = get_admin_client(config).await?;
-        // Build the URL by segments so the domain is percent-encoded.
-        let mut url = reqwest::Url::parse("https://localhost/")?;
-        url.path_segments_mut()
-            .map_err(|_| eyre!("invalid base URL"))?
-            .extend(["v4", "oauth2", self.domain.as_str(), "sessions"]);
+impl ListCommand {
+    /// Fetch the sessions of the user through a pre-built admin client.
+    pub(super) async fn list_with_client(
+        &self,
+        client: &Client,
+        base_url: &str,
+    ) -> Result<Oauth2SessionList, Report> {
         let res = client
-            .get(url)
+            .get(domain_url(base_url, &self.domain, &["sessions"]))
             .query(&[("user_id", &self.user)])
             .send()
             .await
             .wrap_err("sessions request failed")?;
-        let status = res.status();
-        if !status.is_success() {
-            let detail = match res.text().await {
-                Ok(body) => body,
-                Err(e) => format!("<unreadable response body: {e}>"),
-            };
-            return Err(eyre!("listing sessions failed: {status} ({detail})"));
-        }
-        let body: Oauth2SessionList = res.json().await?;
+        let res = ensure_success(res, "listing sessions").await?;
+        Ok(res.json().await?)
+    }
+}
+
+#[async_trait]
+impl PerformAction for ListCommand {
+    async fn take_action(self, config: &LoadedConfig) -> Result<(), Report> {
+        let client = build_admin_client(config).await?;
+        let body = self.list_with_client(&client, ADMIN_BASE_URL).await?;
         match self.format {
-            OutputFormat::Json => println!("{}", serde_json::to_string_pretty(&body)?),
+            OutputFormat::Json => print_json(&body)?,
             OutputFormat::Text => {
                 print_list_table(SESSION_HEADERS.to_vec(), session_rows(body.oauth2_sessions));
             }
@@ -127,6 +128,7 @@ impl PerformAction for ListCommand {
 #[cfg(test)]
 mod tests {
     use clap::Parser;
+    use httpmock::{Method, MockServer};
 
     use super::*;
 
@@ -178,14 +180,57 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn test_rejects_missing_admin_interface_config() {
-        let cfg = LoadedConfig::new(Default::default());
+    async fn test_list_queries_user_sessions() {
+        let server = MockServer::start();
+        server.mock(|when, then| {
+            when.method(Method::GET)
+                .path("/v4/oauth2/domain-1/sessions")
+                .query_param("user_id", "user-1");
+            then.status(200)
+                .header("content-type", "application/json")
+                .json_body_obj(&serde_json::json!({
+                    "oauth2_sessions": [{
+                        "client_id": "c1",
+                        "family_id": "f1",
+                        "user_id": "user-1",
+                        "issued_at": 10,
+                        "last_rotated": 20
+                    }]
+                }));
+        });
+
         let cmd = ListCommand {
-            domain: "d".into(),
-            user: "u".into(),
+            domain: "domain-1".into(),
+            user: "user-1".into(),
             format: OutputFormat::Text,
         };
-        let err = cmd.take_action(&cfg).await.unwrap_err();
-        assert!(err.to_string().contains("admin interface not configured"));
+        let body = cmd
+            .list_with_client(&crate::common::test_client(), &server.base_url())
+            .await
+            .unwrap();
+        assert_eq!(body.oauth2_sessions.len(), 1);
+        assert_eq!(body.oauth2_sessions[0].family_id, "f1");
+    }
+
+    #[tokio::test]
+    async fn test_list_reports_server_error() {
+        let server = MockServer::start();
+        server.mock(|when, then| {
+            when.method(Method::GET)
+                .path("/v4/oauth2/domain-1/sessions");
+            then.status(404).body("no such domain");
+        });
+
+        let cmd = ListCommand {
+            domain: "domain-1".into(),
+            user: "user-1".into(),
+            format: OutputFormat::Text,
+        };
+        let err = cmd
+            .list_with_client(&crate::common::test_client(), &server.base_url())
+            .await
+            .unwrap_err();
+        assert!(err.to_string().contains("listing sessions failed"));
+        assert!(err.to_string().contains("no such domain"));
     }
 }
