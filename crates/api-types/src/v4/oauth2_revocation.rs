@@ -38,9 +38,10 @@ pub struct Oauth2RevocationRequest {
 #[derive(Clone, Debug, Default, Deserialize, PartialEq, Serialize)]
 #[cfg_attr(feature = "openapi", derive(utoipa::ToSchema))]
 pub struct Oauth2RevocationResponse {
-    /// Refresh token families processed by the request. Selecting a client
-    /// counts every family issued to it, including ones already revoked;
-    /// selecting a user or the whole domain counts only newly revoked ones.
+    /// Refresh token families processed by the request. Every family the
+    /// selector matches is counted, including ones already revoked, because
+    /// revocation is idempotent and the backend does not report which ones
+    /// changed.
     pub revoked_families: usize,
 }
 
@@ -80,4 +81,8 @@ pub struct Oauth2Session {
 pub struct Oauth2SessionList {
     /// The user's sessions.
     pub oauth2_sessions: Vec<Oauth2Session>,
+    /// Whether the user has more sessions than are listed. The listing is
+    /// capped, so a `true` here means some sessions were not returned.
+    #[serde(default)]
+    pub truncated: bool,
 }

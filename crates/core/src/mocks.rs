@@ -450,7 +450,7 @@ mod oauth2_session {
 
     use openstack_keystone_core_types::oauth2_session::{
         AuthorizationCode, Consent, DeviceCodeGrant, PreAuthSession, RefreshToken,
-        RefreshTokenFamilySummary, RefreshTokenRevocationReason, RpSession, SsoSession,
+        RefreshTokenFamilyListing, RefreshTokenRevocationReason, RpSession, SsoSession,
         UpstreamLoginCompletion,
     };
 
@@ -709,7 +709,7 @@ mod oauth2_session {
                 state: &ServiceState,
                 domain_id: &str,
                 user_id: &str,
-            ) -> Result<Vec<RefreshTokenFamilySummary>, Oauth2SessionProviderError>;
+            ) -> Result<RefreshTokenFamilyListing, Oauth2SessionProviderError>;
 
             async fn revoke_refresh_token_families_by_user<'a>(
                 &self,

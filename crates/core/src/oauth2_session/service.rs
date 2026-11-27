@@ -1012,14 +1012,15 @@ impl Oauth2SessionApi for Oauth2SessionService {
         state: &ServiceState,
         domain_id: &str,
         user_id: &str,
-    ) -> Result<Vec<RefreshTokenFamilySummary>, Oauth2SessionProviderError> {
+    ) -> Result<RefreshTokenFamilyListing, Oauth2SessionProviderError> {
         use futures_util::{StreamExt, TryStreamExt, stream};
 
         let mut family_ids = self
             .backend_driver
             .list_refresh_families_by_user(state, domain_id, user_id)
             .await?;
-        if family_ids.len() > MAX_LISTED_FAMILIES {
+        let truncated = family_ids.len() > MAX_LISTED_FAMILIES;
+        if truncated {
             tracing::warn!(
                 total = family_ids.len(),
                 limit = MAX_LISTED_FAMILIES,
@@ -1042,7 +1043,10 @@ impl Oauth2SessionApi for Oauth2SessionService {
             .into_iter()
             .flatten()
             .collect();
-        Ok(summaries)
+        Ok(RefreshTokenFamilyListing {
+            families: summaries,
+            truncated,
+        })
     }
 
     #[tracing::instrument(name = "provider.oauth2_session.revoke_refresh_token_families_by_user", level = "debug", skip_all, fields(user_id = %user_id))]

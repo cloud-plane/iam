@@ -152,6 +152,9 @@ pub(super) async fn authorize_mfa(
         }
     };
     if attempted.mfa_attempts > max_attempts {
+        // The lockout is a failed attempt too: count it like the `Invalid`
+        // branch does, so brute-force volume shows in the metrics.
+        OAUTH2_METRICS.record_login_attempt("failure", factor_label(&form.factor));
         let _ = sessions
             .complete_pre_auth_session(&state, &session_id)
             .await;

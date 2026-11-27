@@ -422,6 +422,15 @@ pub struct RefreshTokenFamilySummary {
     pub user_id: String,
 }
 
+/// Result of listing the refresh token families of a user for triage.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct RefreshTokenFamilyListing {
+    /// The families returned, at most the listing limit.
+    pub families: Vec<RefreshTokenFamilySummary>,
+    /// Whether the user holds more families than were returned.
+    pub truncated: bool,
+}
+
 /// Reason a refresh token family was revoked (stored in
 /// [`RefreshToken::revocation_reason`]).
 #[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]

@@ -129,7 +129,7 @@ impl Oauth2Metrics {
             revocations_total: CounterVec::new(
                 meter,
                 "keystone_oauth2_revocations_total",
-                "Refresh token families revoked by reason.",
+                "Refresh token families matched by revocations, by reason.",
                 ["reason"],
             ),
             refresh_foreign_client_total: CounterVec::new(
@@ -220,13 +220,14 @@ impl Oauth2Metrics {
         self.refresh_foreign_client_total.inc([]);
     }
 
-    /// Count revoked refresh token families. `reason` is a fixed
-    /// `RefreshTokenRevocationReason` name. Counted for operator and client
-    /// revocations made through the API and for user and domain lifecycle
-    /// revocations. Each revoking request or lifecycle event is counted once, as
-    /// the number of families it matched: families that were already revoked
-    /// are matched (and counted) again, because revocation is idempotent and
-    /// the backend does not report which ones changed.
+    /// Count the refresh token families matched by a revocation. `reason` is
+    /// a fixed `RefreshTokenRevocationReason` name. Counted for operator and
+    /// client revocations made through the API and for user and domain
+    /// lifecycle revocations. Each revoking request or lifecycle event is
+    /// counted once, as the number of families it matched: families that were
+    /// already revoked are matched (and counted) again, because revocation is
+    /// idempotent and the backend does not report which ones changed. The
+    /// counter therefore measures revocation work, not newly revoked sessions.
     pub fn record_revocations(&self, reason: &'static str, n: u64) {
         self.revocations_total.add(n, [Label::fixed(reason)]);
     }

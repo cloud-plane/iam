@@ -118,7 +118,14 @@ impl PerformAction for ListCommand {
         match self.format {
             OutputFormat::Json => print_json(&body)?,
             OutputFormat::Text => {
+                let truncated = body.truncated;
                 print_list_table(SESSION_HEADERS.to_vec(), session_rows(body.oauth2_sessions));
+                if truncated {
+                    println!(
+                        "warning: listing is truncated, the user has more sessions than shown; \
+                         sessions beyond the listing limit were not returned"
+                    );
+                }
             }
         }
         Ok(())
@@ -144,6 +151,15 @@ mod tests {
         let SessionsCommands::List(c) = w.command;
         assert_eq!(c.user, "u");
         assert!(Wrapper::try_parse_from(["sessions", "list", "--domain", "d"]).is_err());
+    }
+
+    #[test]
+    fn test_truncated_flag_defaults_to_false() {
+        let list: Oauth2SessionList = serde_json::from_str(r#"{"oauth2_sessions": []}"#).unwrap();
+        assert!(!list.truncated);
+        let list: Oauth2SessionList =
+            serde_json::from_str(r#"{"oauth2_sessions": [], "truncated": true}"#).unwrap();
+        assert!(list.truncated);
     }
 
     #[test]
