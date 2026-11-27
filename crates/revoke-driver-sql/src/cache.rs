@@ -81,6 +81,14 @@ mod tests {
                 ..Default::default()
             },
             RevocationEventListParameters {
+                audit_chain_id: Some("c".into()),
+                ..Default::default()
+            },
+            RevocationEventListParameters {
+                access_token_id: Some("at".into()),
+                ..Default::default()
+            },
+            RevocationEventListParameters {
                 project_id: Some("p".into()),
                 ..Default::default()
             },

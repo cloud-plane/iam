@@ -15,3 +15,5 @@ deny.toml
 gitleaks.toml
 rustfmt.toml
 typos.toml
+tests/loadtest/target/
+tests/loadtest/reports/

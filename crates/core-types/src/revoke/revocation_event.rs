@@ -120,8 +120,15 @@ impl RevocationEventCreate {
 #[builder(build_fn(error = "BuilderError"))]
 #[builder(setter(strip_option, into))]
 pub struct RevocationEventListParameters {
-    //pub access_token_id: Option<String>,
-    //pub audit_chain_id: Option<String>,
+    /// OAuth access token id to match against.
+    #[builder(default)]
+    pub access_token_id: Option<String>,
+
+    /// Audit chain id (the audit id that started the chain of rescoped tokens,
+    /// the last one in the audit ids of the token) to match against.
+    #[builder(default)]
+    pub audit_chain_id: Option<String>,
+
     /// Audit_id to match against.
     #[builder(default)]
     pub audit_id: Option<String>,

@@ -13,11 +13,17 @@
 //! Indexes of the `revocation_event` table.
 //!
 //! The revocation check narrows the events by the dimensions a token names
-//! (audit id, user, project, domain, role, trust), see
+//! (audit id, audit chain id, access token id, user, project, domain, role,
+//! trust), see
 //! `list::build_query_filters`. Each dimension needs its own index to let the
 //! database combine them instead of scanning the table. The set also contains
 //! the indexes of the Python Keystone schema so that a schema created by
 //! `keystone-manage db sync` is complete too.
+//!
+//! Events that name no dimension apply to every token and are looked up on
+//! every check. A partial index over exactly those events (PostgreSQL and
+//! SQLite) lets the database read them directly; the `unscoped` index alone
+//! also returns every event that merely leaves the audit id and user empty.
 use sea_orm::{ConnectionTrait, DatabaseBackend, DbErr, Statement};
 use sea_orm_migration::prelude::*;
 
@@ -61,6 +67,14 @@ pub(crate) fn definitions() -> Vec<(&'static str, Vec<Column>)> {
             "ix_revocation_event_trust_id_issued_before",
             vec![Column::TrustId, Column::IssuedBefore],
         ),
+        (
+            "ix_revocation_event_audit_chain_id_issued_before",
+            vec![Column::AuditChainId, Column::IssuedBefore],
+        ),
+        (
+            "ix_revocation_event_access_token_id_issued_before",
+            vec![Column::AccessTokenId, Column::IssuedBefore],
+        ),
         // Events that name none of the dimensions apply to every token. The
         // index lets the database find them without scanning the table. Only
         // the two leading columns are indexed: a MySQL index is limited to
@@ -73,6 +87,21 @@ pub(crate) fn definitions() -> Vec<(&'static str, Vec<Column>)> {
         ),
     ]
 }
+
+/// Name of the partial index of the events that name no dimension.
+const GLOBAL_INDEX: &str = "ix_revocation_event_global";
+
+/// The dimension columns: an event naming none of them applies to every token.
+const DIMENSIONS: [Column; 8] = [
+    Column::AuditId,
+    Column::AuditChainId,
+    Column::AccessTokenId,
+    Column::UserId,
+    Column::ProjectId,
+    Column::DomainId,
+    Column::RoleId,
+    Column::TrustId,
+];
 
 /// Check whether the index exists on the table in the current MySQL schema.
 async fn mysql_has_index(manager: &SchemaManager<'_>, name: &str) -> Result<bool, DbErr> {
@@ -114,6 +143,19 @@ pub(crate) async fn ensure(manager: &SchemaManager<'_>) -> Result<(), DbErr> {
         }
         manager.create_index(index.to_owned()).await?;
     }
+    // MySQL has no partial indexes: it keeps using `ix_revocation_event_unscoped`.
+    if !is_mysql {
+        let mut index = Index::create();
+        index
+            .name(GLOBAL_INDEX)
+            .table(RevocationEvent)
+            .if_not_exists()
+            .col(Column::IssuedBefore);
+        for column in DIMENSIONS {
+            index.and_where(Expr::col(column).is_null());
+        }
+        manager.create_index(index.to_owned()).await?;
+    }
     Ok(())
 }
 
@@ -132,6 +174,21 @@ mod tests {
         for name in names {
             assert!(name.len() <= 63, "{name} is too long");
         }
+        assert!(GLOBAL_INDEX.len() <= 63);
+    }
+
+    #[test]
+    fn test_global_index_covers_every_dimension() {
+        assert_eq!(DIMENSIONS.len(), 8);
+        let defs = definitions();
+        for column in DIMENSIONS {
+            assert!(
+                defs.iter().any(|(_, cols)| cols.first().is_some_and(
+                    |first| std::mem::discriminant(first) == std::mem::discriminant(&column)
+                )),
+                "{column:?} is not the leading column of any index"
+            );
+        }
     }
 
     #[test]
@@ -139,6 +196,8 @@ mod tests {
         let defs = definitions();
         for column in [
             Column::AuditId,
+            Column::AuditChainId,
+            Column::AccessTokenId,
             Column::UserId,
             Column::ProjectId,
             Column::DomainId,
