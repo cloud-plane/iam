@@ -194,6 +194,49 @@ impl Oauth2TokenError {
         Self::new(StatusCode::SERVICE_UNAVAILABLE, "server_error", description)
     }
 
+    /// RFC 6749 §5.2 `temporarily_unavailable` served as `503`: the Raft
+    /// store backing the provider cannot be reached.
+    pub(crate) fn raft_unavailable() -> Self {
+        Self::new(
+            StatusCode::SERVICE_UNAVAILABLE,
+            "temporarily_unavailable",
+            "the OAuth2 provider storage is not available",
+        )
+    }
+
+    /// Map a session provider failure: an unavailable Raft store is a
+    /// `503`, anything else a `500`. Logs `context` with the error.
+    pub(crate) fn from_session_err(
+        e: &openstack_keystone_core_types::oauth2_session::Oauth2SessionProviderError,
+        context: &str,
+    ) -> Self {
+        tracing::warn!(error = %e, "{context}");
+        if matches!(
+            e,
+            openstack_keystone_core_types::oauth2_session::Oauth2SessionProviderError::RaftNotAvailable
+        ) {
+            Self::raft_unavailable()
+        } else {
+            Self::internal("token issuance failed")
+        }
+    }
+
+    /// Like [`Self::from_session_err`] for the signing key provider.
+    pub(crate) fn from_key_err(
+        e: &openstack_keystone_core_types::oauth2_key::Oauth2KeyProviderError,
+        context: &str,
+    ) -> Self {
+        tracing::warn!(error = %e, "{context}");
+        if matches!(
+            e,
+            openstack_keystone_core_types::oauth2_key::Oauth2KeyProviderError::RaftNotAvailable
+        ) {
+            Self::raft_unavailable()
+        } else {
+            Self::internal("token issuance failed")
+        }
+    }
+
     pub(crate) fn internal(description: impl Into<String>) -> Self {
         Self::new(
             StatusCode::INTERNAL_SERVER_ERROR,

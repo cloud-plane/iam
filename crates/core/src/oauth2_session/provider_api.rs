@@ -17,7 +17,8 @@ use async_trait::async_trait;
 
 use openstack_keystone_core_types::oauth2_session::{
     AuthorizationCode, Consent, DeviceCodeGrant, PreAuthSession, RefreshToken,
-    RefreshTokenRevocationReason, RpSession, SsoSession, UpstreamLogin, UpstreamLoginCompletion,
+    RefreshTokenFamilyListing, RefreshTokenRevocationReason, RpSession, SsoSession, UpstreamLogin,
+    UpstreamLoginCompletion,
 };
 
 use crate::keystone::ServiceState;
@@ -537,12 +538,28 @@ pub trait Oauth2SessionApi: Send + Sync {
         reason: RefreshTokenRevocationReason,
     ) -> Result<usize, Oauth2SessionProviderError>;
 
+    /// Summarize the refresh token families `user_id` holds in `domain_id`,
+    /// revoked ones included, for incident triage.
+    ///
+    /// At most 1000 families are returned; `truncated` tells whether more
+    /// exist. Only the `(domain, user)` index
+    /// is consulted, so families of a user that no longer exists in
+    /// `domain_id` (the user-deleted revocation path resolves them without
+    /// a domain) are not listed.
+    async fn list_refresh_token_families_by_user(
+        &self,
+        state: &ServiceState,
+        domain_id: &str,
+        user_id: &str,
+    ) -> Result<RefreshTokenFamilyListing, Oauth2SessionProviderError>;
+
     /// Revoke every refresh token family `user_id` holds with the given
     /// `reason` and return the ids of the families revoked. `domain_id`
     /// narrows the lookup to the user's domain; `None` searches every
     /// domain (the user was deleted and its domain is no longer known).
-    /// Families that are already revoked are not listed again. Used by the
-    /// user lifecycle hook (disable, delete, password change).
+    /// Families that are already revoked are matched again and returned too,
+    /// because the backend index does not distinguish them. Used by the user
+    /// lifecycle hook (disable, delete, password change).
     async fn revoke_refresh_token_families_by_user<'a>(
         &self,
         state: &ServiceState,

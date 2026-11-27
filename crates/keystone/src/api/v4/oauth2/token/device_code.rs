@@ -188,8 +188,7 @@ pub(super) async fn handle_device_code_grant(
         .poll_device_code_grant(state, &device_code, domain_id, &client_id)
         .await
         .map_err(|e| {
-            tracing::warn!(error = %e, "oauth2 device code grant poll failed");
-            Oauth2TokenError::internal("token issuance failed")
+            Oauth2TokenError::from_session_err(&e, "oauth2 device code grant poll failed")
         })?;
 
     let record = match outcome {
@@ -248,8 +247,7 @@ pub(super) async fn handle_device_code_grant(
             )
             .await
             .map_err(|e| {
-                tracing::warn!(error = %e, "oauth2 refresh token issuance failed");
-                Oauth2TokenError::internal("token issuance failed")
+                Oauth2TokenError::from_session_err(&e, "oauth2 refresh token issuance failed")
             })?;
         (Some(record_rt.family_id), Some(bearer))
     } else {

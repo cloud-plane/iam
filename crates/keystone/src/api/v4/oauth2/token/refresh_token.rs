@@ -111,13 +111,13 @@ pub(super) async fn handle_refresh_token_grant(
         .peek_refresh_token(state, &presented_refresh_token)
         .await
         .map_err(|e| {
-            tracing::warn!(error = %e, "oauth2 refresh token lookup failed");
-            Oauth2TokenError::internal("token issuance failed")
+            Oauth2TokenError::from_session_err(&e, "oauth2 refresh token lookup failed")
         })?;
     let family_jkt = peeked.as_ref().and_then(|r| r.dpop_jkt.clone());
     if let Some(record) = &peeked {
         // Never act on (or reveal anything about) another client's family.
         if record.client_id != client_id || record.domain_id != domain_id {
+            OAUTH2_METRICS.record_refresh_foreign_client();
             emit_oauth2_session_event(
                 &state.audit_dispatcher,
                 correlation_id,
@@ -231,8 +231,7 @@ pub(super) async fn handle_refresh_token_grant(
         )
         .await
         .map_err(|e| {
-            tracing::warn!(error = %e, "oauth2 refresh token redemption failed");
-            Oauth2TokenError::internal("token issuance failed")
+            Oauth2TokenError::from_session_err(&e, "oauth2 refresh token redemption failed")
         })?;
 
     let (record, bearer) = match redemption {
@@ -476,6 +475,47 @@ mod tests {
             .unwrap();
         assert_eq!(response.status(), StatusCode::BAD_REQUEST);
         assert_eq!(json_body(response).await["error"], "invalid_request");
+    }
+
+    #[tokio::test]
+    async fn test_refresh_token_raft_unavailable_is_503() {
+        let mut client = public_authz_code_client().await;
+        client.grant_types = vec![
+            provider_types::GrantType::AuthorizationCode,
+            provider_types::GrantType::RefreshToken,
+        ];
+        let mut client_mock = MockOauth2ClientProvider::default();
+        client_mock
+            .expect_get_by_client_id()
+            .returning(move |_, _| Ok(Some(client.clone())));
+        let mut session_mock = MockOauth2SessionProvider::default();
+        session_mock.expect_peek_refresh_token().returning(|_, _| {
+            Err(openstack_keystone_core_types::oauth2_session::Oauth2SessionProviderError::RaftNotAvailable)
+        });
+        let provider = Provider::mocked_builder()
+            .mock_oauth2_client(client_mock)
+            .mock_oauth2_session(session_mock);
+        let (state, _receivers) =
+            openstack_keystone_core::api::tests::get_mocked_state_with_audit(provider, true, {
+                let mut config = openstack_keystone_config::Config::default();
+                config.oauth2.allow_host_header_issuer = true;
+                config
+            })
+            .await;
+        let mut api = openapi_router()
+            .layer(TraceLayer::new_for_http())
+            .with_state(state);
+
+        let response = api
+            .as_service()
+            .oneshot(request(&refresh_token_form("any-token")))
+            .await
+            .unwrap();
+        assert_eq!(response.status(), StatusCode::SERVICE_UNAVAILABLE);
+        assert_eq!(
+            json_body(response).await["error"],
+            "temporarily_unavailable"
+        );
     }
 
     #[tokio::test]

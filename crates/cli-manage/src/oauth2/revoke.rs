@@ -15,16 +15,17 @@
 
 use async_trait::async_trait;
 use clap::{ArgGroup, Parser};
-use color_eyre::{Report, eyre::WrapErr, eyre::eyre};
+use color_eyre::{Report, eyre::WrapErr};
+use reqwest::Client;
 
 use openstack_keystone_api_types::v4::oauth2_revocation::{
     Oauth2RevocationRequest, Oauth2RevocationResponse,
 };
 use openstack_keystone_config::LoadedConfig;
 
-use super::client::OutputFormat;
-use super::{domain_url, get_admin_client};
+use super::{domain_url, ensure_success};
 use crate::PerformAction;
+use crate::common::{ADMIN_BASE_URL, OutputFormat, build_admin_client, print_json};
 
 /// Revoke the refresh token families of a user, a client or a whole domain,
 /// for example during an incident.
@@ -51,33 +52,37 @@ pub(super) struct RevokeCommand {
     format: OutputFormat,
 }
 
-#[async_trait]
-impl PerformAction for RevokeCommand {
-    async fn take_action(self, config: &LoadedConfig) -> Result<(), Report> {
-        let client = get_admin_client(config).await?;
+impl RevokeCommand {
+    /// Send the revocation through a pre-built admin client.
+    pub(super) async fn revoke_with_client(
+        &self,
+        client: &Client,
+        base_url: &str,
+    ) -> Result<Oauth2RevocationResponse, Report> {
         let req = Oauth2RevocationRequest {
-            user_id: self.user,
-            client_id: self.client,
+            user_id: self.user.clone(),
+            client_id: self.client.clone(),
             all: self.all,
-            reason: self.reason,
+            reason: self.reason.clone(),
         };
         let res = client
-            .post(domain_url(&self.domain, &["revocations"]))
+            .post(domain_url(base_url, &self.domain, &["revocations"]))
             .json(&req)
             .send()
             .await
             .wrap_err("revocation request failed")?;
-        let status = res.status();
-        if !status.is_success() {
-            let text = res
-                .text()
-                .await
-                .wrap_err("reading revocation response body failed")?;
-            return Err(eyre!("revocation failed: {status} ({text})"));
-        }
-        let body: Oauth2RevocationResponse = res.json().await?;
+        let res = ensure_success(res, "revocation").await?;
+        Ok(res.json().await?)
+    }
+}
+
+#[async_trait]
+impl PerformAction for RevokeCommand {
+    async fn take_action(self, config: &LoadedConfig) -> Result<(), Report> {
+        let client = build_admin_client(config).await?;
+        let body = self.revoke_with_client(&client, ADMIN_BASE_URL).await?;
         match self.format {
-            OutputFormat::Json => println!("{}", serde_json::to_string_pretty(&body)?),
+            OutputFormat::Json => print_json(&body)?,
             OutputFormat::Text => println!("revoked {} session families", body.revoked_families),
         }
         Ok(())
@@ -87,6 +92,7 @@ impl PerformAction for RevokeCommand {
 #[cfg(test)]
 mod tests {
     use clap::Parser;
+    use httpmock::{Method, MockServer};
 
     use super::*;
 
@@ -105,10 +111,54 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn test_rejects_missing_admin_interface_config() {
-        let cfg = LoadedConfig::new(Default::default());
-        let cmd = RevokeCommand::try_parse_from(["revoke", "--domain", "d", "--all"]).unwrap();
-        let err = cmd.take_action(&cfg).await.unwrap_err();
-        assert!(err.to_string().contains("admin interface not configured"));
+    async fn test_revoke_posts_user_target() {
+        let server = MockServer::start();
+        server.mock(|when, then| {
+            when.method(Method::POST)
+                .path("/v4/oauth2/domain-1/revocations")
+                .json_body(serde_json::json!({
+                    "user_id": "user-1",
+                    "all": false,
+                    "reason": "incident-42"
+                }));
+            then.status(200)
+                .header("content-type", "application/json")
+                .json_body_obj(&serde_json::json!({"revoked_families": 3}));
+        });
+
+        let cmd = RevokeCommand::try_parse_from([
+            "revoke",
+            "--domain",
+            "domain-1",
+            "--user",
+            "user-1",
+            "--reason",
+            "incident-42",
+        ])
+        .unwrap();
+        let body = cmd
+            .revoke_with_client(&crate::common::test_client(), &server.base_url())
+            .await
+            .unwrap();
+        assert_eq!(body.revoked_families, 3);
+    }
+
+    #[tokio::test]
+    async fn test_revoke_reports_server_error() {
+        let server = MockServer::start();
+        server.mock(|when, then| {
+            when.method(Method::POST)
+                .path("/v4/oauth2/domain-1/revocations");
+            then.status(400).body("bad target");
+        });
+
+        let cmd =
+            RevokeCommand::try_parse_from(["revoke", "--domain", "domain-1", "--all"]).unwrap();
+        let err = cmd
+            .revoke_with_client(&crate::common::test_client(), &server.base_url())
+            .await
+            .unwrap_err();
+        assert!(err.to_string().contains("revocation failed"));
+        assert!(err.to_string().contains("bad target"));
     }
 }

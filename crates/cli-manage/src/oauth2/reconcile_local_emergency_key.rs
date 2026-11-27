@@ -14,15 +14,17 @@
 
 use async_trait::async_trait;
 use clap::Parser;
-use color_eyre::{Report, eyre::WrapErr, eyre::eyre};
+use color_eyre::{Report, eyre::WrapErr};
+use reqwest::Client;
 
 use openstack_keystone_api_types::v4::oauth2_key::{
     ReconcileLocalEmergencyKeyRequest, ReconcileLocalEmergencyKeyResponse,
 };
 use openstack_keystone_config::LoadedConfig;
 
-use super::get_admin_client;
+use super::{domain_url, ensure_success};
 use crate::PerformAction;
+use crate::common::{ADMIN_BASE_URL, build_admin_client};
 
 /// Reconcile a node-local, quorum-bypass emergency signing-key rotation
 /// candidate into Raft-replicated state (ADR 0028 §6).
@@ -47,15 +49,18 @@ pub(super) struct ReconcileLocalEmergencyKeyCommand {
     pub rotation_id: String,
 }
 
-#[async_trait]
-impl PerformAction for ReconcileLocalEmergencyKeyCommand {
-    async fn take_action(self, config: &LoadedConfig) -> Result<(), Report> {
-        let client = get_admin_client(config).await?;
-
+impl ReconcileLocalEmergencyKeyCommand {
+    /// Reconcile the candidate through a pre-built admin client.
+    pub(super) async fn reconcile_with_client(
+        &self,
+        client: &Client,
+        base_url: &str,
+    ) -> Result<ReconcileLocalEmergencyKeyResponse, Report> {
         let res = client
-            .post(format!(
-                "https://localhost/v4/oauth2/{}/reconcile-local-emergency-key",
-                self.domain
+            .post(domain_url(
+                base_url,
+                &self.domain,
+                &["reconcile-local-emergency-key"],
             ))
             .json(&ReconcileLocalEmergencyKeyRequest {
                 rotation_id: self.rotation_id.clone(),
@@ -63,21 +68,20 @@ impl PerformAction for ReconcileLocalEmergencyKeyCommand {
             .send()
             .await
             .wrap_err("reconcile-local-emergency-key request failed")?;
+        let res = ensure_success(res, "reconcile-local-emergency-key").await?;
+        Ok(res.json().await?)
+    }
+}
 
-        if !res.status().is_success() {
-            return Err(eyre!(
-                "reconcile-local-emergency-key failed: {} ({})",
-                res.status(),
-                res.text().await.unwrap_or_default()
-            ));
-        }
-
-        let body: ReconcileLocalEmergencyKeyResponse = res.json().await?;
+#[async_trait]
+impl PerformAction for ReconcileLocalEmergencyKeyCommand {
+    async fn take_action(self, config: &LoadedConfig) -> Result<(), Report> {
+        let client = build_admin_client(config).await?;
+        let body = self.reconcile_with_client(&client, ADMIN_BASE_URL).await?;
         println!(
             "Local emergency rotation {} reconciled for domain {}. New kid: {}",
             self.rotation_id, self.domain, body.kid
         );
-
         Ok(())
     }
 }
@@ -85,6 +89,7 @@ impl PerformAction for ReconcileLocalEmergencyKeyCommand {
 #[cfg(test)]
 mod tests {
     use clap::Parser;
+    use httpmock::{Method, MockServer};
 
     use super::*;
 
@@ -103,17 +108,49 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn test_take_action_rejects_missing_admin_interface_config() {
-        let cfg = LoadedConfig::new(Default::default());
-        let command = ReconcileLocalEmergencyKeyCommand {
+    async fn test_reconcile_posts_rotation_id() {
+        let server = MockServer::start();
+        server.mock(|when, then| {
+            when.method(Method::POST)
+                .path("/v4/oauth2/domain-1/reconcile-local-emergency-key")
+                .json_body(serde_json::json!({"rotation_id": "rot-1"}));
+            then.status(200)
+                .header("content-type", "application/json")
+                .json_body_obj(&serde_json::json!({"kid": "kid-4"}));
+        });
+
+        let cmd = ReconcileLocalEmergencyKeyCommand {
             domain: "domain-1".to_string(),
             rotation_id: "rot-1".to_string(),
         };
+        let body = cmd
+            .reconcile_with_client(&crate::common::test_client(), &server.base_url())
+            .await
+            .unwrap();
+        assert_eq!(body.kid, "kid-4");
+    }
 
-        let err = command.take_action(&cfg).await.unwrap_err();
+    #[tokio::test]
+    async fn test_reconcile_reports_server_error() {
+        let server = MockServer::start();
+        server.mock(|when, then| {
+            when.method(Method::POST)
+                .path("/v4/oauth2/domain-1/reconcile-local-emergency-key");
+            then.status(409).body("quorum unavailable");
+        });
+
+        let cmd = ReconcileLocalEmergencyKeyCommand {
+            domain: "domain-1".to_string(),
+            rotation_id: "rot-1".to_string(),
+        };
+        let err = cmd
+            .reconcile_with_client(&crate::common::test_client(), &server.base_url())
+            .await
+            .unwrap_err();
         assert!(
-            err.to_string().contains("admin interface not configured"),
-            "unexpected error: {err}"
+            err.to_string()
+                .contains("reconcile-local-emergency-key failed")
         );
+        assert!(err.to_string().contains("quorum unavailable"));
     }
 }

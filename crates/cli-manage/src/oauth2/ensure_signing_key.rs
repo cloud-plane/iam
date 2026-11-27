@@ -14,13 +14,15 @@
 
 use async_trait::async_trait;
 use clap::Parser;
-use color_eyre::{Report, eyre::WrapErr, eyre::eyre};
+use color_eyre::{Report, eyre::WrapErr};
+use reqwest::Client;
 
 use openstack_keystone_api_types::v4::oauth2_key::EnsureSigningKeyResponse;
 use openstack_keystone_config::LoadedConfig;
 
-use super::get_admin_client;
+use super::{domain_url, ensure_success};
 use crate::PerformAction;
+use crate::common::{ADMIN_BASE_URL, build_admin_client};
 
 /// Idempotently ensure a domain has an OAuth2/OIDC signing key (ADR 0026 §3).
 ///
@@ -40,34 +42,32 @@ pub(super) struct EnsureSigningKeyCommand {
     pub domain: String,
 }
 
-#[async_trait]
-impl PerformAction for EnsureSigningKeyCommand {
-    async fn take_action(self, config: &LoadedConfig) -> Result<(), Report> {
-        let client = get_admin_client(config).await?;
-
+impl EnsureSigningKeyCommand {
+    /// Ensure the signing key through a pre-built admin client.
+    pub(super) async fn ensure_with_client(
+        &self,
+        client: &Client,
+        base_url: &str,
+    ) -> Result<EnsureSigningKeyResponse, Report> {
         let res = client
-            .post(format!(
-                "https://localhost/v4/oauth2/{}/ensure-signing-key",
-                self.domain
-            ))
+            .post(domain_url(base_url, &self.domain, &["ensure-signing-key"]))
             .send()
             .await
             .wrap_err("ensure-signing-key request failed")?;
+        let res = ensure_success(res, "ensure-signing-key").await?;
+        Ok(res.json().await?)
+    }
+}
 
-        if !res.status().is_success() {
-            return Err(eyre!(
-                "ensure-signing-key failed: {} ({})",
-                res.status(),
-                res.text().await.unwrap_or_default()
-            ));
-        }
-
-        let body: EnsureSigningKeyResponse = res.json().await?;
+#[async_trait]
+impl PerformAction for EnsureSigningKeyCommand {
+    async fn take_action(self, config: &LoadedConfig) -> Result<(), Report> {
+        let client = build_admin_client(config).await?;
+        let body = self.ensure_with_client(&client, ADMIN_BASE_URL).await?;
         println!(
             "OAuth2 signing key present for domain {}. kid: {}",
             self.domain, body.kid
         );
-
         Ok(())
     }
 }
@@ -75,6 +75,7 @@ impl PerformAction for EnsureSigningKeyCommand {
 #[cfg(test)]
 mod tests {
     use clap::Parser;
+    use httpmock::{Method, MockServer};
 
     use super::*;
 
@@ -91,20 +92,43 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn test_take_action_rejects_missing_admin_interface_config() {
-        // Same fail-fast requirement as the other oauth2 subcommands:
-        // `get_admin_client` is the first thing called, and a `Config`
-        // without `[interface_admin]` must error clearly rather than
-        // attempting SPIFFE mTLS setup against a nonexistent socket.
-        let cfg = LoadedConfig::new(Default::default());
-        let command = EnsureSigningKeyCommand {
+    async fn test_ensure_returns_kid() {
+        let server = MockServer::start();
+        server.mock(|when, then| {
+            when.method(Method::POST)
+                .path("/v4/oauth2/domain-1/ensure-signing-key");
+            then.status(200)
+                .header("content-type", "application/json")
+                .json_body_obj(&serde_json::json!({"kid": "kid-1"}));
+        });
+
+        let cmd = EnsureSigningKeyCommand {
             domain: "domain-1".to_string(),
         };
+        let body = cmd
+            .ensure_with_client(&crate::common::test_client(), &server.base_url())
+            .await
+            .unwrap();
+        assert_eq!(body.kid, "kid-1");
+    }
 
-        let err = command.take_action(&cfg).await.unwrap_err();
-        assert!(
-            err.to_string().contains("admin interface not configured"),
-            "unexpected error: {err}"
-        );
+    #[tokio::test]
+    async fn test_ensure_reports_server_error() {
+        let server = MockServer::start();
+        server.mock(|when, then| {
+            when.method(Method::POST)
+                .path("/v4/oauth2/domain-1/ensure-signing-key");
+            then.status(500).body("boom");
+        });
+
+        let cmd = EnsureSigningKeyCommand {
+            domain: "domain-1".to_string(),
+        };
+        let err = cmd
+            .ensure_with_client(&crate::common::test_client(), &server.base_url())
+            .await
+            .unwrap_err();
+        assert!(err.to_string().contains("ensure-signing-key failed"));
+        assert!(err.to_string().contains("boom"));
     }
 }

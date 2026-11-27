@@ -15,14 +15,16 @@
 use async_trait::async_trait;
 use clap::Parser;
 use color_eyre::{Report, eyre::WrapErr, eyre::eyre};
+use reqwest::Client;
 
 use openstack_keystone_api_types::v4::oauth2_key::{
     RotateSigningKeyRequest, RotateSigningKeyResponse,
 };
 use openstack_keystone_config::LoadedConfig;
 
-use super::get_admin_client;
+use super::{domain_url, ensure_success};
 use crate::PerformAction;
+use crate::common::{ADMIN_BASE_URL, build_admin_client};
 
 /// Rotate an OAuth2/OIDC domain's signing key (ADR 0026 §3).
 ///
@@ -64,6 +66,28 @@ pub(super) struct RotateSigningKeyCommand {
     pub justification: Option<String>,
 }
 
+impl RotateSigningKeyCommand {
+    /// Request the rotation through a pre-built admin client.
+    pub(super) async fn rotate_with_client(
+        &self,
+        client: &Client,
+        base_url: &str,
+    ) -> Result<RotateSigningKeyResponse, Report> {
+        let res = client
+            .post(domain_url(base_url, &self.domain, &["rotate-signing-key"]))
+            .json(&RotateSigningKeyRequest {
+                emergency: self.emergency,
+                local_quorum_bypass: self.local_quorum_bypass,
+                justification: self.justification.clone(),
+            })
+            .send()
+            .await
+            .wrap_err("rotate-signing-key request failed")?;
+        let res = ensure_success(res, "rotate-signing-key").await?;
+        Ok(res.json().await?)
+    }
+}
+
 #[async_trait]
 impl PerformAction for RotateSigningKeyCommand {
     async fn take_action(self, config: &LoadedConfig) -> Result<(), Report> {
@@ -73,31 +97,8 @@ impl PerformAction for RotateSigningKeyCommand {
             ));
         }
 
-        let client = get_admin_client(config).await?;
-
-        let res = client
-            .post(format!(
-                "https://localhost/v4/oauth2/{}/rotate-signing-key",
-                self.domain
-            ))
-            .json(&RotateSigningKeyRequest {
-                emergency: self.emergency,
-                local_quorum_bypass: self.local_quorum_bypass,
-                justification: self.justification.clone(),
-            })
-            .send()
-            .await
-            .wrap_err("rotate-signing-key request failed")?;
-
-        if !res.status().is_success() {
-            return Err(eyre!(
-                "rotate-signing-key failed: {} ({})",
-                res.status(),
-                res.text().await.unwrap_or_default()
-            ));
-        }
-
-        let body: RotateSigningKeyResponse = res.json().await?;
+        let client = build_admin_client(config).await?;
+        let body = self.rotate_with_client(&client, ADMIN_BASE_URL).await?;
 
         if self.local_quorum_bypass {
             match body.local_rotation_id {
@@ -146,6 +147,7 @@ impl PerformAction for RotateSigningKeyCommand {
 #[cfg(test)]
 mod tests {
     use clap::Parser;
+    use httpmock::{Method, MockServer};
 
     use super::*;
 
@@ -170,24 +172,55 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn test_take_action_rejects_missing_admin_interface_config() {
-        // `get_admin_client` is the first thing `take_action` calls: a
-        // `Config` with no `[interface_admin]` section (the default) must
-        // fail fast with a clear error rather than attempting SPIFFE mTLS
-        // setup against a nonexistent socket.
-        let cfg = LoadedConfig::new(Default::default());
-        let command = RotateSigningKeyCommand {
+    async fn test_rotate_commits_normal_rotation() {
+        let server = MockServer::start();
+        server.mock(|when, then| {
+            when.method(Method::POST)
+                .path("/v4/oauth2/domain-1/rotate-signing-key")
+                .json_body(serde_json::json!({
+                    "emergency": false,
+                    "local_quorum_bypass": false,
+                    "justification": null
+                }));
+            then.status(200)
+                .header("content-type", "application/json")
+                .json_body_obj(&serde_json::json!({"kid": "kid-2"}));
+        });
+
+        let cmd = RotateSigningKeyCommand {
             domain: "domain-1".to_string(),
             emergency: false,
             local_quorum_bypass: false,
             justification: None,
         };
+        let body = cmd
+            .rotate_with_client(&crate::common::test_client(), &server.base_url())
+            .await
+            .unwrap();
+        assert_eq!(body.kid.as_deref(), Some("kid-2"));
+    }
 
-        let err = command.take_action(&cfg).await.unwrap_err();
-        assert!(
-            err.to_string().contains("admin interface not configured"),
-            "unexpected error: {err}"
-        );
+    #[tokio::test]
+    async fn test_rotate_reports_server_error() {
+        let server = MockServer::start();
+        server.mock(|when, then| {
+            when.method(Method::POST)
+                .path("/v4/oauth2/domain-1/rotate-signing-key");
+            then.status(403).body("forbidden");
+        });
+
+        let cmd = RotateSigningKeyCommand {
+            domain: "domain-1".to_string(),
+            emergency: true,
+            local_quorum_bypass: false,
+            justification: None,
+        };
+        let err = cmd
+            .rotate_with_client(&crate::common::test_client(), &server.base_url())
+            .await
+            .unwrap_err();
+        assert!(err.to_string().contains("rotate-signing-key failed"));
+        assert!(err.to_string().contains("forbidden"));
     }
 
     #[test]

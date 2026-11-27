@@ -38,8 +38,51 @@ pub struct Oauth2RevocationRequest {
 #[derive(Clone, Debug, Default, Deserialize, PartialEq, Serialize)]
 #[cfg_attr(feature = "openapi", derive(utoipa::ToSchema))]
 pub struct Oauth2RevocationResponse {
-    /// Refresh token families processed by the request. Selecting a client
-    /// counts every family issued to it, including ones already revoked;
-    /// selecting a user or the whole domain counts only newly revoked ones.
+    /// Refresh token families processed by the request. Every family the
+    /// selector matches is counted, including ones already revoked, because
+    /// revocation is idempotent and the backend does not report which ones
+    /// changed.
     pub revoked_families: usize,
+}
+
+/// Query of `GET /v4/oauth2/{domain_id}/sessions`.
+#[derive(Clone, Debug, Deserialize, PartialEq, Serialize)]
+#[cfg_attr(feature = "openapi", derive(utoipa::IntoParams))]
+pub struct Oauth2SessionListParameters {
+    /// User whose sessions are listed.
+    pub user_id: String,
+}
+
+/// One OAuth2 session (refresh token family).
+#[derive(Clone, Debug, Deserialize, PartialEq, Serialize)]
+#[cfg_attr(feature = "openapi", derive(utoipa::ToSchema))]
+pub struct Oauth2Session {
+    /// Client the session was issued to.
+    pub client_id: String,
+    /// Family id.
+    pub family_id: String,
+    /// UTC epoch seconds the session was created.
+    pub issued_at: i64,
+    /// UTC epoch seconds of the latest refresh token rotation.
+    pub last_rotated: i64,
+    /// Why the session was revoked.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub revocation_reason: Option<String>,
+    /// UTC epoch seconds the session was revoked.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub revoked_at: Option<i64>,
+    /// Owning user.
+    pub user_id: String,
+}
+
+/// Response of `GET /v4/oauth2/{domain_id}/sessions`.
+#[derive(Clone, Debug, Default, Deserialize, PartialEq, Serialize)]
+#[cfg_attr(feature = "openapi", derive(utoipa::ToSchema))]
+pub struct Oauth2SessionList {
+    /// The user's sessions.
+    pub oauth2_sessions: Vec<Oauth2Session>,
+    /// Whether the user has more sessions than are listed. The listing is
+    /// capped, so a `true` here means some sessions were not returned.
+    #[serde(default)]
+    pub truncated: bool,
 }
