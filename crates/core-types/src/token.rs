@@ -18,11 +18,17 @@ use validator::Validate;
 
 use crate::auth::*;
 
+mod claims;
 mod error;
+mod oauth2_claims;
 pub mod payload;
 mod restriction;
 
+pub use claims::{JwsClaims, TokenClaimsError};
 pub use error::*;
+pub use oauth2_claims::{
+    KeystoneTokenClaims, TokenChain, TokenFederationClaim, TokenRestrictionClaim, TokenScope,
+};
 pub use payload::*;
 pub use restriction::*;
 

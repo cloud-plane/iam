@@ -203,6 +203,20 @@ pub trait Oauth2KeyApi: Send + Sync {
         domain_id: &str,
     ) -> Result<HashSet<String>, Oauth2KeyProviderError>;
 
+    /// Whether `jti` is on the domain's (non-expired) revocation list.
+    ///
+    /// The point lookup of the request hot path: unlike
+    /// [`Self::revoked_jtis`] a driver need not materialise the whole list
+    /// to answer it.
+    async fn is_jti_revoked(
+        &self,
+        state: &ServiceState,
+        domain_id: &str,
+        jti: &str,
+    ) -> Result<bool, Oauth2KeyProviderError> {
+        Ok(self.revoked_jtis(state, domain_id).await?.contains(jti))
+    }
+
     /// Add a single access-token `jti` to the domain's revocation list
     /// (RFC 7009 token revocation). The entry is kept until `expires_at`
     /// (the token's own `exp`, unix seconds), after which it is lazily swept

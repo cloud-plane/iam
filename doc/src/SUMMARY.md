@@ -162,3 +162,4 @@ ______________________________________________________________________
     - [Domain Member Invitations](adr/0046-domain-member-invitations.md)
     - [Table Version Watermarks](adr/0047-table-version-watermarks.md)
     - [Raft Keyspace Watermarks](adr/0048-raft-keyspace-watermarks.md)
+    - [OAuth2 JWT as Keystone Token](adr/0049-oauth2-jwt-as-keystone-token.md)

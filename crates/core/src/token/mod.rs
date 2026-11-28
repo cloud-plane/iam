@@ -23,6 +23,7 @@ pub use openstack_keystone_core_types::token::*;
 
 pub mod backend;
 pub mod error;
+pub mod format;
 pub mod hook;
 pub mod metrics;
 mod provider_api;
@@ -30,6 +31,28 @@ pub mod service;
 
 pub use error::TokenProviderError;
 pub use hook::TokenHook;
+
+/// Refuse a context built from a sender-constrained token (`cnf`, ADR 0043,
+/// ADR 0049).
+///
+/// For every path that takes a Keystone token as a *credential value* (the
+/// body of `POST /v3/auth/tokens`, the `subject_token` of a token exchange or
+/// an on-behalf-of exchange): no proof of the token's key exists there, and
+/// exchanging it would hand an unbound token or credential to whoever holds
+/// the bytes. The `Auth` extractor is the one place that checks the proof.
+///
+/// # Errors
+/// [`TokenProviderError::InvalidToken`] when the token is bound.
+pub fn ensure_unbound(
+    vsc: &crate::auth::ValidatedSecurityContext,
+) -> Result<(), TokenProviderError> {
+    if vsc.confirmation().is_some() {
+        return Err(TokenProviderError::InvalidToken {
+            source: "a sender-constrained token cannot be exchanged".into(),
+        });
+    }
+    Ok(())
+}
 pub use metrics::TOKEN_METRICS;
 pub use provider_api::TokenApi;
 pub use service::TokenService;
@@ -62,5 +85,48 @@ mod tests {
         let mut config: Config = Config::try_from(builder).expect("can build a valid config");
         config.fernet_tokens.key_repository = keys_dir.keep();
         config
+    }
+}
+
+#[cfg(test)]
+mod ensure_unbound_tests {
+    use super::*;
+    use crate::auth::ValidatedSecurityContext;
+    use openstack_keystone_core_types::auth::{
+        AuthenticationContext, IdentityInfo, PrincipalInfo, SecurityContextTestingBuilder,
+        UserIdentityInfoBuilder,
+    };
+    use openstack_keystone_core_types::oauth2_client::Confirmation;
+
+    fn vsc(cnf: Option<Confirmation>) -> ValidatedSecurityContext {
+        let mut sc = SecurityContextTestingBuilder::default()
+            .authentication_context(AuthenticationContext::Password)
+            .principal(PrincipalInfo {
+                identity: IdentityInfo::User(
+                    UserIdentityInfoBuilder::default()
+                        .user_id("u1")
+                        .build()
+                        .unwrap(),
+                ),
+            })
+            .build();
+        sc.set_confirmation(cnf);
+        ValidatedSecurityContext::test_new(sc)
+    }
+
+    #[test]
+    fn test_unbound_context_passes() {
+        assert!(ensure_unbound(&vsc(None)).is_ok());
+    }
+
+    #[test]
+    fn test_bound_context_is_refused_as_an_invalid_token() {
+        let bound = vsc(Some(Confirmation {
+            jkt: "thumb".into(),
+        }));
+        assert!(matches!(
+            ensure_unbound(&bound),
+            Err(TokenProviderError::InvalidToken { .. })
+        ));
     }
 }

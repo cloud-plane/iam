@@ -171,7 +171,8 @@ async fn mint_app_cred_subject_token(
     let encoded = state
         .provider
         .get_token_provider()
-        .encode_token(vsc.inner().token().unwrap())?;
+        .encode_token(&state, vsc.inner().token().unwrap())
+        .await?;
     // The role guard goes back to the caller: deleting the role revokes
     // its assignments, which must not happen before the token is used.
     Ok((encoded, user, project, role))

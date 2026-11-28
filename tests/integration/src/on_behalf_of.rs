@@ -188,7 +188,11 @@ async fn fixture(max_operation_lifetime: u64) -> Result<Fixture> {
     let client = register_service(&state, &domain.id, max_operation_lifetime).await?;
     let vsc = user_context(&state, &user, &project).await?;
     let token = vsc.token()?.clone();
-    let encoded = state.provider.get_token_provider().encode_token(&token)?;
+    let encoded = state
+        .provider
+        .get_token_provider()
+        .encode_token(&state, &token)
+        .await?;
     Ok(Fixture {
         domain_id: domain.id.clone(),
         client,
@@ -528,7 +532,8 @@ async fn app_cred_token(
         .state
         .provider
         .get_token_provider()
-        .encode_token(vsc.token()?)?;
+        .encode_token(&f.state, vsc.token()?)
+        .await?;
     Ok((encoded, cred))
 }
 

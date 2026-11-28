@@ -72,7 +72,9 @@ use openstack_keystone_core::scim_resource::backend::ScimResourceBackend;
 use openstack_keystone_core::service_grant::ServiceGrantProviderError;
 use openstack_keystone_core::service_grant::backend::ServiceGrantBackend;
 use openstack_keystone_core::token::TokenProviderError;
-use openstack_keystone_core::token::backend::{TokenBackend, TokenRestrictionBackend};
+use openstack_keystone_core::token::backend::{
+    TokenBackend, TokenFormatBackend, TokenRestrictionBackend,
+};
 use openstack_keystone_core::trust::TrustProviderError;
 use openstack_keystone_core::trust::backend::TrustBackend;
 
@@ -128,6 +130,8 @@ pub struct PluginManager {
     scim_resource_backends: HashMap<String, Arc<dyn ScimResourceBackend>>,
     /// Token backend plugins.
     token_backends: HashMap<String, Arc<dyn TokenBackend>>,
+    /// Asynchronous token format backend plugins.
+    token_format_backends: HashMap<String, Arc<dyn TokenFormatBackend>>,
     /// Token restriction backend plugins.
     token_restriction_backends: HashMap<String, Arc<dyn TokenRestrictionBackend>>,
     /// Trust backend plugins.
@@ -576,6 +580,26 @@ impl PluginManagerApi for PluginManager {
             ))
     }
 
+    /// Get registered asynchronous token format backend.
+    ///
+    /// # Parameters
+    /// * `name` - The name of the backend to retrieve.
+    ///
+    /// # Returns
+    /// A `Result` containing a reference to the `TokenFormatBackend` if found,
+    /// or a `TokenProviderError`.
+    #[allow(clippy::borrowed_box)]
+    fn get_token_format_backend<S: AsRef<str>>(
+        &self,
+        name: S,
+    ) -> Result<&Arc<dyn TokenFormatBackend>, TokenProviderError> {
+        self.token_format_backends
+            .get(name.as_ref())
+            .ok_or(TokenProviderError::UnsupportedDriver(
+                name.as_ref().to_string(),
+            ))
+    }
+
     /// Get registered token restriction backend.
     ///
     /// # Parameters
@@ -915,6 +939,20 @@ impl PluginManagerApi for PluginManager {
             .insert(name.as_ref().to_string(), plugin);
     }
 
+    /// Register asynchronous token format backend.
+    ///
+    /// # Parameters
+    /// * `name` - The name of the backend to register.
+    /// * `plugin` - The backend implementation to register.
+    fn register_token_format_backend<S: AsRef<str>>(
+        &mut self,
+        name: S,
+        plugin: Arc<dyn TokenFormatBackend>,
+    ) {
+        self.token_format_backends
+            .insert(name.as_ref().to_string(), plugin);
+    }
+
     /// Register token restriction backend.
     ///
     /// # Parameters
@@ -995,6 +1033,7 @@ impl PluginManager {
             scim_realm_backends: HashMap::new(),
             scim_resource_backends: HashMap::new(),
             token_backends: HashMap::new(),
+            token_format_backends: HashMap::new(),
             token_restriction_backends: HashMap::new(),
             trust_backends: HashMap::new(),
             policy_store_backends: HashMap::new(),
@@ -1022,6 +1061,7 @@ impl PluginManager {
         register_backends(config, &mut slf.scim_realm_backends).await?;
         register_backends(config, &mut slf.scim_resource_backends).await?;
         register_backends(config, &mut slf.token_backends).await?;
+        register_backends(config, &mut slf.token_format_backends).await?;
         register_backends(config, &mut slf.token_restriction_backends).await?;
         register_backends(config, &mut slf.trust_backends).await?;
         register_backends(config, &mut slf.policy_store_backends).await?;

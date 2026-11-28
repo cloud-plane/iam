@@ -5000,6 +5000,7 @@ dependencies = [
  "openstack-keystone-tls-provider",
  "openstack-keystone-token-driver-fernet",
  "openstack-keystone-token-driver-jws",
+ "openstack-keystone-token-driver-oauth2",
  "openstack-keystone-token-restriction-driver-sql",
  "openstack-keystone-trust-driver-sql",
  "openstack-keystone-webauthn",
@@ -5304,6 +5305,7 @@ dependencies = [
  "futures-util",
  "governor",
  "hmac 0.13.0",
+ "http",
  "inventory",
  "ipnet",
  "jsonwebtoken",
@@ -6043,6 +6045,26 @@ dependencies = [
  "serde_json",
  "tempfile",
  "thiserror 2.0.21",
+ "tokio",
+ "tracing",
+ "uuid",
+]
+
+[[package]]
+name = "openstack-keystone-token-driver-oauth2"
+version = "0.1.0"
+dependencies = [
+ "async-trait",
+ "base64 0.23.1",
+ "chrono",
+ "inventory",
+ "jsonwebtoken",
+ "openstack-keystone-alloc-profile",
+ "openstack-keystone-config",
+ "openstack-keystone-core",
+ "openstack-keystone-core-types",
+ "openstack-keystone-key-repository",
+ "serde_json",
  "tokio",
  "tracing",
  "uuid",

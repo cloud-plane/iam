@@ -188,7 +188,8 @@ pub(super) async fn build_token_response(
     let token_string = state
         .provider
         .get_token_provider()
-        .encode_token(vsc.token()?)?;
+        .encode_bound_token(state, vsc.token()?, vsc.principal().domain_id(), None)
+        .await?;
 
     let mut api_token = KeystoneTokenResponse {
         token: TokenBuilder::try_from(&vsc)?.build()?,

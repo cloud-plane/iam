@@ -20,17 +20,50 @@
 //! optionally `openstack_trust_id`/`openstack_app_cred_id`.
 //!
 //! This is a *reference*-token format (§10, Phase 0): the payload carries
-//! only identity/scope anchors, not roles/catalog — deliberately not the
-//! same product as the OP-issued `OpenStackAccessTokenClaims` later phases
-//! introduce.
-use chrono::{DateTime, TimeZone, Utc};
-use openstack_keystone_core_types::token::{
+//! only identity/scope anchors, not roles/catalog. The OAuth2 token format of
+//! ADR 0049 has its own compact claim set ([`super::oauth2_claims`]) built on
+//! the same anchors.
+use super::{
     ApplicationCredentialPayload, DomainScopePayload, ProjectScopePayload, SystemScopePayload,
     TokenPayload, TrustPayload, UnscopedPayload,
 };
+use chrono::{DateTime, TimeZone, Utc};
 use serde::{Deserialize, Serialize};
 
-use crate::error::JwsDriverError;
+use thiserror::Error;
+
+/// Error converting between [`TokenPayload`] and [`JwsClaims`].
+#[derive(Error, Debug)]
+#[non_exhaustive]
+pub enum TokenClaimsError {
+    /// The claims carry more than one scope claim.
+    #[error("token claims must carry exactly one scope claim, found {0}")]
+    AmbiguousOrMissingScopeClaim(usize),
+
+    /// A timestamp claim is out of range.
+    #[error("invalid timestamp claim: {0}")]
+    InvalidTimestamp(String),
+
+    /// The claims carry both a trust and an application credential.
+    #[error("token claims must carry at most one delegation")]
+    AmbiguousDelegation,
+
+    /// A delegation (trust, application credential) without a project scope.
+    #[error("a delegated token must be project scoped")]
+    DelegationWithoutProject,
+
+    /// A restricted token that is not project scoped.
+    #[error("a restricted token must be project scoped")]
+    InvalidRestrictedToken,
+
+    /// A federated token with a system scope.
+    #[error("a federated token cannot be system scoped")]
+    InvalidFederatedToken,
+
+    /// A [`TokenPayload`] variant has no representation in the claim layout.
+    #[error("token variant {0} has no claim representation")]
+    UnsupportedTokenVariant(&'static str),
+}
 
 /// The Python-Keystone-compatible v3 JWS claim set.
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -67,14 +100,14 @@ fn to_unix(dt: DateTime<Utc>) -> i64 {
     dt.timestamp()
 }
 
-fn from_unix(secs: i64) -> Result<DateTime<Utc>, JwsDriverError> {
+pub(super) fn from_unix(secs: i64) -> Result<DateTime<Utc>, TokenClaimsError> {
     Utc.timestamp_opt(secs, 0)
         .single()
-        .ok_or_else(|| JwsDriverError::KeyConversion(format!("invalid timestamp {secs}")))
+        .ok_or_else(|| TokenClaimsError::InvalidTimestamp(secs.to_string()))
 }
 
 impl TryFrom<&TokenPayload> for JwsClaims {
-    type Error = JwsDriverError;
+    type Error = TokenClaimsError;
 
     fn try_from(token: &TokenPayload) -> Result<Self, Self::Error> {
         let base = |user_id: &str,
@@ -160,17 +193,17 @@ impl TryFrom<&TokenPayload> for JwsClaims {
                 Ok(claims)
             }
             TokenPayload::Restricted(_) => {
-                Err(JwsDriverError::UnsupportedTokenVariant("Restricted"))
+                Err(TokenClaimsError::UnsupportedTokenVariant("Restricted"))
             }
-            TokenPayload::FederationUnscoped(_) => Err(JwsDriverError::UnsupportedTokenVariant(
+            TokenPayload::FederationUnscoped(_) => Err(TokenClaimsError::UnsupportedTokenVariant(
                 "FederationUnscoped",
             )),
             TokenPayload::FederationProjectScope(_) => Err(
-                JwsDriverError::UnsupportedTokenVariant("FederationProjectScope"),
+                TokenClaimsError::UnsupportedTokenVariant("FederationProjectScope"),
             ),
-            TokenPayload::FederationDomainScope(_) => Err(JwsDriverError::UnsupportedTokenVariant(
-                "FederationDomainScope",
-            )),
+            TokenPayload::FederationDomainScope(_) => Err(
+                TokenClaimsError::UnsupportedTokenVariant("FederationDomainScope"),
+            ),
         }
     }
 }
@@ -180,7 +213,7 @@ impl JwsClaims {
     /// `openstack_*` scope claim is present. Exactly one of
     /// `openstack_project_id`/`openstack_domain_id`/`openstack_system` must
     /// be present, or none for an unscoped token.
-    pub fn into_token_payload(self) -> Result<TokenPayload, JwsDriverError> {
+    pub fn into_token_payload(self) -> Result<TokenPayload, TokenClaimsError> {
         let expires_at = from_unix(self.exp)?;
         let issued_at = from_unix(self.iat)?;
         let scope_claims_present = [
@@ -192,7 +225,7 @@ impl JwsClaims {
         .filter(|present| **present)
         .count();
         if scope_claims_present > 1 {
-            return Err(JwsDriverError::AmbiguousOrMissingScopeClaim(
+            return Err(TokenClaimsError::AmbiguousOrMissingScopeClaim(
                 scope_claims_present,
             ));
         }
@@ -200,7 +233,7 @@ impl JwsClaims {
         if let Some(trust_id) = self.openstack_trust_id {
             let project_id = self
                 .openstack_project_id
-                .ok_or(JwsDriverError::AmbiguousOrMissingScopeClaim(0))?;
+                .ok_or(TokenClaimsError::AmbiguousOrMissingScopeClaim(0))?;
             return Ok(TokenPayload::Trust(TrustPayload {
                 user_id: self.sub,
                 methods: self.openstack_methods,
@@ -215,7 +248,7 @@ impl JwsClaims {
         if let Some(application_credential_id) = self.openstack_app_cred_id {
             let project_id = self
                 .openstack_project_id
-                .ok_or(JwsDriverError::AmbiguousOrMissingScopeClaim(0))?;
+                .ok_or(TokenClaimsError::AmbiguousOrMissingScopeClaim(0))?;
             return Ok(TokenPayload::ApplicationCredential(
                 ApplicationCredentialPayload {
                     user_id: self.sub,
@@ -342,7 +375,7 @@ mod tests {
 
     #[test]
     fn test_restricted_is_unsupported() {
-        use openstack_keystone_core_types::token::RestrictedPayload;
+        use crate::token::RestrictedPayload;
         let payload = TokenPayload::Restricted(RestrictedPayload {
             user_id: "user-1".into(),
             methods: vec!["password".into()],
@@ -356,7 +389,7 @@ mod tests {
         });
         assert!(matches!(
             JwsClaims::try_from(&payload),
-            Err(JwsDriverError::UnsupportedTokenVariant("Restricted"))
+            Err(TokenClaimsError::UnsupportedTokenVariant("Restricted"))
         ));
     }
 }

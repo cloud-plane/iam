@@ -2155,7 +2155,19 @@ mod token {
                 scope: &ScopeInfo,
             ) -> Result<ValidatedSecurityContext, TokenProviderError>;
 
-            fn encode_token(&self, token: &FernetToken) -> Result<String, TokenProviderError>;
+            async fn encode_token(
+                &self,
+                state: &ServiceState,
+                token: &FernetToken,
+            ) -> Result<String, TokenProviderError>;
+
+            async fn encode_bound_token(
+                &self,
+                state: &ServiceState,
+                token: &FernetToken,
+                domain_id: Option<String>,
+                cnf: Option<openstack_keystone_core_types::oauth2_client::Confirmation>,
+            ) -> Result<String, TokenProviderError>;
 
             async fn get_token_restriction<'a>(
                 &self,

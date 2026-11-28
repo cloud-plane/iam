@@ -10,7 +10,6 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 //
-// SPDX-License-Identifier: Apache-2.0
 
 use std::path::{Path, PathBuf};
 use std::process::Command;
@@ -18,7 +17,7 @@ use std::sync::Arc;
 
 use axum::{
     body::Body,
-    http::{Request, StatusCode, header},
+    http::{HeaderMap, Request, StatusCode, header},
 };
 use http_body_util::BodyExt;
 use sea_orm::DatabaseConnection;
@@ -28,12 +27,16 @@ use tower::ServiceExt;
 use tower_http::trace::TraceLayer;
 
 use cadf::AuditDispatcher;
-use openstack_keystone_config::{Config, ConfigManager, DynamicPluginsSection, PluginMode};
+use openstack_keystone_config::{
+    Config, ConfigManager, DynamicPluginsSection, PluginMode, TokenProviderDriver,
+};
 use openstack_keystone_core::auth_plugin_http::DynamicPluginHttpFetcher;
 use openstack_keystone_core_types::auth::*;
 use openstack_keystone_core_types::identity::UserResponseBuilder;
 use openstack_keystone_core_types::resource::DomainBuilder;
 
+use crate::api::KeystoneApiError;
+use crate::api::v3::auth::token::create::dpop_binding;
 use crate::api::v3::auth::token::types::*;
 use crate::auth_plugin_identity::MockDynamicPluginIdentityProvider;
 use crate::auth_plugin_startup::load_auth_plugins;
@@ -219,8 +222,8 @@ fn canned_vsc(
 fn mock_token_and_catalog() -> (MockTokenProvider, MockCatalogProvider) {
     let mut token_mock = MockTokenProvider::default();
     token_mock
-        .expect_encode_token()
-        .returning(|_| Ok("token".to_string()));
+        .expect_encode_bound_token()
+        .returning(|_, _, _, _| Ok("token".to_string()));
     let mut catalog_mock = MockCatalogProvider::default();
     catalog_mock
         .expect_get_catalog()
@@ -468,4 +471,27 @@ async fn test_post_mapping_plugin_deny_is_unauthorized() {
     .await;
 
     assert_eq!(response.status(), StatusCode::UNAUTHORIZED);
+}
+
+/// A deployment that cannot bind tokens refuses a proof instead of
+/// handing back an unbound token the client takes for a bound one.
+#[tokio::test]
+async fn test_dpop_proof_is_refused_when_tokens_cannot_be_bound() {
+    use crate::api::tests::get_mocked_state_with_config;
+
+    let mut config = openstack_keystone_config::Config::default();
+    config.default.public_endpoint = Some("https://ks.example".parse().unwrap());
+    config.token.provider = TokenProviderDriver::Fernet;
+    let state = get_mocked_state_with_config(Provider::mocked_builder(), true, None, config).await;
+    let mut headers = HeaderMap::new();
+    headers.insert("dpop", "a.b.c".parse().unwrap());
+    assert!(matches!(
+        dpop_binding(&state, &headers).await,
+        Err(KeystoneApiError::BadRequest(_))
+    ));
+    // No proof, nothing to refuse.
+    assert!(matches!(
+        dpop_binding(&state, &HeaderMap::new()).await,
+        Ok(None)
+    ));
 }

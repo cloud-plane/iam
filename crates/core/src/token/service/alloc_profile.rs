@@ -219,6 +219,8 @@ async fn alloc_profile_token_validation() {
     let service = TokenService {
         config: config.clone(),
         backend_driver: Arc::new(backend),
+        accepted_backends: Default::default(),
+        oauth2_backend: None,
         tr_backend_driver: Arc::new(MockTokenRestrictionBackend::default()),
     };
     let state = mocked_state(&token, &config).await;

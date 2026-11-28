@@ -27,11 +27,13 @@ use openstack_keystone_config::Interface;
 use openstack_keystone_core_types::auth::*;
 use openstack_keystone_core_types::mapping::auth::MappingAuthRequest;
 use openstack_keystone_core_types::mapping::resolution::IdentitySource;
+use openstack_keystone_core_types::oauth2_client::Confirmation;
 
 use crate::api::KeystoneApiError;
 use crate::auth::{ExecutionContext, ValidatedSecurityContext};
 use crate::common::SpiffeId;
 use crate::keystone::ServiceState;
+use crate::token::format::{TokenFormat, detect_format};
 
 #[derive(Debug, Clone)]
 pub struct Auth(pub ValidatedSecurityContext);
@@ -225,12 +227,18 @@ where
         }
 
         // Now headers can be checked
-        if let Some(auth_header) = parts
+        // ADR 0049: the token travels in `X-Auth-Token`; the same token is
+        // also accepted as `Authorization: Bearer`, in addition and never
+        // instead of it. The token service tells the formats apart.
+        let presented_token = presented_token(&parts.headers);
+        // RFC 9449: a token presented with the `DPoP` scheme must be bound.
+        let presented_as_dpop = parts
             .headers
-            .get("X-Auth-Token")
-            .and_then(|h| h.to_str().ok())
-        {
-            tracing::debug!("authenticating request with the x-auth-token");
+            .get(axum::http::header::AUTHORIZATION)
+            .and_then(dpop_token)
+            .is_some();
+        if let Some(auth_header) = presented_token.as_deref() {
+            tracing::debug!("authenticating request with the presented token");
             let auth_token = SecretString::from(auth_header.to_owned());
             // ADR 0031 "Authentication": every `X-Auth-Token` re-authentication
             // is `method = "token"`. Timed/recorded around the provider call
@@ -257,6 +265,17 @@ where
 
             vsc.fully_resolved()?;
             reject_if_ec2(&vsc)?;
+            // ADR 0049: the `cnf` of the verified token is on the context. A
+            // bound token needs a proof of that key, an unbound one cannot
+            // be presented as `DPoP`.
+            enforce_dpop_binding(
+                &state,
+                parts,
+                auth_header,
+                vsc.confirmation(),
+                presented_as_dpop,
+            )
+            .await?;
             if let Some(addr) = peer_addr {
                 vsc.set_peer_addr(addr.to_string());
             }
@@ -405,6 +424,131 @@ fn enforce_access_rules(
         }
     }
     Ok(())
+}
+
+/// The Keystone token a request presents: `X-Auth-Token` as is, else the
+/// `Authorization: Bearer` / `DPoP` token. Only an OAuth2 JWT is a bearer
+/// credential (ADR 0049 section 1); Fernet and JWS tokens travel in
+/// `X-Auth-Token` only.
+fn presented_token(headers: &axum::http::HeaderMap) -> Option<String> {
+    headers
+        .get("X-Auth-Token")
+        .and_then(|h| h.to_str().ok())
+        .map(str::to_owned)
+        .or_else(|| {
+            headers
+                .get(axum::http::header::AUTHORIZATION)
+                .and_then(bearer_or_dpop_token)
+                .filter(|t| detect_format(t) == TokenFormat::OAuth2)
+                .map(str::to_owned)
+        })
+}
+
+/// The token of an `Authorization: DPoP <token>` header.
+fn dpop_token(header: &axum::http::HeaderValue) -> Option<&str> {
+    let (scheme, token) = header.to_str().ok()?.split_once(' ')?;
+    let token = token.trim();
+    (scheme.eq_ignore_ascii_case("dpop") && !token.is_empty()).then_some(token)
+}
+
+/// The token of an `Authorization: Bearer` or `Authorization: DPoP` header.
+fn bearer_or_dpop_token(header: &axum::http::HeaderValue) -> Option<&str> {
+    bearer_token(header).or_else(|| dpop_token(header))
+}
+
+/// Refuse a request that carries a `DPoP` proof to an endpoint that cannot
+/// issue a sender-constrained token.
+///
+/// The proof would be ignored and the client would take the unbound token it
+/// gets back for a bound one. Only `POST /v3/auth/tokens` binds a token.
+///
+/// # Errors
+/// `KeystoneApiError::BadRequest` when a `DPoP` header is present.
+pub fn reject_dpop_header(headers: &axum::http::HeaderMap) -> Result<(), KeystoneApiError> {
+    if headers.contains_key("dpop") {
+        return Err(KeystoneApiError::BadRequest(
+            "this endpoint does not issue sender-constrained tokens, a DPoP proof is only \
+             accepted by POST /v3/auth/tokens"
+                .into(),
+        ));
+    }
+    Ok(())
+}
+
+/// Enforce the sender constraint (`cnf`) of the already verified token
+/// (ADR 0043 section 4, ADR 0049).
+///
+/// A request with a valid proof of the bound key is accepted whichever scheme
+/// carried the token (`X-Auth-Token`, `Bearer` or `DPoP`): OpenStack clients
+/// send the token in `X-Auth-Token`, and the proof binds the request to the
+/// token (`ath`) and the key, so the scheme adds nothing. Without a proof a
+/// bound token is always refused.
+///
+/// # Errors
+/// `TooManyRequests` for a throttled proof key, `UnauthorizedNoContext` for any
+/// other refusal.
+async fn enforce_dpop_binding(
+    state: &crate::keystone::ServiceState,
+    parts: &Parts,
+    token: &str,
+    cnf: Option<&Confirmation>,
+    presented_as_dpop: bool,
+) -> Result<(), KeystoneApiError> {
+    use crate::oauth2_client::dpop_resource::{ProofRefusal, verify_resource_proof};
+    let unauthorized = |reason: String| {
+        tracing::debug!("token binding rejected: {reason}");
+        KeystoneApiError::UnauthorizedNoContext
+    };
+    use crate::oauth2_client::verify::{TokenPresentation, enforce_token_binding};
+
+    let proof_jkt = match cnf {
+        Some(bound) => {
+            let uri = {
+                let config = state.config_manager.config.read().await;
+                let endpoint = config
+                    .default
+                    .public_endpoint
+                    .as_ref()
+                    .ok_or_else(|| unauthorized("no public endpoint is configured".into()))?;
+                url::Url::parse(&format!(
+                    "{}{}",
+                    endpoint.as_str().trim_end_matches('/'),
+                    // Behind a nested router `parts.uri` has lost its prefix;
+                    // the proof names the URL the client called.
+                    parts
+                        .extensions
+                        .get::<axum::extract::OriginalUri>()
+                        .map_or_else(|| parts.uri.path(), |u| u.0.path())
+                ))
+                .map_err(|e| unauthorized(e.to_string()))?
+            };
+            Some(
+                verify_resource_proof(
+                    state,
+                    &parts.headers,
+                    parts.method.as_str(),
+                    &uri,
+                    token,
+                    bound,
+                )
+                .map_err(|e| match e {
+                    ProofRefusal::RateLimited(retry_after) => {
+                        KeystoneApiError::TooManyRequests { retry_after }
+                    }
+                    other => unauthorized(format!("{other:?}")),
+                })?,
+            )
+        }
+        None => None,
+    };
+    let presentation = if presented_as_dpop || proof_jkt.is_some() {
+        TokenPresentation::Dpop {
+            proof_jkt: proof_jkt.as_deref(),
+        }
+    } else {
+        TokenPresentation::Bearer
+    };
+    enforce_token_binding(cnf, presentation, false).map_err(|e| unauthorized(e.to_string()))
 }
 
 /// The token of an `Authorization: Bearer <token>` header; the scheme is

@@ -376,6 +376,101 @@ mod tests {
         }
 
         #[tokio::test]
+        async fn test_get_bound_token_exposes_cnf() {
+            let user_domain = CoreDomain {
+                id: "user_domain_id".into(),
+                enabled: true,
+                ..Default::default()
+            };
+
+            let authz = AuthzInfoBuilder::default()
+                .scope(ScopeInfo::Domain(
+                    openstack_keystone_core_types::resource::DomainRef {
+                        id: "user_domain_id".into(),
+                        enabled: true,
+                        ..Default::default()
+                    },
+                ))
+                .build()
+                .unwrap();
+
+            let mut bound_ctx = SecurityContext::test_build()
+                .authentication_context(AuthenticationContext::Password)
+                .principal(PrincipalInfo {
+                    identity: IdentityInfo::User(
+                        UserIdentityInfoBuilder::default()
+                            .user_id("bar")
+                            .user_domain(user_domain)
+                            .build()
+                            .unwrap(),
+                    ),
+                })
+                .token(FernetToken::Unscoped(UnscopedPayload {
+                    user_id: "bar".into(),
+                    ..Default::default()
+                }))
+                .authorization(authz)
+                .build();
+            bound_ctx.set_confirmation(Some(
+                openstack_keystone_core_types::oauth2_client::Confirmation {
+                    jkt: "thumb".into(),
+                },
+            ));
+            let vsc_for_mock = ValidatedSecurityContext::test_new(bound_ctx);
+
+            let mut token_mock = MockTokenProvider::default();
+            token_mock
+                .expect_validate_to_context()
+                .returning(move |_exec, _, _, _| Ok(vsc_for_mock.clone()));
+            let mut catalog_mock = MockCatalogProvider::default();
+            catalog_mock
+                .expect_get_catalog()
+                .returning(|_exec, _| Ok(std::sync::Arc::new(Vec::new())));
+
+            let mut resource_mock = MockResourceProvider::default();
+            resource_mock
+                .expect_get_domain()
+                .withf(|_exec, id: &'_ str| id == "user_domain_id")
+                .returning(|_exec, _| {
+                    Ok(Some(CoreDomain {
+                        id: "user_domain_id".into(),
+                        ..Default::default()
+                    }))
+                });
+
+            let provider = Provider::mocked_builder()
+                .mock_resource(resource_mock)
+                .mock_token(token_mock)
+                .mock_catalog(catalog_mock);
+
+            let vsc = test_fixture_scoped();
+            let state = get_mocked_state(provider, true, None).await;
+
+            let mut api = openapi_router()
+                .layer(TraceLayer::new_for_http())
+                .with_state(state.clone());
+
+            let response = api
+                .as_service()
+                .oneshot(
+                    Request::builder()
+                        .uri("/")
+                        .extension(vsc.clone())
+                        .header("x-subject-token", "foo")
+                        .body(Body::empty())
+                        .unwrap(),
+                )
+                .await
+                .unwrap();
+
+            assert_eq!(response.status(), StatusCode::OK);
+
+            let body = response.into_body().collect().await.unwrap().to_bytes();
+            let res: TokenResponse = serde_json::from_slice(&body).unwrap();
+            assert_eq!(res.token.cnf.map(|c| c.jkt), Some("thumb".to_string()));
+        }
+
+        #[tokio::test]
         async fn owner_viewing_own_token_is_allowed() {
             let status = show_request(
                 member_vsc("u1", "p1", &[]),

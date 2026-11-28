@@ -75,10 +75,12 @@ cleanup() {
 trap cleanup ERR INT TERM
 
 
-# Token provider under test. fernet is the default; KEYSTONE_TEST_TOKEN_PROVIDER=jws
+# Token provider under test. fernet is the default; KEYSTONE_TEST_TOKEN_PROVIDER=oauth2
+# runs it against the OAuth2 JWT tokens; =jws
 # runs the whole live suite against the ES256 JWS provider (Python-compatible
 # `[token] provider = jws`) with a freshly generated keypair.
 TOKEN_PROVIDER="${KEYSTONE_TEST_TOKEN_PROVIDER:-fernet}"
+ACCEPTED_LINE=""
 case "$TOKEN_PROVIDER" in
   fernet) ;;
   jws)
@@ -88,6 +90,10 @@ case "$TOKEN_PROVIDER" in
     openssl pkey -in "$STATE_DIR/etc/jws-keys/private.pem" -pubout \
       -out "$STATE_DIR/etc/jws-keys/public.pem"
     ;;
+  # OAuth2 JWT tokens (ADR 0049), signed with the per-domain OAuth2 keys that
+  # the server provisions on the first login. Fernet stays accepted, as in a
+  # staged migration, so bootstrap and receipts keep working.
+  oauth2) ACCEPTED_LINE="accepted = fernet" ;;
   *) echo "unsupported KEYSTONE_TEST_TOKEN_PROVIDER: $TOKEN_PROVIDER" >&2; exit 1 ;;
 esac
 
@@ -145,6 +151,7 @@ ui_logo_url = /v4/oauth2/static/logo.svg
 
 [token]
 provider = ${TOKEN_PROVIDER}
+${ACCEPTED_LINE}
 
 [jws_tokens]
 key_repository = ${STATE_DIR}/etc/jws-keys

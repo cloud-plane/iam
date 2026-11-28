@@ -38,6 +38,7 @@ use crate::application_credential::ApplicationCredential;
 use crate::assignment::AssignmentProviderError;
 use crate::error::BuilderError;
 use crate::identity::{Group, UserCore, UserResponse};
+use crate::oauth2_client::Confirmation;
 use crate::resource::{DomainRef, ProjectRef};
 use crate::role::RoleRef;
 use crate::token::{FernetToken, TokenRestriction};
@@ -314,6 +315,14 @@ pub struct SecurityContext {
     #[builder(default)]
     token: Option<Arc<FernetToken>>,
 
+    /// Sender constraint (`cnf`) of the token the context was built from
+    /// (ADR 0043, ADR 0049). `Some` means the token is only usable by the
+    /// holder of the proof key; every presentation of it must prove that key.
+    /// It belongs to the presented token and is not inherited by a token
+    /// issued from this context.
+    #[builder(default)]
+    confirmation: Option<Confirmation>,
+
     /// The revocation state behind the token is out of date: the token was
     /// issued by another authority and the revocation stream from it has not
     /// been heard from within the bound. The policy of a sensitive action
@@ -414,6 +423,7 @@ impl SecurityContextTestingBuilder {
             interface: Interface::Public,
             token_restriction: self.token_restriction,
             token: self.token.map(Arc::new),
+            confirmation: None,
             revocation_stale: false,
             correlation_id: None,
             peer_addr: None,
@@ -512,6 +522,17 @@ impl SecurityContext {
     #[must_use]
     pub fn token(&self) -> Option<&FernetToken> {
         self.token.as_deref()
+    }
+
+    /// The sender constraint of the token the context was built from.
+    #[must_use]
+    pub const fn confirmation(&self) -> Option<&Confirmation> {
+        self.confirmation.as_ref()
+    }
+
+    /// Record the sender constraint of the verified token.
+    pub fn set_confirmation(&mut self, confirmation: Option<Confirmation>) {
+        self.confirmation = confirmation;
     }
 
     /// Whether the revocation state behind the token is stale.

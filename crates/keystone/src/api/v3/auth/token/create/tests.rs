@@ -10,7 +10,6 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 //
-// SPDX-License-Identifier: Apache-2.0
 
 use axum::{
     body::Body,
@@ -289,8 +288,8 @@ async fn test_post() {
         .expect_issue_token_context()
         .returning(move |_, _, _| Ok(vsc_clone.clone()));
     token_mock
-        .expect_encode_token()
-        .returning(|_| Ok("token".to_string()));
+        .expect_encode_bound_token()
+        .returning(|_, _, _, _| Ok("token".to_string()));
     catalog_mock
         .expect_get_catalog()
         .returning(|_, _| Ok(std::sync::Arc::new(Vec::new())));
@@ -1374,8 +1373,8 @@ async fn test_post_application_credential() {
         .expect_issue_token_context()
         .returning(move |_, _, _| Ok(vsc_clone.clone()));
     token_mock
-        .expect_encode_token()
-        .returning(|_| Ok("token".to_string()));
+        .expect_encode_bound_token()
+        .returning(|_, _, _, _| Ok("token".to_string()));
 
     let provider = Provider::mocked_builder()
         .mock_application_credential(app_cred_mock)
@@ -1711,8 +1710,8 @@ matches!(&auth.credential, ApplicationCredentialAuthData::Name(by_name) if by_na
         .expect_issue_token_context()
         .returning(move |_, _, _| Ok(vsc_clone.clone()));
     token_mock
-        .expect_encode_token()
-        .returning(|_| Ok("token".to_string()));
+        .expect_encode_bound_token()
+        .returning(|_, _, _, _| Ok("token".to_string()));
 
     let provider = Provider::mocked_builder()
         .mock_application_credential(app_cred_mock)

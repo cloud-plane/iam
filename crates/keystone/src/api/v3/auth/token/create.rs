@@ -27,6 +27,7 @@ use cadf::Initiator;
 use openstack_keystone_api_types::v3::auth::token::TokenBuilder;
 use openstack_keystone_core::auth::ValidatedSecurityContext;
 use openstack_keystone_core_types::auth::*;
+use openstack_keystone_core_types::oauth2_client::Confirmation;
 
 use openstack_keystone_core::api::common::get_authz_info;
 use openstack_keystone_core::auth::ExecutionContext;
@@ -198,19 +199,64 @@ async fn create_inner(
         token: TokenBuilder::try_from(&vsc)?.build()?,
     };
     api_token.token.catalog = catalog;
+    let cnf = dpop_binding(state, headers).await?;
+    let domain_id = vsc.principal().domain_id();
+    let subject_token = state
+        .provider
+        .get_token_provider()
+        .encode_bound_token(state, vsc.token()?, domain_id, cnf)
+        .await?;
     let response = (
         StatusCode::CREATED,
-        [(
-            "X-Subject-Token",
-            state
-                .provider
-                .get_token_provider()
-                .encode_token(vsc.token()?)?,
-        )],
+        [("X-Subject-Token", subject_token)],
         Json(api_token),
     )
         .into_response();
     Ok((vsc, response))
+}
+
+/// The sender constraint requested by a `DPoP` proof sent with the request
+/// (ADR 0049 section 4). Only a deployment that issues OAuth2 tokens can bind
+/// them; a proof sent to any other is refused.
+async fn dpop_binding(
+    state: &ServiceState,
+    headers: &HeaderMap,
+) -> Result<Option<Confirmation>, KeystoneApiError> {
+    use openstack_keystone_config::TokenProviderDriver;
+    use openstack_keystone_core::oauth2_client::dpop_resource::{
+        ProofRefusal, verify_issuance_proof,
+    };
+
+    if !headers.contains_key("dpop") {
+        return Ok(None);
+    }
+    let uri = {
+        let config = state.config_manager.config.read().await;
+        // Not ignored: the client would take the unbound token it gets back
+        // for a sender-constrained one.
+        if config.token.provider != TokenProviderDriver::Oauth2 {
+            return Err(KeystoneApiError::BadRequest(
+                "this deployment does not issue sender-constrained tokens".into(),
+            ));
+        }
+        let endpoint = config.default.public_endpoint.as_ref().ok_or_else(|| {
+            KeystoneApiError::BadRequest("a DPoP proof needs a public endpoint".into())
+        })?;
+        url::Url::parse(&format!(
+            "{}/v3/auth/tokens",
+            endpoint.as_str().trim_end_matches('/')
+        ))
+        .map_err(|e| KeystoneApiError::BadRequest(e.to_string()))?
+    };
+    match verify_issuance_proof(state, headers, "POST", &uri) {
+        Ok(jkt) => Ok(jkt.map(|jkt| Confirmation { jkt })),
+        Err(ProofRefusal::Invalid(reason)) => Err(KeystoneApiError::BadRequest(format!(
+            "invalid DPoP proof: {reason}"
+        ))),
+        Err(ProofRefusal::RateLimited(retry_after)) => {
+            Err(KeystoneApiError::TooManyRequests { retry_after })
+        }
+    }
 }
 
 #[cfg(test)]

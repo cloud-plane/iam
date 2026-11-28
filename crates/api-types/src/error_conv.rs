@@ -851,6 +851,7 @@ impl From<TokenProviderError> for KeystoneApiError {
             | TokenProviderError::InvalidToken { .. }
             | TokenProviderError::TokenRevoked
             | TokenProviderError::UserNotFound(_) => Self::unauthorized(value, None::<String>),
+            TokenProviderError::TooManyGroups { .. } => Self::forbidden(value),
             TokenProviderError::DomainDisabled(x) => Self::NotFound {
                 resource: "domain".into(),
                 identifier: x,

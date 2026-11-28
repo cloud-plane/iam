@@ -80,6 +80,10 @@ pub async fn callback(
     PeerAddr(peer_addr): PeerAddr,
     Json(query): Json<AuthCallbackParameters>,
 ) -> Result<impl IntoResponse, KeystoneApiError> {
+    // A federated login is initial authentication and issues an unbound
+    // token; refuse a `DPoP` header instead of silently ignoring it.
+    openstack_keystone_core::api::auth::reject_dpop_header(&headers)?;
+
     // Security review V6: reached without a Keystone-authenticated caller and
     // ends in an OIDC ID-token signature verification (`verify_jwt`).
     // Rate-limit before any lookup, same posture as `/v3/auth/tokens`.
@@ -309,6 +313,36 @@ mod tests {
 
     /// An unknown auth state is rejected before any IdP is known: the single
     /// perimeter record carries an `unknown` initiator without a host.
+    #[tokio::test]
+    async fn test_callback_rejects_dpop_header() {
+        let (state, _receivers) = openstack_keystone_core::api::tests::get_mocked_state_with_audit(
+            Provider::mocked_builder(),
+            true,
+            openstack_keystone_config::Config::default(),
+        )
+        .await;
+
+        let mut api = openapi_router()
+            .layer(TraceLayer::new_for_http())
+            .with_state(state);
+        let response = api
+            .as_service()
+            .oneshot(
+                Request::builder()
+                    .uri("/oidc/callback")
+                    .method("POST")
+                    .header(header::CONTENT_TYPE, "application/json")
+                    .header("DPoP", "proof")
+                    .body(Body::from(
+                        serde_json::to_vec(&json!({"state": "s", "code": "c"})).unwrap(),
+                    ))
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(response.status(), StatusCode::BAD_REQUEST);
+    }
+
     #[tokio::test]
     async fn test_callback_with_unknown_state_emits_failure_event() {
         let mut federation_mock = MockFederationProvider::default();

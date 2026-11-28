@@ -76,6 +76,7 @@ use crate::service_grant::ServiceGrantProviderError;
 use crate::service_grant::backend::ServiceGrantBackend;
 use crate::token::TokenProviderError;
 use crate::token::backend::TokenBackend;
+use crate::token::backend::TokenFormatBackend;
 use crate::token::backend::TokenRestrictionBackend;
 use crate::trust::TrustProviderError;
 use crate::trust::backend::TrustBackend;
@@ -139,6 +140,7 @@ declare_backend_registry!(
     dyn ScimRealmBackend,
     dyn ScimResourceBackend,
     dyn TokenBackend,
+    dyn TokenFormatBackend,
     dyn TokenRestrictionBackend,
     dyn TrustBackend,
 );
@@ -591,6 +593,19 @@ pub trait PluginManagerApi {
         name: S,
     ) -> Result<&Arc<dyn TokenBackend>, TokenProviderError>;
 
+    /// Get registered asynchronous token format backend.
+    ///
+    /// # Parameters
+    /// - `name`: The name of the backend to retrieve.
+    ///
+    /// # Returns
+    /// - `Ok(&Arc<dyn TokenFormatBackend>)` if found, otherwise
+    ///   `Err(TokenProviderError)`.
+    fn get_token_format_backend<S: AsRef<str>>(
+        &self,
+        name: S,
+    ) -> Result<&Arc<dyn TokenFormatBackend>, TokenProviderError>;
+
     /// Get registered token restriction backend.
     ///
     /// # Parameters
@@ -843,6 +858,17 @@ pub trait PluginManagerApi {
     /// - `name`: The name to register the backend under.
     /// - `plugin`: The backend implementation.
     fn register_token_backend<S: AsRef<str>>(&mut self, name: S, plugin: Arc<dyn TokenBackend>);
+
+    /// Register asynchronous token format backend.
+    ///
+    /// # Parameters
+    /// - `name`: The name to register the backend under.
+    /// - `plugin`: The backend implementation.
+    fn register_token_format_backend<S: AsRef<str>>(
+        &mut self,
+        name: S,
+        plugin: Arc<dyn TokenFormatBackend>,
+    );
 
     /// Register token restriction backend.
     ///

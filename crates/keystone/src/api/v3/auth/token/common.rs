@@ -192,6 +192,10 @@ pub(super) async fn authenticate_request(
                     None,
                 )
                 .await?;
+            // The token travels in the body, where no proof of its key exists
+            // (ADR 0043, ADR 0049).
+            openstack_keystone_core::token::ensure_unbound(&vsc)
+                .map_err(|_| KeystoneApiError::UnauthorizedNoContext)?;
             let auth_res = AuthenticationResult {
                 audit_id: vsc.inner().audit_ids().first().cloned().unwrap_or_default(),
                 context: vsc.inner().authentication_context().clone(),
@@ -670,6 +674,77 @@ mod tests {
             .await
             .unwrap()
         );
+    }
+
+    /// A sender-constrained token cannot be exchanged through the body of
+    /// `POST /v3/auth/tokens`: no proof of its key exists there.
+    #[tokio::test]
+    async fn test_authenticate_request_token_refuses_bound_token() {
+        let auth = AuthenticationResultBuilder::default()
+            .context(AuthenticationContext::Token(std::sync::Arc::new(
+                openstack_keystone_core_types::token::FernetToken::Unscoped(
+                    openstack_keystone_core_types::token::UnscopedPayload::default(),
+                ),
+            )))
+            .principal(PrincipalInfo {
+                identity: IdentityInfo::User(
+                    UserIdentityInfoBuilder::default()
+                        .user_id("uid")
+                        .user_domain(Domain {
+                            id: "user_domain_id".into(),
+                            enabled: true,
+                            ..Default::default()
+                        })
+                        .build()
+                        .unwrap(),
+                ),
+            })
+            .build()
+            .unwrap();
+        let mut sc = SecurityContext::try_from(auth).unwrap();
+        sc.set_confirmation(Some(
+            openstack_keystone_core_types::oauth2_client::Confirmation {
+                jkt: "thumb".into(),
+            },
+        ));
+        let vsc = openstack_keystone_core::auth::ValidatedSecurityContext::test_new(sc);
+        let mut token_mock = MockTokenProvider::default();
+        token_mock
+            .expect_authorize_by_token()
+            .returning(move |_, _, _, _| Ok(vsc.clone()));
+        let state = get_mocked_state(
+            Provider::mocked_builder().mock_token(token_mock),
+            true,
+            None,
+        )
+        .await;
+
+        let result = authenticate_request(
+            &state,
+            &AuthRequest {
+                auth: AuthRequestInner {
+                    identity: Identity {
+                        methods: vec!["token".to_string()],
+                        password: None,
+                        token: Some(TokenAuth {
+                            id: "bound_token".into(),
+                        }),
+                        totp: None,
+                        application_credential: None,
+                        extra: Default::default(),
+                    },
+                    scope: None,
+                },
+            },
+            &axum::http::HeaderMap::new(),
+            None,
+            None,
+        )
+        .await;
+        assert!(matches!(
+            result,
+            Err(KeystoneApiError::UnauthorizedNoContext)
+        ));
     }
 
     #[test]

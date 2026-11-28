@@ -237,6 +237,20 @@ jobs:
         if: needs.changes.outputs.code == 'true'
         run: rm -rf $HOME/.osc
 
+      # Same suite against `[token] provider = oauth2` (ADR 0049): the
+      # OAuth2 JWT as the token of the v3 API, including DPoP binding.
+      - name: Run REST API tests (OAuth2 token provider)
+        if: needs.changes.outputs.code == 'true'
+        env:
+          KEYSTONE_TEST_TOKEN_PROVIDER: oauth2
+          KEYSTONE_TEST_OTLP_ENDPOINT: http://127.0.0.1:4318
+          JAEGER_QUERY_URL: http://127.0.0.1:16686
+        run: cargo nextest run -p test_api --profile ci-api --test integration_api_v3 --test integration_api_v4
+
+      - name: Invalidate eventual openstack_sdk cache (OAuth2)
+        if: needs.changes.outputs.code == 'true'
+        run: rm -rf $HOME/.osc
+
       - name: Run REST API SCIMv2 tests
         if: needs.changes.outputs.code == 'true'
         env:

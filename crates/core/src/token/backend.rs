@@ -13,7 +13,9 @@
 // SPDX-License-Identifier: Apache-2.0
 //! Token provider backends.
 
+use async_trait::async_trait;
 use openstack_keystone_config::Config;
+use openstack_keystone_core_types::oauth2_client::Confirmation;
 
 use openstack_keystone_core_types::token::{
     TokenPayload, TokenRestriction, TokenRestrictionCreate, TokenRestrictionListParameters,
@@ -53,6 +55,55 @@ pub trait TokenBackend: Send + Sync {
     /// # Returns
     /// - `Result<String, TokenProviderError>` - The encoded string or an error.
     fn encode(&self, token: &TokenPayload) -> Result<String, TokenProviderError>;
+}
+
+/// Asynchronous token format backend interface (ADR 0049).
+///
+/// [`TokenBackend`] is a pure function of the credential: it needs no state and
+/// does not wait. A format whose keys live in a provider (per domain, behind
+/// the storage) needs the service state and awaits, so it implements this
+/// trait instead. Used by the OAuth2 JWT format.
+#[cfg_attr(test, mockall::automock)]
+#[async_trait]
+pub trait TokenFormatBackend: Send + Sync {
+    /// Verify and decode the credential.
+    ///
+    /// # Parameters
+    /// - `state`: The current service state.
+    /// - `credential`: The credential string.
+    ///
+    /// # Returns
+    /// - `Result<(TokenPayload, Option<Confirmation>), TokenProviderError>` -
+    ///   The decoded token and, when the format carries a sender constraint
+    ///   (DPoP `cnf`), that constraint, or an error. The constraint comes out
+    ///   of the verified claims, so no separate read of the credential is
+    ///   needed. `Some` is a contract: an implementation must return it only
+    ///   when it was verified (for example, covered by the signature), since
+    ///   the service enforces sender-binding (DPoP) on its say-so.
+    async fn decode<'a>(
+        &self,
+        state: &ServiceState,
+        credential: &'a str,
+    ) -> Result<(TokenPayload, Option<Confirmation>), TokenProviderError>;
+
+    /// Encode the token into a string.
+    ///
+    /// # Parameters
+    /// - `state`: The current service state.
+    /// - `token`: The token to encode.
+    /// - `domain_id`: The domain that selects the signing key. The user's
+    ///   domain is used when it is not given.
+    /// - `cnf`: The sender constraint (DPoP) to bind the token to.
+    ///
+    /// # Returns
+    /// - `Result<String, TokenProviderError>` - The encoded string or an error.
+    async fn encode(
+        &self,
+        state: &ServiceState,
+        token: &TokenPayload,
+        domain_id: Option<String>,
+        cnf: Option<Confirmation>,
+    ) -> Result<String, TokenProviderError>;
 }
 
 /// Token restrictions backend interface.

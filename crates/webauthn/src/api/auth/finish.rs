@@ -164,8 +164,10 @@ pub async fn verify_assertion(
 )]
 pub async fn finish(
     State(state): State<CombinedExtensionState>,
+    headers: axum::http::HeaderMap,
     Json(req): Json<PasskeyAuthenticationFinishRequest>,
 ) -> Result<impl IntoResponse, KeystoneApiError> {
+    openstack_keystone_core::api::auth::reject_dpop_header(&headers)?;
     req.validate()?;
     let user_id = req.user_id.clone();
     verify_assertion(&state, &user_id, None, req).await?;
@@ -208,7 +210,8 @@ pub async fn finish(
                 .core
                 .provider
                 .get_token_provider()
-                .encode_token(vsc.token()?)?,
+                .encode_bound_token(&state.core, vsc.token()?, vsc.principal().domain_id(), None)
+                .await?,
         )],
         Json(api_token),
     )

@@ -60,6 +60,7 @@ pub(super) async fn create(
     PeerAddr(peer_addr): PeerAddr,
     TracedJson(req): TracedJson<Ec2TokenAuthRequest>,
 ) -> Result<impl IntoResponse, KeystoneApiError> {
+    openstack_keystone_core::api::auth::reject_dpop_header(&headers)?;
     // CVE-2025-65073: this endpoint requires an already-authenticated caller
     // (a service validating an end-user's EC2-signed request on their
     // behalf), unlike the historical fully-unauthenticated behaviour.
@@ -140,7 +141,8 @@ async fn create_inner(
             state
                 .provider
                 .get_token_provider()
-                .encode_token(vsc.token()?)?,
+                .encode_bound_token(state, vsc.token()?, vsc.principal().domain_id(), None)
+                .await?,
         )],
         Json(api_token),
     )
@@ -382,8 +384,8 @@ mod tests {
             .expect_issue_token_context()
             .returning(move |_, _, _| Ok(vsc_clone.clone()));
         token_mock
-            .expect_encode_token()
-            .returning(|_| Ok("token".to_string()));
+            .expect_encode_bound_token()
+            .returning(|_, _, _, _| Ok("token".to_string()));
 
         let mut catalog_mock = crate::catalog::MockCatalogProvider::default();
         catalog_mock
@@ -580,8 +582,8 @@ mod tests {
             .expect_issue_token_context()
             .returning(move |_, _, _| Ok(vsc_clone.clone()));
         token_mock
-            .expect_encode_token()
-            .returning(|_| Ok("token".to_string()));
+            .expect_encode_bound_token()
+            .returning(|_, _, _, _| Ok("token".to_string()));
 
         let mut catalog_mock = crate::catalog::MockCatalogProvider::default();
         catalog_mock
@@ -645,8 +647,8 @@ mod tests {
                 .expect_issue_token_context()
                 .returning(move |_, _, _| Ok(vsc_clone.clone()));
             token_mock
-                .expect_encode_token()
-                .returning(|_| Ok("token".to_string()));
+                .expect_encode_bound_token()
+                .returning(|_, _, _, _| Ok("token".to_string()));
 
             let mut catalog_mock = crate::catalog::MockCatalogProvider::default();
             catalog_mock

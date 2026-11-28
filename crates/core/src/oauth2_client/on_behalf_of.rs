@@ -425,6 +425,10 @@ async fn keystone_subject(state: &ServiceState, token: &str) -> Result<Subject, 
             warn!(error = %e, "on-behalf-of subject token rejected");
             OnBehalfOfError::InvalidSubject
         })?;
+    crate::token::ensure_unbound(&vsc).map_err(|e| {
+        warn!(error = %e, "on-behalf-of subject token rejected");
+        OnBehalfOfError::InvalidSubject
+    })?;
     let sc = vsc.inner();
     let IdentityInfo::User(user) = &sc.principal().identity else {
         return Err(OnBehalfOfError::UnsupportedSubject(
@@ -1321,6 +1325,34 @@ mod tests {
             )),
             client(policy(false), "d1"),
             true,
+        )
+        .await;
+        assert!(matches!(
+            exchange(&state).await,
+            Err(OnBehalfOfError::InvalidSubject)
+        ));
+    }
+
+    /// A sender-constrained Keystone token is not a bearer credential: it
+    /// cannot start a chain by being presented as a bare `subject_token`.
+    #[tokio::test]
+    async fn test_bound_subject_token_is_refused() {
+        let issued_at = Utc::now() - Duration::minutes(5);
+        let vsc = subject_vsc(
+            AuthenticationContext::Token(Arc::new(token(issued_at))),
+            issued_at,
+            "d1",
+        );
+        let mut sc = vsc.inner().clone();
+        sc.set_confirmation(Some(
+            openstack_keystone_core_types::oauth2_client::Confirmation {
+                jkt: "thumb".into(),
+            },
+        ));
+        let state = state(
+            Some(ValidatedSecurityContext::test_new(sc)),
+            client(policy(false), "d1"),
+            false,
         )
         .await;
         assert!(matches!(

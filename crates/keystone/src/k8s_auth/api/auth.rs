@@ -16,7 +16,7 @@
 use axum::{
     Json, debug_handler,
     extract::{Path, State},
-    http::StatusCode,
+    http::{HeaderMap, StatusCode},
     response::IntoResponse,
 };
 use utoipa_axum::{router::OpenApiRouter, routes};
@@ -70,8 +70,10 @@ pub(super) fn openapi_router() -> OpenApiRouter<ServiceState> {
 pub async fn post(
     State(state): State<ServiceState>,
     Path(instance_id): Path<String>,
+    headers: HeaderMap,
     Json(req): Json<K8sAuthRequest>,
 ) -> Result<impl IntoResponse, KeystoneApiError> {
+    openstack_keystone_core::api::auth::reject_dpop_header(&headers)?;
     req.validate()?;
 
     let (ctx, scope) = mapping_auth(&state, &req.to_provider_with_instance_id(instance_id)).await?;
@@ -97,7 +99,8 @@ pub async fn post(
             state
                 .provider
                 .get_token_provider()
-                .encode_token(vsc.token()?)?,
+                .encode_bound_token(&state, vsc.token()?, vsc.principal().domain_id(), None)
+                .await?,
         )],
         Json(api_token),
     )

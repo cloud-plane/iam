@@ -143,6 +143,7 @@ pub async fn validate_subject_token(
         .get_token_provider()
         .validate_to_context(&exec, subject_token, Some(false), None)
         .await?;
+    crate::token::ensure_unbound(&vsc)?;
 
     let (delegation_context, credential_expiration) =
         derive_delegation_context(vsc.inner().authentication_context())?;
@@ -281,12 +282,67 @@ pub fn build_token_exchange_claims(
 mod tests {
     use super::*;
     use openstack_keystone_core_types::auth::{
-        AuthzInfoBuilder, PrincipalIdentityInfoBuilder, PrincipalInfo, SecurityContext,
-        UserIdentityInfoBuilder,
+        AuthenticationResultBuilder, AuthzInfoBuilder, PrincipalIdentityInfoBuilder, PrincipalInfo,
+        SecurityContext, UserIdentityInfoBuilder,
     };
     use openstack_keystone_core_types::identity::UserResponseBuilder;
     use openstack_keystone_core_types::resource::{Domain, ProjectRef};
     use openstack_keystone_core_types::trust::Trust;
+
+    async fn subject_state(bound: bool) -> ServiceState {
+        use crate::provider::Provider;
+        use crate::token::MockTokenProvider;
+        use openstack_keystone_core_types::oauth2_client::Confirmation;
+
+        let auth = AuthenticationResultBuilder::default()
+            .context(AuthenticationContext::Password)
+            .principal(PrincipalInfo {
+                identity: IdentityInfo::User(
+                    UserIdentityInfoBuilder::default()
+                        .user_id("u1")
+                        .user_domain(Domain {
+                            id: "d1".into(),
+                            enabled: true,
+                            ..Default::default()
+                        })
+                        .build()
+                        .unwrap(),
+                ),
+            })
+            .build()
+            .unwrap();
+        let mut sc = SecurityContext::try_from(auth).unwrap();
+        if bound {
+            sc.set_confirmation(Some(Confirmation {
+                jkt: "thumb".into(),
+            }));
+        }
+        let vsc = ValidatedSecurityContext::test_new(sc);
+        let mut tokens = MockTokenProvider::default();
+        tokens
+            .expect_validate_to_context()
+            .returning(move |_, _, _, _| Ok(vsc.clone()));
+        crate::tests::get_mocked_state(None, Some(Provider::mocked_builder().mock_token(tokens)))
+            .await
+    }
+
+    /// A sender-constrained token cannot be a `subject_token`: no proof of
+    /// its key exists in a token exchange request.
+    #[tokio::test]
+    async fn test_bound_subject_token_is_refused() {
+        let bound = subject_state(true).await;
+        assert!(matches!(
+            validate_subject_token(&bound, "tok").await,
+            Err(TokenExchangeError::InvalidSubjectToken(_))
+        ));
+        // The same token without the binding gets past the check; it is the
+        // delegation rules that reject a plain password chain afterwards.
+        let plain = subject_state(false).await;
+        assert!(!matches!(
+            validate_subject_token(&plain, "tok").await,
+            Err(TokenExchangeError::InvalidSubjectToken(_))
+        ));
+    }
 
     fn trust_context(project_id: Option<&str>) -> AuthenticationContext {
         AuthenticationContext::Trust {
