@@ -23,7 +23,7 @@ workflows:
     '.github/workflows/benchmark_fork_track.yml':
         - 'actions/github-script@v9'
         - 'bencherdev/bencher@main'
-        - 'dawidd6/action-download-artifact@v27'
+        - 'dawidd6/action-download-artifact@v28'
         - 'step-security/harden-runner@v2'
     '.github/workflows/benchmark_pr.yml':
         - 'actions/checkout@v7'
@@ -238,9 +238,9 @@ dependencies:
         commit: 'sha1-53821664afd79bb88fcdd22fdc2f49d8d3f6cac9'
         owner_id: 36412122
         repo_id: 181782286
-    'dawidd6/action-download-artifact@v27':
-        ref: 'v27'
-        commit: 'sha1-eab87c9830c39eff17e5a6eadb20bfb4bc880477'
+    'dawidd6/action-download-artifact@v28':
+        ref: 'v28'
+        commit: 'sha1-a92c7ae74cf1df8810783758581e485ac3aaa309'
         owner_id: 9713907
         repo_id: 239218448
     'docker/build-push-action@v7':
