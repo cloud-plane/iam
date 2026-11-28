@@ -308,14 +308,14 @@ pub fn read_uuid(rd: &mut &[u8]) -> Result<String, FernetDriverError> {
                     match read_marker(rd).map_err(ValueReadError::from)? {
                         marker @ (Marker::Bin8 | Marker::Bin16 | Marker::Bin32) => {
                             let len = read_bin_len_for_marker(marker, rd)?;
-                            return Ok(read_str_data(len, rd)?);
+                            return read_str_data(len, rd);
                         }
                         marker @ (Marker::FixStr(_)
                         | Marker::Str8
                         | Marker::Str16
                         | Marker::Str32) => {
                             let len = read_str_len_for_marker(marker, rd)?;
-                            return Ok(read_str_data(len, rd)?);
+                            return read_str_data(len, rd);
                         }
                         other => {
                             return Err(FernetDriverError::InvalidTokenUuidMarker(other));
@@ -328,7 +328,7 @@ pub fn read_uuid(rd: &mut &[u8]) -> Result<String, FernetDriverError> {
             }
         }
         Marker::FixStr(len) => {
-            return Ok(read_str_data(len.into(), rd)?);
+            return read_str_data(len.into(), rd);
         }
         other => {
             return Err(FernetDriverError::InvalidTokenUuidMarker(other));

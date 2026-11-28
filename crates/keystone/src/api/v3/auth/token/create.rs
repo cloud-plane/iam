@@ -171,7 +171,7 @@ async fn create_inner(
         if query.nocatalog.is_some_and(|x| x) {
             return Ok::<_, KeystoneApiError>(None);
         }
-        Ok(Some(crate::catalog::response_catalog(&state, &exec).await?))
+        Ok(Some(crate::catalog::response_catalog(state, &exec).await?))
     };
     let vsc_fut = async {
         Ok::<_, KeystoneApiError>(
