@@ -15,7 +15,7 @@
 use std::ops::Deref;
 
 use openstack_keystone_api_types::scope as api_scope;
-use openstack_keystone_api_types::v3::auth::token::System;
+use openstack_keystone_api_types::v3::auth::token::{System, TokenConfirmation};
 use openstack_keystone_api_types::v3::auth::token::{TokenBuilder, UserBuilder};
 use openstack_keystone_core_types::auth::ScopeInfo;
 use openstack_keystone_core_types::auth::*;
@@ -40,6 +40,13 @@ impl TryFrom<&ValidatedSecurityContext> for TokenBuilder {
             .expires_at(*fernet.expires_at())
             .audit_ids(ctx.audit_ids().to_vec())
             .methods(methods);
+
+        let response = match ctx.confirmation() {
+            Some(cnf) => response.cnf(TokenConfirmation {
+                jkt: cnf.jkt.clone(),
+            }),
+            None => response,
+        };
 
         let response = fill_identity_info(response, ctx)?;
 

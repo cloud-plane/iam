@@ -27,6 +27,10 @@ pub enum JwsDriverError {
     #[error("JWS claims must carry exactly one scope claim, found {0}")]
     AmbiguousOrMissingScopeClaim(usize),
 
+    /// The claims could not be converted to or from a token payload.
+    #[error(transparent)]
+    Claims(#[from] openstack_keystone_core_types::token::TokenClaimsError),
+
     /// JSON (de)serialization of the claims payload failed.
     #[error(transparent)]
     Json(#[from] serde_json::Error),

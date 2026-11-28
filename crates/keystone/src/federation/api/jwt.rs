@@ -95,6 +95,7 @@ async fn login_inner(
     peer_addr: Option<std::net::SocketAddr>,
     idp_id: &str,
 ) -> Result<axum::response::Response, KeystoneApiError> {
+    openstack_keystone_core::api::auth::reject_dpop_header(&headers)?;
     // Security review V6: this is an unauthenticated, crypto-bearing
     // endpoint (JWKS fetch + JWT signature verification). Rate-limit before
     // any of that work, same posture as `/v3/auth/tokens`.

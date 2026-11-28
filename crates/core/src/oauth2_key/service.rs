@@ -242,6 +242,18 @@ impl Oauth2KeyApi for Oauth2KeyService {
         self.backend_driver.revoked_jtis(state, domain_id).await
     }
 
+    #[tracing::instrument(name = "provider.oauth2_key.is_jti_revoked", level = "debug", skip_all, fields(domain_id = %domain_id))]
+    async fn is_jti_revoked(
+        &self,
+        state: &ServiceState,
+        domain_id: &str,
+        jti: &str,
+    ) -> Result<bool, Oauth2KeyProviderError> {
+        self.backend_driver
+            .is_jti_revoked(state, domain_id, jti)
+            .await
+    }
+
     #[tracing::instrument(name = "provider.oauth2_key.revoke_jti", level = "debug", skip_all, fields(domain_id = %domain_id))]
     async fn revoke_jti(
         &self,

@@ -166,7 +166,8 @@ async fn test_revoke_user_project_grant_auth_impact() -> Result<()> {
     let pre_revoke_encoded = state
         .provider
         .get_token_provider()
-        .encode_token(pre_revoke_token_context.inner().token().unwrap())?;
+        .encode_token(&state, pre_revoke_token_context.inner().token().unwrap())
+        .await?;
 
     // Sanity check: token is valid before revocation
     assert!(
@@ -227,7 +228,8 @@ async fn test_revoke_user_project_grant_auth_impact() -> Result<()> {
     let post_revoke_encoded = state
         .provider
         .get_token_provider()
-        .encode_token(post_revoke_token_ctx.inner().token().unwrap())?;
+        .encode_token(&state, post_revoke_token_ctx.inner().token().unwrap())
+        .await?;
 
     let validated = state
         .provider

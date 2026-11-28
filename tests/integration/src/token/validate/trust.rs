@@ -145,7 +145,8 @@ async fn test_valid() -> Result<(), Report> {
     let encoded_token = state
         .provider
         .get_token_provider()
-        .encode_token(vsc.inner().token().unwrap())?;
+        .encode_token(&state, vsc.inner().token().unwrap())
+        .await?;
 
     let vsc_result = state
         .provider
@@ -262,7 +263,8 @@ async fn test_valid_redelegated() -> Result<(), Report> {
     let encoded_token = state
         .provider
         .get_token_provider()
-        .encode_token(vsc.inner().token().unwrap())?;
+        .encode_token(&state, vsc.inner().token().unwrap())
+        .await?;
 
     let vsc_result = state
         .provider
@@ -379,7 +381,8 @@ async fn test_fewer_roles() -> Result<(), Report> {
     let encoded_token = state
         .provider
         .get_token_provider()
-        .encode_token(vsc.inner().token().unwrap())?;
+        .encode_token(&state, vsc.inner().token().unwrap())
+        .await?;
 
     revoke_role_from_user_on_project(&state, &user_a.id, &project.id, &role_a.id).await?;
 
@@ -487,7 +490,8 @@ async fn test_exclude_local_roles() -> Result<(), Report> {
     let encoded_token = state
         .provider
         .get_token_provider()
-        .encode_token(vsc.inner().token().unwrap())?;
+        .encode_token(&state, vsc.inner().token().unwrap())
+        .await?;
 
     let vsc_result = state
         .provider

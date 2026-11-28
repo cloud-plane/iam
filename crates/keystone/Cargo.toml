@@ -81,6 +81,7 @@ openstack-keystone-tls-provider.workspace = true
 openstack-keystone-token-driver-fernet.workspace = true
 openstack-keystone-telemetry.workspace = true
 openstack-keystone-token-driver-jws.workspace = true
+openstack-keystone-token-driver-oauth2.workspace = true
 openstack-keystone-token-restriction-driver-sql.workspace = true
 openstack-keystone-trust-driver-sql.workspace = true
 openstack-keystone-webauthn.workspace = true

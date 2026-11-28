@@ -28,13 +28,14 @@ use secrecy::{ExposeSecret, SecretString};
 use tracing::trace;
 use uuid::Uuid;
 
-use openstack_keystone_config::Config;
+use openstack_keystone_config::{Config, TokenProviderDriver};
 use openstack_keystone_core_types::application_credential::ApplicationCredentialProviderError;
 use openstack_keystone_core_types::auth::{
     AuthzInfo, AuthzInfoBuilder, ScopeInfo, SecurityContext, TrustProjectInfo,
 };
 use openstack_keystone_core_types::events::{Event, EventPayload, Operation};
 use openstack_keystone_core_types::identity::UserCore;
+use openstack_keystone_core_types::oauth2_client::Confirmation;
 use openstack_keystone_core_types::resource::{DomainRef, ResourceProviderError};
 use openstack_keystone_core_types::role::{Role, RoleListParameters, RoleRef};
 use openstack_keystone_core_types::token::{
@@ -48,9 +49,10 @@ use crate::auth::*;
 use crate::events::AuditDispatchError;
 use crate::keystone::ServiceState;
 use crate::plugin_manager::PluginManagerApi;
+use crate::token::format::{TokenFormat, detect_format};
 use crate::token::{
     TokenApi, TokenProviderError,
-    backend::{TokenBackend, TokenRestrictionBackend},
+    backend::{TokenBackend, TokenFormatBackend, TokenRestrictionBackend},
 };
 
 /// How much of the token owner the validation resolves.
@@ -62,9 +64,40 @@ enum UserDetail {
     Core,
 }
 
+/// Placeholder `TokenBackend` of a deployment that issues OAuth2 tokens: that
+/// format is async and handled by a [`TokenFormatBackend`].
+struct UnavailableBackend;
+
+impl TokenBackend for UnavailableBackend {
+    fn set_config(&mut self, _g: Config) {}
+
+    fn decode(&self, _credential: &str) -> Result<FernetToken, TokenProviderError> {
+        // Not a client error: the OAuth2 format must go through the async
+        // path of `TokenService`; reaching this is a bug of the caller.
+        Err(TokenProviderError::Driver {
+            source: "the OAuth2 format has no synchronous backend, use the async token API".into(),
+        })
+    }
+
+    fn encode(&self, _token: &FernetToken) -> Result<String, TokenProviderError> {
+        // Not a client error: the OAuth2 format must go through the async
+        // path of `TokenService`; reaching this is a bug of the caller.
+        Err(TokenProviderError::Driver {
+            source: "the OAuth2 format has no synchronous backend, use the async token API".into(),
+        })
+    }
+}
+
 pub struct TokenService {
     config: Config,
     backend_driver: Arc<dyn TokenBackend>,
+    /// Backends of the formats that are only accepted for validation
+    /// (`[token] accepted`, ADR 0049), keyed by their format.
+    accepted_backends: HashMap<TokenFormat, Arc<dyn TokenBackend>>,
+    /// Backend of the OAuth2 format (ADR 0049), present when that format is
+    /// issued or accepted. It is async and stateful, so it is not a
+    /// [`TokenBackend`].
+    oauth2_backend: Option<Arc<dyn TokenFormatBackend>>,
     tr_backend_driver: Arc<dyn TokenRestrictionBackend>,
 }
 
@@ -82,17 +115,103 @@ impl TokenService {
         config: &Config,
         plugin_manager: &P,
     ) -> Result<Self, TokenProviderError> {
-        let backend_driver = plugin_manager
-            .get_token_backend(config.token.provider.to_string())?
-            .clone();
+        // The OAuth2 format is async (per-domain keys) and has no
+        // `TokenBackend`: a placeholder keeps the field total.
+        let backend_driver = if config.token.provider == TokenProviderDriver::Oauth2 {
+            Arc::new(UnavailableBackend) as Arc<dyn TokenBackend>
+        } else {
+            plugin_manager
+                .get_token_backend(config.token.provider.to_string())?
+                .clone()
+        };
         let tr_backend_driver = plugin_manager
             .get_token_restriction_backend(&config.token_restriction.driver)?
             .clone();
+        let mut accepted_backends = HashMap::new();
+        for (driver, format) in [
+            (TokenProviderDriver::Fernet, TokenFormat::Fernet),
+            (TokenProviderDriver::Jws, TokenFormat::Jws),
+        ] {
+            if driver != config.token.provider && config.token.accepts(&driver) {
+                accepted_backends.insert(
+                    format,
+                    plugin_manager
+                        .get_token_backend(driver.to_string())?
+                        .clone(),
+                );
+            }
+        }
+        let oauth2_backend = if config.token.accepts(&TokenProviderDriver::Oauth2) {
+            Some(
+                plugin_manager
+                    .get_token_format_backend(TokenProviderDriver::Oauth2.to_string())?
+                    .clone(),
+            )
+        } else {
+            None
+        };
         Ok(Self {
             config: config.clone(),
             backend_driver,
+            accepted_backends,
+            oauth2_backend,
             tr_backend_driver,
         })
+    }
+
+    /// The format issued by the configured provider.
+    fn issuing_format(&self) -> TokenFormat {
+        match self.config.token.provider {
+            TokenProviderDriver::Fernet => TokenFormat::Fernet,
+            TokenProviderDriver::Jws => TokenFormat::Jws,
+            TokenProviderDriver::Oauth2 => TokenFormat::OAuth2,
+        }
+    }
+
+    /// Decode the credential with the backend of its detected format
+    /// (ADR 0049 section 1). A format that is not accepted is an invalid
+    /// token, and there is no fallthrough to another format.
+    ///
+    /// Returns the token and, when the format carries it, the sender
+    /// constraint of the verified credential. The constraint is read from
+    /// the verified claims, not re-parsed out of the credential.
+    async fn decode_credential(
+        &self,
+        state: &ServiceState,
+        credential: &str,
+    ) -> Result<
+        (
+            openstack_keystone_core_types::token::TokenPayload,
+            Option<Confirmation>,
+        ),
+        TokenProviderError,
+    > {
+        let format = detect_format(credential);
+        if format == TokenFormat::OAuth2 {
+            return match &self.oauth2_backend {
+                Some(backend) => backend.decode(state, credential).await,
+                None => {
+                    trace!("token format {:?} is not accepted", format);
+                    Err(TokenProviderError::InvalidToken {
+                        source: "token format is not accepted".into(),
+                    })
+                }
+            };
+        }
+        let payload = if format == self.issuing_format() {
+            self.backend_driver.decode(credential)?
+        } else {
+            match self.accepted_backends.get(&format) {
+                Some(backend) => backend.decode(credential),
+                None => {
+                    trace!("token format {:?} is not accepted", format);
+                    return Err(TokenProviderError::InvalidToken {
+                        source: "token format is not accepted".into(),
+                    });
+                }
+            }?
+        };
+        Ok((payload, None))
     }
 
     /// Calculates the expiration time for a new token.
@@ -307,9 +426,10 @@ impl TokenService {
         window_seconds: Option<i64>,
         user_detail: UserDetail,
     ) -> Result<ValidatedSecurityContext, TokenProviderError> {
-        // Shared by the authentication context and the security context.
-        let token = Arc::new(self.backend_driver.decode(credential)?);
         let state = ctx.state();
+        // Shared by the authentication context and the security context.
+        let (payload, confirmation) = self.decode_credential(state, credential).await?;
+        let token = Arc::new(payload);
 
         let latest_expiration_cutof = Utc::now()
             .checked_add_signed(TimeDelta::seconds(window_seconds.unwrap_or(0)))
@@ -483,6 +603,9 @@ impl TokenService {
         let auth_result = auth_result_builder.build()?;
 
         let mut sc = SecurityContext::try_from(auth_result)?;
+        // The sender constraint comes out of the claims `decode_credential`
+        // has just verified, so a forged or stripped `cnf` has failed already.
+        sc.set_confirmation(confirmation);
         sc.set_token(token);
         // The context carries the scope the token was validated against;
         // validate it from there instead of cloning the scope out to pass
@@ -611,6 +734,9 @@ impl TokenApi for TokenService {
         scope: &ScopeInfo,
     ) -> Result<ValidatedSecurityContext, TokenProviderError> {
         let mut sc = ctx.clone();
+        // The sender constraint belongs to the token the context came from,
+        // never to the one issued here.
+        sc.set_confirmation(None);
         sc.set_authorization_scope(scope.clone())?;
 
         // `issued_at` is the token's creation timestamp at whole-second
@@ -648,8 +774,32 @@ impl TokenApi for TokenService {
     /// # Returns
     /// - `Result<String, TokenProviderError>` - The encoded string or an error.
     #[tracing::instrument(name = "provider.token.encode_token", level = "debug", skip_all)]
-    fn encode_token(&self, token: &FernetToken) -> Result<String, TokenProviderError> {
-        self.backend_driver.encode(token)
+    async fn encode_token(
+        &self,
+        state: &ServiceState,
+        token: &FernetToken,
+    ) -> Result<String, TokenProviderError> {
+        self.encode_bound_token(state, token, None, None).await
+    }
+
+    async fn encode_bound_token(
+        &self,
+        state: &ServiceState,
+        token: &FernetToken,
+        domain_id: Option<String>,
+        cnf: Option<Confirmation>,
+    ) -> Result<String, TokenProviderError> {
+        if self.issuing_format() == TokenFormat::OAuth2 {
+            match &self.oauth2_backend {
+                Some(backend) => backend.encode(state, token, domain_id, cnf).await,
+                None => Err(TokenProviderError::UnsupportedDriver(
+                    TokenProviderDriver::Oauth2.to_string(),
+                )),
+            }
+        } else {
+            // Only the OAuth2 format can carry a sender constraint.
+            self.backend_driver.encode(token)
+        }
     }
 
     /// Get the token restriction by the ID.
@@ -921,8 +1071,102 @@ mod tests {
         TokenService {
             config: config.clone(),
             backend_driver: Arc::new(token_mock.unwrap_or_default()),
+            accepted_backends: HashMap::new(),
+            oauth2_backend: None,
             tr_backend_driver: Arc::new(MockTokenRestrictionBackend::default()),
         }
+    }
+
+    fn jwt_credential(header: &str) -> String {
+        use base64::Engine as _;
+        format!(
+            "{}.e30.c2ln",
+            base64::engine::general_purpose::URL_SAFE_NO_PAD.encode(header)
+        )
+    }
+
+    /// An OAuth2 JWT is rejected when the format is not accepted, and no
+    /// other backend is tried.
+    #[tokio::test]
+    async fn test_decode_credential_rejects_unaccepted_oauth2() {
+        let config = setup_config();
+        // No expectations: any call into the backend panics.
+        let provider = get_provider(&config, Some(MockTokenBackend::default()));
+        let state = get_mocked_state(None, None).await;
+        let credential = jwt_credential(r#"{"alg":"ES256","typ":"at+jwt"}"#);
+        assert!(matches!(
+            provider.decode_credential(&state, &credential).await,
+            Err(TokenProviderError::InvalidToken { .. })
+        ));
+    }
+
+    /// An OAuth2 JWT goes to the format backend, which also tells its
+    /// sender constraint; the sync backends are not asked.
+    #[tokio::test]
+    async fn test_decode_credential_uses_the_oauth2_backend() {
+        use crate::token::backend::MockTokenFormatBackend;
+        let config = setup_config();
+        let mut format = MockTokenFormatBackend::default();
+        format.expect_decode().times(1).returning(|_, _| {
+            generate_token(None)
+                .map(|t| (t, Some(Confirmation { jkt: "t".into() })))
+                .map_err(|e| TokenProviderError::Driver { source: e.into() })
+        });
+        let mut provider = get_provider(&config, Some(MockTokenBackend::default()));
+        provider.oauth2_backend = Some(Arc::new(format));
+        let state = get_mocked_state(None, None).await;
+        let credential = jwt_credential(r#"{"alg":"ES256","typ":"at+jwt"}"#);
+        assert!(
+            provider
+                .decode_credential(&state, &credential)
+                .await
+                .is_ok()
+        );
+    }
+
+    /// A JWS credential is rejected when it is neither the issuing nor an
+    /// accepted format: there is no fallthrough to the issuing backend.
+    #[tokio::test]
+    async fn test_decode_credential_does_not_fall_through() {
+        let config = setup_config();
+        let provider = get_provider(&config, Some(MockTokenBackend::default()));
+        let state = get_mocked_state(None, None).await;
+        let credential = jwt_credential(r#"{"alg":"ES256","typ":"JWT"}"#);
+        assert!(matches!(
+            provider.decode_credential(&state, &credential).await,
+            Err(TokenProviderError::InvalidToken { .. })
+        ));
+    }
+
+    /// The backend of the detected format decodes the credential: the issuing
+    /// one for Fernet, the accepted one for JWS.
+    #[tokio::test]
+    async fn test_decode_credential_selects_backend_by_format() -> Result<()> {
+        let config = setup_config();
+        let token = generate_token(Some(TimeDelta::hours(1)))?;
+
+        let mut issuing = MockTokenBackend::default();
+        let issued = token.clone();
+        issuing
+            .expect_decode()
+            .times(1)
+            .returning(move |_| Ok(issued.clone()));
+        let mut accepted = MockTokenBackend::default();
+        let accepted_token = token.clone();
+        accepted
+            .expect_decode()
+            .times(1)
+            .returning(move |_| Ok(accepted_token.clone()));
+        let mut provider = get_provider(&config, Some(issuing));
+        provider
+            .accepted_backends
+            .insert(TokenFormat::Jws, Arc::new(accepted));
+
+        let state = get_mocked_state(None, None).await;
+        provider.decode_credential(&state, "gAAAAAB-fernet").await?;
+        let jws = jwt_credential(r#"{"alg":"ES256","typ":"JWT"}"#);
+        provider.decode_credential(&state, &jws).await?;
+        Ok(())
     }
 
     /// The new token expiry has whole-second precision, both for the default
@@ -1036,7 +1280,7 @@ mod tests {
 
         let state = get_mocked_state(Some(config), Some(provider)).await;
 
-        let credential = token_provider.encode_token(&token).unwrap();
+        let credential = token_provider.encode_token(&state, &token).await.unwrap();
         let ctx = ExecutionContext::internal(&state);
         match token_provider
             .validate_to_context(&ctx, &credential, Some(false), None)
@@ -1277,7 +1521,7 @@ mod tests {
         let token_provider = get_provider(&config, Some(backend_driver_mock));
         let state = get_mocked_state(Some(config), None).await;
 
-        let credential = token_provider.encode_token(&token).unwrap();
+        let credential = token_provider.encode_token(&state, &token).await.unwrap();
         let ctx = ExecutionContext::internal(&state);
         let result = token_provider
             .validate_to_context(&ctx, &credential, Some(false), None)
@@ -1346,7 +1590,7 @@ mod tests {
             .mock_resource(resource_mock);
         let state = get_mocked_state(Some(config), Some(provider)).await;
 
-        let credential = token_provider.encode_token(&token).unwrap();
+        let credential = token_provider.encode_token(&state, &token).await.unwrap();
         let ctx = ExecutionContext::internal(&state);
         let result = token_provider
             .validate_to_context(&ctx, &credential, Some(false), None)

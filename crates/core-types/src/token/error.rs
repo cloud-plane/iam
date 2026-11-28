@@ -106,6 +106,17 @@ pub enum TokenProviderError {
         source: Box<dyn std::error::Error + Send + Sync + 'static>,
     },
 
+    /// A federated login resolved more groups than a token may carry.
+    ///
+    /// A refusal to issue, not an invalid token of the client.
+    #[error("the login resolved {count} groups, more than the {max} a token may carry")]
+    TooManyGroups {
+        /// Number of groups the login resolved.
+        count: usize,
+        /// The configured cap.
+        max: usize,
+    },
+
     /// The project is disabled.
     #[error("project disabled")]
     ProjectDisabled(String),

@@ -1101,6 +1101,24 @@ impl Oauth2KeyBackend for RaftOauth2KeyBackend {
         self.revoked_jtis_impl(storage, domain_id).await
     }
 
+    #[tracing::instrument(name = "driver.raft.oauth2_key.is_jti_revoked", level = "debug", skip_all, fields(domain_id = %domain_id))]
+    async fn is_jti_revoked(
+        &self,
+        state: &ServiceState,
+        domain_id: &str,
+        jti: &str,
+    ) -> Result<bool, Oauth2KeyProviderError> {
+        let storage = state
+            .storage
+            .as_deref()
+            .ok_or(Oauth2KeyProviderError::RaftNotAvailable)?;
+        // No owned copy of the list: only the one entry is looked at.
+        let current = self.load_jti_revocations(storage, domain_id).await?;
+        Ok(current
+            .get(jti)
+            .is_some_and(|expires_at| *expires_at > now_epoch_secs()))
+    }
+
     #[tracing::instrument(name = "driver.raft.oauth2_key.revoke_jti", level = "debug", skip_all, fields(domain_id = %domain_id))]
     async fn revoke_jti(
         &self,

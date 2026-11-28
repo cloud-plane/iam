@@ -58,6 +58,16 @@ async fn test_token_format_matches_provider() -> Result<()> {
             let header: Value = serde_json::from_slice(&URL_SAFE_NO_PAD.decode(header)?)?;
             assert_eq!(header["alg"], "ES256", "unexpected JWS header: {header}");
         }
+        "oauth2" => {
+            let mut parts = token.split('.');
+            let header = parts.next().ok_or_eyre("OAuth2 token has no header")?;
+            if parts.count() != 2 {
+                bail!("OAuth2 token must have exactly three segments");
+            }
+            let header: Value = serde_json::from_slice(&URL_SAFE_NO_PAD.decode(header)?)?;
+            assert_eq!(header["typ"], "at+jwt", "unexpected header: {header}");
+            assert_eq!(header["alg"], "ES256", "unexpected header: {header}");
+        }
         other => bail!("unsupported KEYSTONE_TEST_TOKEN_PROVIDER: {other}"),
     }
 

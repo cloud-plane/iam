@@ -25,6 +25,7 @@ pub mod dpop_mode;
 pub mod dpop_nonce;
 pub mod dpop_replay;
 pub mod dpop_required;
+pub mod dpop_resource;
 pub mod dpop_runtime;
 pub mod error;
 pub mod hook;

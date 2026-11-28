@@ -208,7 +208,9 @@ pub enum TokenPresentation<'a> {
 /// presented (ADR 0043 §4), after the token itself has been verified.
 ///
 /// * a bound token (`cnf`) is accepted only as `DPoP` with a proof made with
-///   the bound key, never as `Bearer`;
+///   the bound key, never as `Bearer`. "As `DPoP`" is a verified proof, not the
+///   `Authorization` scheme: the request extractor lets the proof stand in for
+///   the scheme so `X-Auth-Token` clients can use bound tokens;
 /// * a `DPoP` presentation of a token without `cnf` is rejected;
 /// * an unbound token is rejected as well when `require_bound` is set (the
 ///   effective mode is `required`).
@@ -272,7 +274,13 @@ pub struct SubjectTokenValidationProfile {
     allowed_algorithms: Vec<Algorithm>,
 }
 
+/// `aud` of the OAuth2 format of Keystone's own v3 tokens (ADR 0049).
+pub const KEYSTONE_TOKEN_AUDIENCE: &str = "keystone";
+
 const NATIVE_REQUIRED_CLAIMS: &[&str] = &["exp", "iat", "nbf", "iss", "aud", "sub", "jti"];
+/// Required claims of the OAuth2 format of Keystone's own tokens: no `nbf`,
+/// which would equal `iat`.
+const KEYSTONE_TOKEN_REQUIRED_CLAIMS: &[&str] = &["exp", "iat", "iss", "aud", "sub", "jti"];
 const EXTERNAL_REQUIRED_CLAIMS: &[&str] = &["exp", "iss", "aud", "sub"];
 const ASSERTION_REQUIRED_CLAIMS: &[&str] = &["exp", "iat", "iss", "aud", "sub", "jti"];
 const PROFILE_STRING_CLAIMS: &[&str] = &["iss", "sub", "jti"];
@@ -349,6 +357,22 @@ impl SubjectTokenValidationProfile {
             expected_issuers,
             AudienceConstraint::AnyOf(accepted_audiences),
             NATIVE_REQUIRED_CLAIMS,
+            None,
+            &[jwt_algorithm(signing_algorithm)],
+        )
+    }
+
+    /// Profile for the OAuth2 format of Keystone's own v3 tokens (ADR 0049):
+    /// the audience is exactly [`KEYSTONE_TOKEN_AUDIENCE`], so no token minted
+    /// for a relying party or a downstream service is ever accepted as one.
+    pub fn keystone_token(
+        expected_issuers: &[String],
+        signing_algorithm: SigningAlgorithm,
+    ) -> Self {
+        Self::new(
+            expected_issuers,
+            AudienceConstraint::Exact(KEYSTONE_TOKEN_AUDIENCE.to_string()),
+            KEYSTONE_TOKEN_REQUIRED_CLAIMS,
             None,
             &[jwt_algorithm(signing_algorithm)],
         )

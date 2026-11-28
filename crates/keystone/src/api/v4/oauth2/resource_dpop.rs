@@ -20,15 +20,8 @@
 //! needs none.
 
 use axum::http::{HeaderMap, header};
-use url::Url;
 
-use openstack_keystone_core::oauth2_client::dpop::{
-    DpopProofContext, DpopProofError, SUPPORTED_ALGORITHMS, verify_dpop_proof,
-};
-use openstack_keystone_core_types::oauth2_client::Confirmation;
-
-use super::dpop_http::{charge_key, proof_header, replay_retry_after};
-use crate::keystone::ServiceState;
+use openstack_keystone_core::oauth2_client::dpop::SUPPORTED_ALGORITHMS;
 
 /// Authorization scheme an access token was presented with.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -59,74 +52,9 @@ pub(super) fn challenge_algs() -> String {
     SUPPORTED_ALGORITHMS.join(" ")
 }
 
-/// Why a proof presented with an access token was refused.
-#[derive(Debug, PartialEq, Eq)]
-pub(super) enum ProofRefusal {
-    /// The proof is missing, malformed, stale, replayed or for another
-    /// request or token.
-    Invalid(String),
-    /// Throttled; retry after the given number of seconds.
-    RateLimited(u64),
-}
-
-/// Verify the `DPoP` proof of a request that presents `token` and return the
-/// thumbprint of the proof key.
-///
-/// `uri` is the external URL of the endpoint (`htu`), `method` its HTTP
-/// method (`htm`). The caller has rate limited the source already, which
-/// bounds the signature checks; this adds the per-key throttle (ADR 0022) on
-/// the verified key thumbprint, in its own pool apart from `/token`.
-/// `bound_jkt` is the `cnf` of the token.
-pub(super) fn verify_resource_proof(
-    state: &ServiceState,
-    headers: &HeaderMap,
-    method: &str,
-    uri: &Url,
-    token: &str,
-    bound_jkt: &Confirmation,
-) -> Result<String, ProofRefusal> {
-    let proof = proof_header(headers)
-        .map_err(|e| ProofRefusal::Invalid(e.description().into()))?
-        .ok_or_else(|| ProofRefusal::Invalid("a DPoP proof is required".into()))?;
-
-    let now = chrono::Utc::now().timestamp();
-    let verified = verify_dpop_proof(
-        proof,
-        &DpopProofContext {
-            access_token: Some(token),
-            accepted_nonces: None,
-            max_skew_secs: state.dpop.proof_lifetime_secs,
-            method,
-            now,
-            uri,
-        },
-    )
-    .map_err(|e: DpopProofError| ProofRefusal::Invalid(e.to_string()))?;
-    // Only the key the token is bound to may use the replay cache: a proof
-    // from any other key is refused before it takes an entry, so a holder of
-    // a valid token cannot fill the cache with fresh keys.
-    if !bound_jkt.matches(&verified.jkt) {
-        return Err(ProofRefusal::Invalid(
-            "the DPoP proof key does not match the token".into(),
-        ));
-    }
-    // Throttled on the verified thumbprint: an unverified one is attacker
-    // chosen, so a flood of forged proofs naming a victim's key could drain
-    // the victim's bucket. A pool apart from `/token`, so reading with a
-    // token cannot starve issuing or refreshing one.
-    charge_key(&state.dpop.resource_throttle, &verified.jkt).map_err(ProofRefusal::RateLimited)?;
-    state
-        .dpop
-        .replay
-        .check_and_insert(&verified, now)
-        .map_err(
-            |e| match replay_retry_after(&e, state.dpop.proof_lifetime_secs) {
-                Some(retry_after) => ProofRefusal::RateLimited(retry_after),
-                None => ProofRefusal::Invalid(e.to_string()),
-            },
-        )?;
-    Ok(verified.jkt)
-}
+pub(super) use openstack_keystone_core::oauth2_client::dpop_resource::{
+    ProofRefusal, verify_resource_proof,
+};
 
 #[cfg(test)]
 mod tests {

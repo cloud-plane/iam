@@ -52,6 +52,7 @@ members = [
   "crates/tls-provider",
   "crates/token-driver-fernet",
   "crates/token-driver-jws",
+  "crates/token-driver-oauth2",
   "crates/token-restriction-driver-sql",
   "crates/trust-driver-sql",
   "crates/webauthn",
@@ -185,6 +186,7 @@ openstack-keystone-scim-driver-raft = { version = "0.1", path = "crates/scim-dri
 openstack-keystone-service-grant-driver-raft = { version = "0.1", path = "crates/service-grant-driver-raft/" }
 openstack-keystone-token-driver-fernet = { version = "0.1.0", path = "crates/token-driver-fernet" }
 openstack-keystone-token-driver-jws = { version = "0.1.0", path = "crates/token-driver-jws" }
+openstack-keystone-token-driver-oauth2 = { version = "0.1.0", path = "crates/token-driver-oauth2" }
 openstack-keystone-token-restriction-driver-sql = { version = "0.1", path = "crates/token-restriction-driver-sql/" }
 openstack-keystone-trust-driver-sql = { version = "0.1", path = "crates/trust-driver-sql/" }
 openstack-keystone-webauthn = { version = "0.1", path = "crates/webauthn/"}

@@ -74,7 +74,11 @@ async fn issue_token(
     Ok(state
         .provider
         .get_token_provider()
-        .encode_token(vsc.inner().token().ok_or_else(|| eyre::eyre!("no token"))?)?)
+        .encode_token(
+            &state,
+            vsc.inner().token().ok_or_else(|| eyre::eyre!("no token"))?,
+        )
+        .await?)
 }
 
 #[tokio::test]

@@ -126,6 +126,25 @@ pub struct Token {
         validate(custom(function = "validate_catalog_ref"))
     )]
     pub catalog: Option<Arc<Catalog>>,
+
+    /// The sender constraint of a DPoP-bound token (RFC 7800).
+    ///
+    /// Present only when the token is bound to a proof key. A service that
+    /// validates a token on behalf of its holder must treat a token with this
+    /// field as usable only together with a proof of that key, which the
+    /// validating call cannot carry.
+    #[serde(skip_serializing_if = "Option::is_none", default)]
+    #[cfg_attr(feature = "builder", builder(default))]
+    pub cnf: Option<TokenConfirmation>,
+}
+
+/// Sender constraint (`cnf`) of a DPoP-bound token.
+#[derive(Clone, Debug, Deserialize, PartialEq, Serialize)]
+#[cfg_attr(feature = "openapi", derive(utoipa::ToSchema))]
+#[cfg_attr(feature = "validate", derive(validator::Validate))]
+pub struct TokenConfirmation {
+    /// RFC 7638 SHA-256 thumbprint of the DPoP proof key.
+    pub jkt: String,
 }
 
 /// Validation for the shared catalog field: `validator` has no `Arc`

@@ -182,10 +182,14 @@ pub async fn mint_nova_admin_token(
     let encoded = state
         .provider
         .get_token_provider()
-        .encode_token(
+        .encode_bound_token(
+            state,
             vsc.token()
                 .map_err(|e| VendordataProviderError::NovaUnavailable(e.to_string()))?,
+            vsc.principal().domain_id(),
+            None,
         )
+        .await
         .map_err(|e| VendordataProviderError::NovaUnavailable(e.to_string()))?;
 
     Ok(SecretString::from(encoded))
@@ -273,7 +277,7 @@ mod tests {
     /// pattern in `crates/keystone/src/api/v3/auth/token/create.rs`'s tests:
     /// a canned `ValidatedSecurityContext` carrying a real `FernetToken` (so
     /// `.token()` succeeds) is returned from `issue_token_context`, and
-    /// `encode_token` returns the fixed string regardless of its input.
+    /// `encode_bound_token` returns the fixed string regardless of its input.
     fn token_mock_minting(encoded: &'static str) -> MockTokenProvider {
         let mut mock = MockTokenProvider::default();
         mock.expect_issue_token_context().returning(|_, _, _| {
@@ -297,8 +301,8 @@ mod tests {
                 .build();
             Ok(crate::auth::ValidatedSecurityContext::test_new(sc))
         });
-        mock.expect_encode_token()
-            .returning(move |_| Ok(encoded.to_string()));
+        mock.expect_encode_bound_token()
+            .returning(move |_, _, _, _| Ok(encoded.to_string()));
         mock
     }
 

@@ -15,6 +15,7 @@
 mod application_credential;
 mod auth_plugin;
 mod authorization;
+mod oauth2_format;
 mod password;
 mod provider;
 mod revoke;

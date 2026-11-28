@@ -103,7 +103,8 @@ async fn test_token_revoked() -> Result<(), Report> {
     let encoded_token = state
         .provider
         .get_token_provider()
-        .encode_token(vsc_issued.inner().token().unwrap())?;
+        .encode_token(&state, vsc_issued.inner().token().unwrap())
+        .await?;
 
     let vsc = state
         .provider
@@ -216,7 +217,8 @@ async fn test_revoked_event_role() -> Result<(), Report> {
     let encoded_token = state
         .provider
         .get_token_provider()
-        .encode_token(vsc_issued.inner().token().unwrap())?;
+        .encode_token(&state, vsc_issued.inner().token().unwrap())
+        .await?;
 
     let vsc = state
         .provider
@@ -333,7 +335,8 @@ async fn test_revoked_event_user() -> Result<(), Report> {
     let encoded_token = state
         .provider
         .get_token_provider()
-        .encode_token(vsc_issued.inner().token().unwrap())?;
+        .encode_token(&state, vsc_issued.inner().token().unwrap())
+        .await?;
 
     let vsc = state
         .provider
@@ -450,7 +453,8 @@ async fn test_revoked_event_project() -> Result<(), Report> {
     let encoded_token = state
         .provider
         .get_token_provider()
-        .encode_token(vsc_issued.inner().token().unwrap())?;
+        .encode_token(&state, vsc_issued.inner().token().unwrap())
+        .await?;
 
     let vsc = state
         .provider

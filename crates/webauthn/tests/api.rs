@@ -151,8 +151,8 @@ fn get_provider_mocks(user_id: &Uuid) -> ProviderBuilder {
     //    }))
     //});
     token_mock
-        .expect_encode_token()
-        .returning(|_| Ok("token".to_string()));
+        .expect_encode_bound_token()
+        .returning(|_, _, _, _| Ok("token".to_string()));
 
     let mut assignment_mock = MockAssignmentProvider::default();
     assignment_mock

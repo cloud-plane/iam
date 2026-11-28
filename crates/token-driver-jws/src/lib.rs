@@ -32,13 +32,12 @@ use openstack_keystone_key_repository::asymmetric::{
     to_encoding_key,
 };
 
-mod claims;
 mod config;
 pub mod error;
 
-pub use claims::JwsClaims;
 pub use config::JwsTokensConfig;
 pub use error::JwsDriverError;
+pub use openstack_keystone_core_types::token::JwsClaims;
 pub use openstack_keystone_key_repository::asymmetric::jwt_algorithm;
 
 /// Linkage anchor — see ADR-0018. Referenced by the `keystone` crate's
@@ -53,7 +52,7 @@ inventory::submit! {
     // fernet-only deployment, so this driver must not be eagerly built.
     BackendRegistration::<dyn TokenBackend> {
         name: "jws",
-        selected: |cfg| cfg.token.provider == TokenProviderDriver::Jws,
+        selected: |cfg| cfg.token.accepts(&TokenProviderDriver::Jws),
         build: |cfg| {
             let section = cfg.require::<JwsTokensConfig>().cloned();
             Box::pin(async move {
@@ -150,7 +149,9 @@ impl TokenBackend for JwsTokenProvider {
 
     fn encode(&self, token: &TokenPayload) -> Result<String, TokenProviderError> {
         let active = self.active().map_err(TokenProviderError::from)?;
-        let claims = JwsClaims::try_from(token).map_err(TokenProviderError::from)?;
+        let claims = JwsClaims::try_from(token)
+            .map_err(JwsDriverError::from)
+            .map_err(TokenProviderError::from)?;
         let encoding_key = to_encoding_key(&active.primary)
             .map_err(JwsDriverError::from)
             .map_err(TokenProviderError::from)?;

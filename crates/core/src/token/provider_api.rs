@@ -16,6 +16,7 @@
 use async_trait::async_trait;
 use secrecy::SecretString;
 
+use openstack_keystone_core_types::oauth2_client::Confirmation;
 use openstack_keystone_core_types::token::*;
 
 use crate::auth::{ExecutionContext, ScopeInfo, SecurityContext, ValidatedSecurityContext};
@@ -113,11 +114,33 @@ pub trait TokenApi: Send + Sync {
     /// Encode the token into the X-Subject-Token String.
     ///
     /// # Parameters
+    /// - `state`: The current service state (signing keys of the OAuth2
+    ///   format are resolved through it, ADR 0049).
     /// - `token`: The token to encode.
     ///
     /// # Returns
     /// - `Result<String, TokenProviderError>` - The encoded string or an error.
-    fn encode_token(&self, token: &TokenPayload) -> Result<String, TokenProviderError>;
+    async fn encode_token(
+        &self,
+        state: &ServiceState,
+        token: &TokenPayload,
+    ) -> Result<String, TokenProviderError>;
+
+    /// Encode the token, bound to the DPoP proof key `cnf` when the issued
+    /// format supports it (the OAuth2 format, ADR 0049); other formats ignore
+    /// the binding.
+    ///
+    /// `domain_id` is the domain of the principal, which selects the signing
+    /// key of the OAuth2 format. A principal that is not a stored user (a
+    /// mapped identity) has no user record to take it from; without it the
+    /// user of the token is looked up.
+    async fn encode_bound_token(
+        &self,
+        state: &ServiceState,
+        token: &TokenPayload,
+        domain_id: Option<String>,
+        cnf: Option<Confirmation>,
+    ) -> Result<String, TokenProviderError>;
 
     /// Get the token restriction by the ID.
     ///
