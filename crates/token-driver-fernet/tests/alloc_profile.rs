@@ -65,8 +65,8 @@ async fn alloc_profile_fernet_decrypt() {
     );
     // Measured value plus about 10% of slack.
     assert!(
-        stats.allocs <= 16,
-        "fernet decrypt: {} allocations, budget is 16",
+        stats.allocs <= 12,
+        "fernet decrypt: {} allocations, budget is 12",
         stats.allocs
     );
 }

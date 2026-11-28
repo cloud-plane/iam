@@ -232,6 +232,71 @@ async fn test_exists_equals_plain_predicate() {
     assert!(hits >= 2, "the matrix does not exercise the filters");
 }
 
+/// Events naming the audit chain or the access token revoke only the tokens
+/// of that chain or with that access token, never every token.
+#[tokio::test]
+async fn test_chain_and_access_token_events() {
+    let db = setup_db().await;
+    let issued_at = Utc::now();
+    let newer = issued_at + TimeDelta::minutes(1);
+    let mut chain = event(None, None, None, None, None, None, newer, Utc::now());
+    chain.audit_chain_id = Set(Some("c1".into()));
+    let mut access = event(None, None, None, None, None, None, newer, Utc::now());
+    access.access_token_id = Set(Some("at1".into()));
+    let mut chain_user = event(None, Some("u1"), None, None, None, None, newer, Utc::now());
+    chain_user.audit_chain_id = Set(Some("c2".into()));
+    RevocationEvent::insert_many([chain, access, chain_user])
+        .exec(&db)
+        .await
+        .unwrap();
+
+    let params = |chain: Option<&str>, access: Option<&str>, user: &str| {
+        let mut builder = RevocationEventListParametersBuilder::default();
+        builder
+            .audit_id("a")
+            .issued_before(issued_at)
+            .user_ids(vec![user.to_string()]);
+        if let Some(chain) = chain {
+            builder.audit_chain_id(chain);
+        }
+        if let Some(access) = access {
+            builder.access_token_id(access);
+        }
+        builder.build().unwrap()
+    };
+    // (chain, access token, user, revoked)
+    let cases = [
+        (None, None, "u9", false),
+        (Some("c9"), None, "u9", false),
+        (Some("c1"), None, "u9", true),
+        (None, Some("at1"), "u9", true),
+        (Some("c9"), Some("at9"), "u9", false),
+        // The event naming chain and user needs both.
+        (Some("c2"), None, "u9", false),
+        (Some("c9"), None, "u1", false),
+        (Some("c2"), None, "u1", true),
+    ];
+    for (chain, access, user, expected) in cases {
+        let params = params(chain, access, user);
+        let label = format!("{chain:?} {access:?} {user}");
+        assert_eq!(
+            expected,
+            matching_count(&db, &params).await.unwrap() > 0,
+            "{label}: plain predicate"
+        );
+        assert_eq!(
+            expected,
+            exists(&db, &params).await.unwrap(),
+            "{label}: existence check"
+        );
+        assert_eq!(
+            expected,
+            count(&db, &params).await.unwrap() > 0,
+            "{label}: count"
+        );
+    }
+}
+
 #[tokio::test]
 async fn test_count_user_event_matches_only_that_user() {
     let db = setup_db().await;
@@ -321,6 +386,8 @@ async fn test_setup_creates_all_indexes_and_ensure_is_idempotent() {
     for (name, _) in indexes::definitions() {
         assert!(index_exists(&db, name).await, "{name} missing after setup");
     }
+    // The partial index of the events that name no dimension.
+    assert!(index_exists(&db, "ix_revocation_event_global").await);
     // A second run, as the migration does on a database that `setup` already
     // handled, must not fail on the existing indexes.
     indexes::ensure(&SchemaManager::new(&db)).await.unwrap();

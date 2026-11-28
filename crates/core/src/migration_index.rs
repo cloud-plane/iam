@@ -61,10 +61,11 @@ pub async fn create_index(
         return Ok(());
     }
     let is_mysql = manager.get_database_backend() == DatabaseBackend::MySql;
-    if is_mysql && let Some(first) = columns.first() {
-        if mysql_has_leading_index(manager, table, first).await? {
-            return Ok(());
-        }
+    if is_mysql
+        && let Some(first) = columns.first()
+        && mysql_has_leading_index(manager, table, first).await?
+    {
+        return Ok(());
     }
     let mut index = Index::create();
     index.name(name).table(Alias::new(table));

@@ -127,6 +127,7 @@ criterion = { workspace = true, features = ["async_tokio"] }
 cadf = { workspace = true, features = ["testing"] }
 http-body-util.workspace = true
 httpmock = { workspace = true, features = ["http2"] }
+openstack-keystone-alloc-profile.workspace = true
 openstack-keystone-core = { workspace = true, features = ["api", "mock"] }
 openstack-keystone-core-types = { workspace = true, features = ["mock"] }
 openstack-keystone-distributed-storage = { workspace = true, features = ["mock"] }

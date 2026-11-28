@@ -33,9 +33,9 @@ use openstack_keystone_core::auth::ExecutionContext;
 use openstack_keystone_core_types::scope::{Project as ScopeProject, Scope as ProviderScope};
 
 use crate::api::common::PeerAddr;
+use crate::api::error::KeystoneApiError;
 use crate::api::v3::auth::token::common::{authenticate_request, enforce_mfa_rules};
 use crate::api::v3::auth::token::types::{AuthRequest, CreateTokenParameters, TokenResponse};
-use crate::api::{Catalog, error::KeystoneApiError};
 use crate::audit::{
     CorrelationId, build_initiator_from_principal, build_initiator_from_vsc,
     build_initiator_unknown, emit_perimeter_authenticate_event, perimeter_outcome,
@@ -171,14 +171,7 @@ async fn create_inner(
         if query.nocatalog.is_some_and(|x| x) {
             return Ok::<_, KeystoneApiError>(None);
         }
-        Ok(Some(Catalog::from(
-            state
-                .provider
-                .get_catalog_provider()
-                .get_catalog(&exec, true)
-                .await?
-                .as_slice(),
-        )))
+        Ok(Some(crate::catalog::response_catalog(state, &exec).await?))
     };
     let vsc_fut = async {
         Ok::<_, KeystoneApiError>(

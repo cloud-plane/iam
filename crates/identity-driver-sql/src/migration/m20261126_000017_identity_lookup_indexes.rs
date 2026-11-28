@@ -16,7 +16,9 @@
 //! `password.local_user_id` is read for every login and password expiry check
 //! and removed with the user. `federated_user.user_id` and
 //! `expiring_user_group_membership.group_id` are foreign keys the deletes of a
-//! user and a group check.
+//! user and a group check. Listing the users of a domain filters by
+//! `domain_id` and orders by `id`: `user(domain_id, id)` serves both, the
+//! existing `(id, domain_id)` index leads with `id` and cannot.
 use openstack_keystone_core::migration_index::{create_index, drop_index};
 use sea_orm_migration::prelude::*;
 
@@ -29,6 +31,7 @@ const INDEXES: &[(&str, &str, &[&str])] = &[
         "ix_expiring_user_group_membership_group_id",
         &["group_id"],
     ),
+    ("user", "ix_user_domain_id_id", &["domain_id", "id"]),
 ];
 
 #[derive(DeriveMigrationName)]

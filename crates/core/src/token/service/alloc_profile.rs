@@ -58,8 +58,8 @@ const ROLES: [&str; 3] = ["member", "reader", "load-balancer_member"];
 /// `--nocapture` and raise the budget on purpose.
 const BUDGETS: [(&str, u64); 7] = [
     ("mocked token decode (constant floor)", 8),
-    ("validate_to_context (subject token)", 92),
-    ("authorize_request_token (caller token)", 84),
+    ("validate_to_context (subject token)", 88),
+    ("authorize_request_token (caller token)", 80),
     ("revocation query parameters", 18),
     ("token response build", 27),
     ("policy input: credentials", 20),

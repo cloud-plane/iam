@@ -52,6 +52,27 @@ cache entry makes the SDK replay a token of a user that no longer exists and
 shows up as random 401 and 500 answers. If you start the load generator some
 other way and see `user cannot be found`, check `~/.osc` first.
 
+### Finding the knee locally
+
+`tools/loadtest-local-knee.sh [OUTDIR]` runs the local setup without a cluster
+and steps the virtual users of the `vu` profile (`STEPS`, default 100 to 3300,
+`HOLD` seconds each). The server, the database and the load generator are
+pinned to separate CPU sets (`KEYSTONE_CPUS`, `POSTGRES_CPUS`, `LOAD_CPUS`;
+default half, quarter and quarter of the CPUs), so the process that saturates
+is visible. Per step it prints requests per second, failures, p95 of all
+requests and of the token validation, CPU of the three processes, the
+utilisation of their CPU sets and the busiest server thread; `top_sql.txt`
+holds the statements of the whole run. Logins are off (`LOADTEST_VU_HASH_PCT=0`).
+
+The server is built with line tables (`LOADTEST_DEBUG_SYMBOLS=1` of
+`tools/run-loadtest-local.sh`), so `PERF_STEPS="400 3300"` also records a
+`perf` profile of the server during each of those steps (needs
+`sudo sysctl kernel.perf_event_paranoid=1`). Compare the two profiles with
+`perf report -i OUTDIR/perf-3300.data --no-children`. Reading the result:
+a set of the server near 100% means it is CPU bound; one thread near one core
+points at a serialised section; a low server CPU with growing latency means
+waiting (database pool, locks, the load generator's own set).
+
 ## k3s deployment
 
 ### Deploy

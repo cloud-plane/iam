@@ -1518,6 +1518,52 @@ async fn test_new_for_scope_unscoped_success() {
     assert!(roles.is_none() || roles.unwrap().is_empty());
 }
 
+// The stored-scope variant must validate from the scope the context
+// already carries — the token re-validation path uses it to avoid
+// cloning the scope out and passing it back in.
+#[tokio::test]
+async fn test_new_for_scope_stored_uses_stored_scope() {
+    let state = get_mocked_state(None, None).await;
+    let authz = AuthzInfoBuilder::default()
+        .scope(ScopeInfo::Unscoped)
+        .roles(Vec::new())
+        .build()
+        .unwrap();
+    let ctx = SecurityContextTestingBuilder::default()
+        .authentication_context(AuthenticationContext::Password)
+        .principal(make_user_identity("uid"))
+        .authorization(authz)
+        .build();
+
+    let result = ValidatedSecurityContext::new_for_scope_stored(ctx, &state).await;
+
+    let validated = result.unwrap();
+    assert!(matches!(
+        validated.0.authorization().unwrap().scope,
+        ScopeInfo::Unscoped
+    ));
+    let roles = validated.0.authorization().unwrap().effective_roles();
+    assert!(roles.is_none() || roles.unwrap().is_empty());
+}
+
+// A stored-scope context without an authorization carries no scope to
+// validate, so it must be rejected.
+#[tokio::test]
+async fn test_new_for_scope_stored_requires_authorization() {
+    let state = get_mocked_state(None, None).await;
+    let ctx = SecurityContextTestingBuilder::default()
+        .authentication_context(AuthenticationContext::Password)
+        .principal(make_user_identity("uid"))
+        .build();
+
+    let result = ValidatedSecurityContext::new_for_scope_stored(ctx, &state).await;
+
+    assert!(matches!(
+        result,
+        Err(AuthenticationError::SecurityContextNotResolved)
+    ));
+}
+
 // A context whose expires_at is in the past must fail with
 // AuthTokenExpired before any role/scope checks run.
 #[tokio::test]

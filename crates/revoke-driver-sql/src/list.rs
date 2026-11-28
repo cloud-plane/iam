@@ -49,16 +49,6 @@ fn matching_filters(
     tracing::debug!("Query parameters: {:?}", params);
     let mut select = DbRevocationEvent::find();
 
-    //if let Some(val) = &params.access_token_id {
-    //    select =
-    // select.filter(db_revocation_event::Column::AccessTokenId.eq(val));
-    //}
-
-    //if let Some(val) = &params.audit_chain_id {
-    //    select =
-    // select.filter(db_revocation_event::Column::AuditChainId.eq(val));
-    //}
-
     select = select.filter(
         Condition::any()
             .add(db_revocation_event::Column::AuditId.is_null())
@@ -136,6 +126,28 @@ fn matching_filters(
             ),
     );
 
+    select = select.filter(
+        Condition::any()
+            .add(db_revocation_event::Column::AuditChainId.is_null())
+            .add_option(
+                params
+                    .audit_chain_id
+                    .as_ref()
+                    .map(|val| db_revocation_event::Column::AuditChainId.eq(val)),
+            ),
+    );
+
+    select = select.filter(
+        Condition::any()
+            .add(db_revocation_event::Column::AccessTokenId.is_null())
+            .add_option(
+                params
+                    .access_token_id
+                    .as_ref()
+                    .map(|val| db_revocation_event::Column::AccessTokenId.eq(val)),
+            ),
+    );
+
     Ok(select)
 }
 
@@ -192,6 +204,18 @@ fn candidate_events(params: &RevocationEventListParameters) -> Condition {
                 .as_ref()
                 .map(|val| db_revocation_event::Column::TrustId.eq(val)),
         )
+        .add_option(
+            params
+                .audit_chain_id
+                .as_ref()
+                .map(|val| db_revocation_event::Column::AuditChainId.eq(val)),
+        )
+        .add_option(
+            params
+                .access_token_id
+                .as_ref()
+                .map(|val| db_revocation_event::Column::AccessTokenId.eq(val)),
+        )
         .add(
             Condition::all()
                 .add(db_revocation_event::Column::AuditId.is_null())
@@ -199,7 +223,9 @@ fn candidate_events(params: &RevocationEventListParameters) -> Condition {
                 .add(db_revocation_event::Column::ProjectId.is_null())
                 .add(db_revocation_event::Column::DomainId.is_null())
                 .add(db_revocation_event::Column::RoleId.is_null())
-                .add(db_revocation_event::Column::TrustId.is_null()),
+                .add(db_revocation_event::Column::TrustId.is_null())
+                .add(db_revocation_event::Column::AuditChainId.is_null())
+                .add(db_revocation_event::Column::AccessTokenId.is_null()),
         )
 }
 
@@ -246,13 +272,25 @@ fn branch_selects(
                     .add(db_revocation_event::Column::RoleId.is_in(val))
                     .add(db_revocation_event::Column::AuditId.is_null())
                     .add(db_revocation_event::Column::UserId.is_null())
-                    .add(db_revocation_event::Column::ProjectId.is_null()),
+                    .add(db_revocation_event::Column::ProjectId.is_null())
+                    .add(db_revocation_event::Column::AuditChainId.is_null())
+                    .add(db_revocation_event::Column::AccessTokenId.is_null()),
             ),
         );
     }
     if let Some(val) = &params.trust_id {
         branches
             .push(matching_filters(params)?.filter(db_revocation_event::Column::TrustId.eq(val)));
+    }
+    if let Some(val) = &params.audit_chain_id {
+        branches.push(
+            matching_filters(params)?.filter(db_revocation_event::Column::AuditChainId.eq(val)),
+        );
+    }
+    if let Some(val) = &params.access_token_id {
+        branches.push(
+            matching_filters(params)?.filter(db_revocation_event::Column::AccessTokenId.eq(val)),
+        );
     }
     branches.push(
         matching_filters(params)?.filter(
@@ -262,7 +300,9 @@ fn branch_selects(
                 .add(db_revocation_event::Column::ProjectId.is_null())
                 .add(db_revocation_event::Column::DomainId.is_null())
                 .add(db_revocation_event::Column::RoleId.is_null())
-                .add(db_revocation_event::Column::TrustId.is_null()),
+                .add(db_revocation_event::Column::TrustId.is_null())
+                .add(db_revocation_event::Column::AuditChainId.is_null())
+                .add(db_revocation_event::Column::AccessTokenId.is_null()),
         ),
     );
     Ok(branches)
@@ -439,7 +479,7 @@ mod tests {
             db.into_transaction_log(),
             [Transaction::from_sql_and_values(
                 DatabaseBackend::Postgres,
-                r#"SELECT COUNT(*) AS num_items FROM (SELECT "revocation_event"."id", "revocation_event"."domain_id", "revocation_event"."project_id", "revocation_event"."user_id", "revocation_event"."role_id", "revocation_event"."trust_id", "revocation_event"."consumer_id", "revocation_event"."access_token_id", "revocation_event"."issued_before", "revocation_event"."expires_at", "revocation_event"."revoked_at", "revocation_event"."audit_id", "revocation_event"."audit_chain_id" FROM "revocation_event" WHERE ("revocation_event"."audit_id" IS NULL OR "revocation_event"."audit_id" = $1) AND ("revocation_event"."domain_id" IS NULL OR "revocation_event"."domain_id" IN ($2, $3)) AND "revocation_event"."trust_id" IS NULL AND "revocation_event"."expires_at" = $4 AND "revocation_event"."issued_before" >= $5 AND ("revocation_event"."project_id" IS NULL OR "revocation_event"."project_id" = $6) AND ("revocation_event"."role_id" IS NULL OR "revocation_event"."role_id" IN ($7, $8)) AND "revocation_event"."user_id" IS NULL AND ("revocation_event"."audit_id" = $9 OR "revocation_event"."project_id" = $10 OR "revocation_event"."domain_id" IN ($11, $12) OR "revocation_event"."role_id" IN ($13, $14) OR ("revocation_event"."audit_id" IS NULL AND "revocation_event"."user_id" IS NULL AND "revocation_event"."project_id" IS NULL AND "revocation_event"."domain_id" IS NULL AND "revocation_event"."role_id" IS NULL AND "revocation_event"."trust_id" IS NULL))) AS "sub_query""#,
+                r#"SELECT COUNT(*) AS num_items FROM (SELECT "revocation_event"."id", "revocation_event"."domain_id", "revocation_event"."project_id", "revocation_event"."user_id", "revocation_event"."role_id", "revocation_event"."trust_id", "revocation_event"."consumer_id", "revocation_event"."access_token_id", "revocation_event"."issued_before", "revocation_event"."expires_at", "revocation_event"."revoked_at", "revocation_event"."audit_id", "revocation_event"."audit_chain_id" FROM "revocation_event" WHERE ("revocation_event"."audit_id" IS NULL OR "revocation_event"."audit_id" = $1) AND ("revocation_event"."domain_id" IS NULL OR "revocation_event"."domain_id" IN ($2, $3)) AND "revocation_event"."trust_id" IS NULL AND "revocation_event"."expires_at" = $4 AND "revocation_event"."issued_before" >= $5 AND ("revocation_event"."project_id" IS NULL OR "revocation_event"."project_id" = $6) AND ("revocation_event"."role_id" IS NULL OR "revocation_event"."role_id" IN ($7, $8)) AND "revocation_event"."user_id" IS NULL AND "revocation_event"."audit_chain_id" IS NULL AND "revocation_event"."access_token_id" IS NULL AND ("revocation_event"."audit_id" = $9 OR "revocation_event"."project_id" = $10 OR "revocation_event"."domain_id" IN ($11, $12) OR "revocation_event"."role_id" IN ($13, $14) OR ("revocation_event"."audit_id" IS NULL AND "revocation_event"."user_id" IS NULL AND "revocation_event"."project_id" IS NULL AND "revocation_event"."domain_id" IS NULL AND "revocation_event"."role_id" IS NULL AND "revocation_event"."trust_id" IS NULL AND "revocation_event"."audit_chain_id" IS NULL AND "revocation_event"."access_token_id" IS NULL))) AS "sub_query""#,
                 [
                     "audit_id".into(),
                     "domain_id1".into(),
@@ -481,6 +521,26 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn test_exists_has_branches_for_chain_and_access_token() {
+        let query = build_exists(
+            &RevocationEventListParametersBuilder::default()
+                .audit_chain_id("chain")
+                .access_token_id("access")
+                .build()
+                .unwrap(),
+        )
+        .unwrap()
+        .to_string(sea_orm::sea_query::PostgresQueryBuilder);
+        // chain id, access token id and the events without dimensions.
+        assert_eq!(query.matches("UNION ALL").count(), 2, "{query}");
+        assert!(query.contains("\"audit_chain_id\" = 'chain'"), "{query}");
+        assert!(query.contains("\"access_token_id\" = 'access'"), "{query}");
+        // The events that name only one of them must not count as events
+        // without dimensions.
+        assert!(query.contains("\"audit_chain_id\" IS NULL AND"), "{query}");
+    }
+
+    #[tokio::test]
     async fn test_exists_role_branch_excludes_events_of_other_dimensions() {
         let query = build_exists(
             &RevocationEventListParametersBuilder::default()
@@ -493,7 +553,9 @@ mod tests {
         let role_branch = "\"revocation_event\".\"role_id\" IN ('rid1') AND \
              \"revocation_event\".\"audit_id\" IS NULL AND \
              \"revocation_event\".\"user_id\" IS NULL AND \
-             \"revocation_event\".\"project_id\" IS NULL UNION ALL";
+             \"revocation_event\".\"project_id\" IS NULL AND \
+             \"revocation_event\".\"audit_chain_id\" IS NULL AND \
+             \"revocation_event\".\"access_token_id\" IS NULL UNION ALL";
         assert!(query.contains(role_branch), "{query}");
         // role branch and the events without dimensions.
         assert_eq!(query.matches("UNION ALL").count(), 1, "{query}");
@@ -541,7 +603,7 @@ mod tests {
             db.into_transaction_log(),
             [Transaction::from_sql_and_values(
                 DatabaseBackend::Postgres,
-                r#"SELECT "revocation_event"."id", "revocation_event"."domain_id", "revocation_event"."project_id", "revocation_event"."user_id", "revocation_event"."role_id", "revocation_event"."trust_id", "revocation_event"."consumer_id", "revocation_event"."access_token_id", "revocation_event"."issued_before", "revocation_event"."expires_at", "revocation_event"."revoked_at", "revocation_event"."audit_id", "revocation_event"."audit_chain_id" FROM "revocation_event" WHERE ("revocation_event"."audit_id" IS NULL OR "revocation_event"."audit_id" = $1) AND ("revocation_event"."domain_id" IS NULL OR "revocation_event"."domain_id" IN ($2)) AND "revocation_event"."trust_id" IS NULL AND "revocation_event"."expires_at" = $3 AND "revocation_event"."issued_before" >= $4 AND ("revocation_event"."project_id" IS NULL OR "revocation_event"."project_id" = $5) AND ("revocation_event"."role_id" IS NULL OR "revocation_event"."role_id" IN ($6)) AND "revocation_event"."user_id" IS NULL AND ("revocation_event"."audit_id" = $7 OR "revocation_event"."project_id" = $8 OR "revocation_event"."domain_id" IN ($9) OR "revocation_event"."role_id" IN ($10) OR ("revocation_event"."audit_id" IS NULL AND "revocation_event"."user_id" IS NULL AND "revocation_event"."project_id" IS NULL AND "revocation_event"."domain_id" IS NULL AND "revocation_event"."role_id" IS NULL AND "revocation_event"."trust_id" IS NULL))"#,
+                r#"SELECT "revocation_event"."id", "revocation_event"."domain_id", "revocation_event"."project_id", "revocation_event"."user_id", "revocation_event"."role_id", "revocation_event"."trust_id", "revocation_event"."consumer_id", "revocation_event"."access_token_id", "revocation_event"."issued_before", "revocation_event"."expires_at", "revocation_event"."revoked_at", "revocation_event"."audit_id", "revocation_event"."audit_chain_id" FROM "revocation_event" WHERE ("revocation_event"."audit_id" IS NULL OR "revocation_event"."audit_id" = $1) AND ("revocation_event"."domain_id" IS NULL OR "revocation_event"."domain_id" IN ($2)) AND "revocation_event"."trust_id" IS NULL AND "revocation_event"."expires_at" = $3 AND "revocation_event"."issued_before" >= $4 AND ("revocation_event"."project_id" IS NULL OR "revocation_event"."project_id" = $5) AND ("revocation_event"."role_id" IS NULL OR "revocation_event"."role_id" IN ($6)) AND "revocation_event"."user_id" IS NULL AND "revocation_event"."audit_chain_id" IS NULL AND "revocation_event"."access_token_id" IS NULL AND ("revocation_event"."audit_id" = $7 OR "revocation_event"."project_id" = $8 OR "revocation_event"."domain_id" IN ($9) OR "revocation_event"."role_id" IN ($10) OR ("revocation_event"."audit_id" IS NULL AND "revocation_event"."user_id" IS NULL AND "revocation_event"."project_id" IS NULL AND "revocation_event"."domain_id" IS NULL AND "revocation_event"."role_id" IS NULL AND "revocation_event"."trust_id" IS NULL AND "revocation_event"."audit_chain_id" IS NULL AND "revocation_event"."access_token_id" IS NULL))"#,
                 [
                     "audit_id".into(),
                     "domain_id1".into(),
@@ -578,7 +640,7 @@ mod tests {
         .to_string();
         assert_eq!(
             format!(
-                "SELECT `revocation_event`.`id`, `revocation_event`.`domain_id`, `revocation_event`.`project_id`, `revocation_event`.`user_id`, `revocation_event`.`role_id`, `revocation_event`.`trust_id`, `revocation_event`.`consumer_id`, `revocation_event`.`access_token_id`, `revocation_event`.`issued_before`, `revocation_event`.`expires_at`, `revocation_event`.`revoked_at`, `revocation_event`.`audit_id`, `revocation_event`.`audit_chain_id` FROM `revocation_event` WHERE (`revocation_event`.`audit_id` IS NULL OR `revocation_event`.`audit_id` = 'audit_id') AND (`revocation_event`.`domain_id` IS NULL OR `revocation_event`.`domain_id` IN ('domain_id1')) AND `revocation_event`.`trust_id` IS NULL AND `revocation_event`.`expires_at` = '{}' AND `revocation_event`.`issued_before` >= '{}' AND (`revocation_event`.`project_id` IS NULL OR `revocation_event`.`project_id` = 'project_id') AND (`revocation_event`.`role_id` IS NULL OR `revocation_event`.`role_id` IN ('rid1')) AND `revocation_event`.`user_id` IS NULL AND (`revocation_event`.`audit_id` = 'audit_id' OR `revocation_event`.`project_id` = 'project_id' OR `revocation_event`.`domain_id` IN ('domain_id1') OR `revocation_event`.`role_id` IN ('rid1') OR (`revocation_event`.`audit_id` IS NULL AND `revocation_event`.`user_id` IS NULL AND `revocation_event`.`project_id` IS NULL AND `revocation_event`.`domain_id` IS NULL AND `revocation_event`.`role_id` IS NULL AND `revocation_event`.`trust_id` IS NULL))",
+                "SELECT `revocation_event`.`id`, `revocation_event`.`domain_id`, `revocation_event`.`project_id`, `revocation_event`.`user_id`, `revocation_event`.`role_id`, `revocation_event`.`trust_id`, `revocation_event`.`consumer_id`, `revocation_event`.`access_token_id`, `revocation_event`.`issued_before`, `revocation_event`.`expires_at`, `revocation_event`.`revoked_at`, `revocation_event`.`audit_id`, `revocation_event`.`audit_chain_id` FROM `revocation_event` WHERE (`revocation_event`.`audit_id` IS NULL OR `revocation_event`.`audit_id` = 'audit_id') AND (`revocation_event`.`domain_id` IS NULL OR `revocation_event`.`domain_id` IN ('domain_id1')) AND `revocation_event`.`trust_id` IS NULL AND `revocation_event`.`expires_at` = '{}' AND `revocation_event`.`issued_before` >= '{}' AND (`revocation_event`.`project_id` IS NULL OR `revocation_event`.`project_id` = 'project_id') AND (`revocation_event`.`role_id` IS NULL OR `revocation_event`.`role_id` IN ('rid1')) AND `revocation_event`.`user_id` IS NULL AND `revocation_event`.`audit_chain_id` IS NULL AND `revocation_event`.`access_token_id` IS NULL AND (`revocation_event`.`audit_id` = 'audit_id' OR `revocation_event`.`project_id` = 'project_id' OR `revocation_event`.`domain_id` IN ('domain_id1') OR `revocation_event`.`role_id` IN ('rid1') OR (`revocation_event`.`audit_id` IS NULL AND `revocation_event`.`user_id` IS NULL AND `revocation_event`.`project_id` IS NULL AND `revocation_event`.`domain_id` IS NULL AND `revocation_event`.`role_id` IS NULL AND `revocation_event`.`trust_id` IS NULL AND `revocation_event`.`audit_chain_id` IS NULL AND `revocation_event`.`access_token_id` IS NULL))",
                 time2.format("%F %X%.6f"),
                 time1.format("%F %X%.6f"),
             ),
@@ -606,7 +668,7 @@ mod tests {
         .to_string();
         assert_eq!(
             format!(
-                "SELECT \"revocation_event\".\"id\", \"revocation_event\".\"domain_id\", \"revocation_event\".\"project_id\", \"revocation_event\".\"user_id\", \"revocation_event\".\"role_id\", \"revocation_event\".\"trust_id\", \"revocation_event\".\"consumer_id\", \"revocation_event\".\"access_token_id\", \"revocation_event\".\"issued_before\", \"revocation_event\".\"expires_at\", \"revocation_event\".\"revoked_at\", \"revocation_event\".\"audit_id\", \"revocation_event\".\"audit_chain_id\" FROM \"revocation_event\" WHERE (\"revocation_event\".\"audit_id\" IS NULL OR \"revocation_event\".\"audit_id\" = 'audit_id') AND (\"revocation_event\".\"domain_id\" IS NULL OR \"revocation_event\".\"domain_id\" IN ('domain_id1')) AND \"revocation_event\".\"trust_id\" IS NULL AND \"revocation_event\".\"expires_at\" = '{}' AND \"revocation_event\".\"issued_before\" >= '{}' AND (\"revocation_event\".\"project_id\" IS NULL OR \"revocation_event\".\"project_id\" = 'project_id') AND (\"revocation_event\".\"role_id\" IS NULL OR \"revocation_event\".\"role_id\" IN ('rid1')) AND \"revocation_event\".\"user_id\" IS NULL AND (\"revocation_event\".\"audit_id\" = 'audit_id' OR \"revocation_event\".\"project_id\" = 'project_id' OR \"revocation_event\".\"domain_id\" IN ('domain_id1') OR \"revocation_event\".\"role_id\" IN ('rid1') OR (\"revocation_event\".\"audit_id\" IS NULL AND \"revocation_event\".\"user_id\" IS NULL AND \"revocation_event\".\"project_id\" IS NULL AND \"revocation_event\".\"domain_id\" IS NULL AND \"revocation_event\".\"role_id\" IS NULL AND \"revocation_event\".\"trust_id\" IS NULL))",
+                "SELECT \"revocation_event\".\"id\", \"revocation_event\".\"domain_id\", \"revocation_event\".\"project_id\", \"revocation_event\".\"user_id\", \"revocation_event\".\"role_id\", \"revocation_event\".\"trust_id\", \"revocation_event\".\"consumer_id\", \"revocation_event\".\"access_token_id\", \"revocation_event\".\"issued_before\", \"revocation_event\".\"expires_at\", \"revocation_event\".\"revoked_at\", \"revocation_event\".\"audit_id\", \"revocation_event\".\"audit_chain_id\" FROM \"revocation_event\" WHERE (\"revocation_event\".\"audit_id\" IS NULL OR \"revocation_event\".\"audit_id\" = 'audit_id') AND (\"revocation_event\".\"domain_id\" IS NULL OR \"revocation_event\".\"domain_id\" IN ('domain_id1')) AND \"revocation_event\".\"trust_id\" IS NULL AND \"revocation_event\".\"expires_at\" = '{}' AND \"revocation_event\".\"issued_before\" >= '{}' AND (\"revocation_event\".\"project_id\" IS NULL OR \"revocation_event\".\"project_id\" = 'project_id') AND (\"revocation_event\".\"role_id\" IS NULL OR \"revocation_event\".\"role_id\" IN ('rid1')) AND \"revocation_event\".\"user_id\" IS NULL AND \"revocation_event\".\"audit_chain_id\" IS NULL AND \"revocation_event\".\"access_token_id\" IS NULL AND (\"revocation_event\".\"audit_id\" = 'audit_id' OR \"revocation_event\".\"project_id\" = 'project_id' OR \"revocation_event\".\"domain_id\" IN ('domain_id1') OR \"revocation_event\".\"role_id\" IN ('rid1') OR (\"revocation_event\".\"audit_id\" IS NULL AND \"revocation_event\".\"user_id\" IS NULL AND \"revocation_event\".\"project_id\" IS NULL AND \"revocation_event\".\"domain_id\" IS NULL AND \"revocation_event\".\"role_id\" IS NULL AND \"revocation_event\".\"trust_id\" IS NULL AND \"revocation_event\".\"audit_chain_id\" IS NULL AND \"revocation_event\".\"access_token_id\" IS NULL))",
                 time2.format("%F %X%.6f"),
                 time1.format("%F %X%.6f"),
             ),
@@ -634,7 +696,7 @@ mod tests {
         .to_string();
         assert_eq!(
             format!(
-                "SELECT `revocation_event`.`id`, `revocation_event`.`domain_id`, `revocation_event`.`project_id`, `revocation_event`.`user_id`, `revocation_event`.`role_id`, `revocation_event`.`trust_id`, `revocation_event`.`consumer_id`, `revocation_event`.`access_token_id`, `revocation_event`.`issued_before`, `revocation_event`.`expires_at`, `revocation_event`.`revoked_at`, `revocation_event`.`audit_id`, `revocation_event`.`audit_chain_id` FROM `revocation_event` WHERE (`revocation_event`.`audit_id` IS NULL OR `revocation_event`.`audit_id` = 'audit_id') AND (`revocation_event`.`domain_id` IS NULL OR `revocation_event`.`domain_id` IN ('domain_id1', 'domain_id2')) AND `revocation_event`.`trust_id` IS NULL AND `revocation_event`.`expires_at` = '{}' AND `revocation_event`.`issued_before` >= '{}' AND (`revocation_event`.`project_id` IS NULL OR `revocation_event`.`project_id` = 'project_id') AND (`revocation_event`.`role_id` IS NULL OR `revocation_event`.`role_id` IN ('rid1')) AND `revocation_event`.`user_id` IS NULL AND (`revocation_event`.`audit_id` = 'audit_id' OR `revocation_event`.`project_id` = 'project_id' OR `revocation_event`.`domain_id` IN ('domain_id1', 'domain_id2') OR `revocation_event`.`role_id` IN ('rid1') OR (`revocation_event`.`audit_id` IS NULL AND `revocation_event`.`user_id` IS NULL AND `revocation_event`.`project_id` IS NULL AND `revocation_event`.`domain_id` IS NULL AND `revocation_event`.`role_id` IS NULL AND `revocation_event`.`trust_id` IS NULL))",
+                "SELECT `revocation_event`.`id`, `revocation_event`.`domain_id`, `revocation_event`.`project_id`, `revocation_event`.`user_id`, `revocation_event`.`role_id`, `revocation_event`.`trust_id`, `revocation_event`.`consumer_id`, `revocation_event`.`access_token_id`, `revocation_event`.`issued_before`, `revocation_event`.`expires_at`, `revocation_event`.`revoked_at`, `revocation_event`.`audit_id`, `revocation_event`.`audit_chain_id` FROM `revocation_event` WHERE (`revocation_event`.`audit_id` IS NULL OR `revocation_event`.`audit_id` = 'audit_id') AND (`revocation_event`.`domain_id` IS NULL OR `revocation_event`.`domain_id` IN ('domain_id1', 'domain_id2')) AND `revocation_event`.`trust_id` IS NULL AND `revocation_event`.`expires_at` = '{}' AND `revocation_event`.`issued_before` >= '{}' AND (`revocation_event`.`project_id` IS NULL OR `revocation_event`.`project_id` = 'project_id') AND (`revocation_event`.`role_id` IS NULL OR `revocation_event`.`role_id` IN ('rid1')) AND `revocation_event`.`user_id` IS NULL AND `revocation_event`.`audit_chain_id` IS NULL AND `revocation_event`.`access_token_id` IS NULL AND (`revocation_event`.`audit_id` = 'audit_id' OR `revocation_event`.`project_id` = 'project_id' OR `revocation_event`.`domain_id` IN ('domain_id1', 'domain_id2') OR `revocation_event`.`role_id` IN ('rid1') OR (`revocation_event`.`audit_id` IS NULL AND `revocation_event`.`user_id` IS NULL AND `revocation_event`.`project_id` IS NULL AND `revocation_event`.`domain_id` IS NULL AND `revocation_event`.`role_id` IS NULL AND `revocation_event`.`trust_id` IS NULL AND `revocation_event`.`audit_chain_id` IS NULL AND `revocation_event`.`access_token_id` IS NULL))",
                 time2.format("%F %X%.6f"),
                 time1.format("%F %X%.6f"),
             ),
@@ -653,7 +715,7 @@ mod tests {
         .build(DatabaseBackend::Sqlite)
         .to_string();
         assert_eq!(
-            "SELECT \"revocation_event\".\"id\", \"revocation_event\".\"domain_id\", \"revocation_event\".\"project_id\", \"revocation_event\".\"user_id\", \"revocation_event\".\"role_id\", \"revocation_event\".\"trust_id\", \"revocation_event\".\"consumer_id\", \"revocation_event\".\"access_token_id\", \"revocation_event\".\"issued_before\", \"revocation_event\".\"expires_at\", \"revocation_event\".\"revoked_at\", \"revocation_event\".\"audit_id\", \"revocation_event\".\"audit_chain_id\" FROM \"revocation_event\" WHERE \"revocation_event\".\"audit_id\" IS NULL AND \"revocation_event\".\"domain_id\" IS NULL AND \"revocation_event\".\"trust_id\" IS NULL AND \"revocation_event\".\"project_id\" IS NULL AND \"revocation_event\".\"role_id\" IS NULL AND \"revocation_event\".\"user_id\" IS NULL AND (\"revocation_event\".\"audit_id\" IS NULL AND \"revocation_event\".\"user_id\" IS NULL AND \"revocation_event\".\"project_id\" IS NULL AND \"revocation_event\".\"domain_id\" IS NULL AND \"revocation_event\".\"role_id\" IS NULL AND \"revocation_event\".\"trust_id\" IS NULL)",
+            "SELECT \"revocation_event\".\"id\", \"revocation_event\".\"domain_id\", \"revocation_event\".\"project_id\", \"revocation_event\".\"user_id\", \"revocation_event\".\"role_id\", \"revocation_event\".\"trust_id\", \"revocation_event\".\"consumer_id\", \"revocation_event\".\"access_token_id\", \"revocation_event\".\"issued_before\", \"revocation_event\".\"expires_at\", \"revocation_event\".\"revoked_at\", \"revocation_event\".\"audit_id\", \"revocation_event\".\"audit_chain_id\" FROM \"revocation_event\" WHERE \"revocation_event\".\"audit_id\" IS NULL AND \"revocation_event\".\"domain_id\" IS NULL AND \"revocation_event\".\"trust_id\" IS NULL AND \"revocation_event\".\"project_id\" IS NULL AND \"revocation_event\".\"role_id\" IS NULL AND \"revocation_event\".\"user_id\" IS NULL AND \"revocation_event\".\"audit_chain_id\" IS NULL AND \"revocation_event\".\"access_token_id\" IS NULL AND (\"revocation_event\".\"audit_id\" IS NULL AND \"revocation_event\".\"user_id\" IS NULL AND \"revocation_event\".\"project_id\" IS NULL AND \"revocation_event\".\"domain_id\" IS NULL AND \"revocation_event\".\"role_id\" IS NULL AND \"revocation_event\".\"trust_id\" IS NULL AND \"revocation_event\".\"audit_chain_id\" IS NULL AND \"revocation_event\".\"access_token_id\" IS NULL)",
             query
         );
     }

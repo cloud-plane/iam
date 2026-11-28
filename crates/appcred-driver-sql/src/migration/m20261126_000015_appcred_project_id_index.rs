@@ -11,17 +11,23 @@
 // limitations under the License.
 //
 // SPDX-License-Identifier: Apache-2.0
-//! Index `application_credential.project_id`.
+//! Index the lookups of `application_credential`.
 //!
-//! Deleting a project removes its application credentials by `project_id`. Without an index
-//! each delete scans the whole table.
+//! Deleting a project removes its application credentials by `project_id`.
+//! A login and the validation of an application credential token look the
+//! credential up by its public `id`, the table is keyed by `internal_id`.
+//! Without the indexes each of these scans the whole table.
 use openstack_keystone_core::migration_index::{create_index, drop_index};
 use sea_orm_migration::prelude::*;
 
-/// Table, name of the index and its column.
+/// Table of the indexes.
 const TABLE: &str = "application_credential";
-const INDEX: &str = "ix_application_credential_project_id";
-const COLUMN: &str = "project_id";
+
+/// The indexes: name and columns.
+const INDEXES: &[(&str, &[&str])] = &[
+    ("ix_application_credential_project_id", &["project_id"]),
+    ("ix_application_credential_id", &["id"]),
+];
 
 #[derive(DeriveMigrationName)]
 pub struct Migration;
@@ -29,10 +35,16 @@ pub struct Migration;
 #[async_trait::async_trait]
 impl MigrationTrait for Migration {
     async fn up(&self, manager: &SchemaManager) -> Result<(), DbErr> {
-        create_index(manager, TABLE, INDEX, &[COLUMN]).await
+        for (name, columns) in INDEXES {
+            create_index(manager, TABLE, name, columns).await?;
+        }
+        Ok(())
     }
 
     async fn down(&self, manager: &SchemaManager) -> Result<(), DbErr> {
-        drop_index(manager, TABLE, INDEX).await
+        for (name, _) in INDEXES {
+            drop_index(manager, TABLE, name).await?;
+        }
+        Ok(())
     }
 }

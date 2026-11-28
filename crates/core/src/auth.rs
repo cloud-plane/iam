@@ -96,18 +96,59 @@ impl ValidatedSecurityContext {
     /// happen as a single atomic step.
     #[tracing::instrument(name = "auth.new_for_scope", level = "debug", skip(state), err(Debug))]
     pub async fn new_for_scope(
-        mut ctx: SecurityContext,
+        ctx: SecurityContext,
         scope: ScopeInfo,
         state: &ServiceState,
     ) -> Result<Self, AuthenticationError> {
+        Self::new_for_scope_inner(ctx, Some(scope), state).await
+    }
+
+    /// Validate a context that already carries the requested scope in its
+    /// `authorization` (token re-validation, and issuance right after
+    /// `set_authorization_scope`).
+    ///
+    /// The scope is read from the context instead of being cloned out by
+    /// the caller and passed back in, so token re-validation pays no scope
+    /// copy at all.
+    #[tracing::instrument(
+        name = "auth.new_for_scope_stored",
+        level = "debug",
+        skip(state),
+        err(Debug)
+    )]
+    pub(crate) async fn new_for_scope_stored(
+        ctx: SecurityContext,
+        state: &ServiceState,
+    ) -> Result<Self, AuthenticationError> {
+        if ctx.authorization().is_none() {
+            return Err(AuthenticationError::SecurityContextNotResolved);
+        }
+        Self::new_for_scope_inner(ctx, None, state).await
+    }
+
+    async fn new_for_scope_inner(
+        mut ctx: SecurityContext,
+        mut requested: Option<ScopeInfo>,
+        state: &ServiceState,
+    ) -> Result<Self, AuthenticationError> {
         if let Some(existing_authz) = ctx.authorization() {
-            if existing_authz.scope != scope {
-                ctx.validate_scope_boundaries(&scope)?;
+            // A stored-scope context requests exactly what it carries, so
+            // nothing to compare or bound-check.
+            if let Some(scope) = &requested
+                && existing_authz.scope != *scope
+            {
+                ctx.validate_scope_boundaries(scope)?;
             }
         } else {
+            let scope = requested
+                .take()
+                .ok_or(AuthenticationError::SecurityContextNotResolved)?;
             ctx.set_authorization_scope(scope.clone())?;
+            requested = Some(scope);
         }
-        let scope_clone = scope;
+        // `requested` is left for the Mapping arm below — the only place an
+        // owned scope is needed; every other path validates and resolves
+        // roles against the scope carried in the context.
 
         // Populate user_domain before validation, since validate() requires it
         if let IdentityInfo::User(user_info) = &ctx.principal().identity
@@ -277,6 +318,17 @@ impl ValidatedSecurityContext {
             AuthenticationContext::Token(..) => {}
             AuthenticationContext::WebauthN => {}
             AuthenticationContext::Mapping(mc) => {
+                // The Mapping arm works on an owned scope: the requested
+                // one, or — for a stored-scope context (mapping SVID
+                // paths) — the one the context already carries.
+                let scope_clone = match requested {
+                    Some(scope) => scope,
+                    None => ctx
+                        .authorization()
+                        .ok_or(AuthenticationError::SecurityContextNotResolved)?
+                        .scope
+                        .clone(),
+                };
                 // Plugin version binding for a `mapping`-mode dynamic auth
                 // plugin (ADR 0025 §4 "Plugin-version binding for mapping
                 // mode"), mirroring the `full_auth` `valid_since` check

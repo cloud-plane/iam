@@ -4957,6 +4957,7 @@ dependencies = [
  "jsonwebtoken",
  "minijinja",
  "nix 0.32.0",
+ "openstack-keystone-alloc-profile",
  "openstack-keystone-api-key-driver-raft",
  "openstack-keystone-api-types",
  "openstack-keystone-appcred-driver-sql",

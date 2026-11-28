@@ -39,6 +39,8 @@ pub(crate) fn revokes(event: &EventRecord, params: &RevocationEventListParameter
     };
     event.origin == params.issuer
         && one(&event.audit_id, &params.audit_id)
+        && one(&event.audit_chain_id, &params.audit_chain_id)
+        && one(&event.access_token_id, &params.access_token_id)
         && any(&event.domain_id, &params.domain_ids)
         && one(&event.trust_id, &params.trust_id)
         && one(&event.project_id, &params.project_id)
@@ -50,4 +52,56 @@ pub(crate) fn revokes(event: &EventRecord, params: &RevocationEventListParameter
         && params
             .issued_before
             .is_none_or(|v| event.issued_before >= v.timestamp_micros())
+}
+
+#[cfg(test)]
+mod tests {
+    use chrono::Utc;
+
+    use openstack_keystone_core_types::revoke::{
+        RevocationEventCreate, RevocationEventListParametersBuilder,
+    };
+
+    use super::*;
+
+    fn record(chain: Option<&str>, access: Option<&str>) -> EventRecord {
+        EventRecord::new(&RevocationEventCreate {
+            audit_chain_id: chain.map(Into::into),
+            access_token_id: access.map(Into::into),
+            issued_before: Utc::now(),
+            revoked_at: Utc::now(),
+            ..Default::default()
+        })
+    }
+
+    fn token(chain: Option<&str>, access: Option<&str>) -> RevocationEventListParameters {
+        let mut builder = RevocationEventListParametersBuilder::default();
+        builder.audit_id("a");
+        if let Some(chain) = chain {
+            builder.audit_chain_id(chain);
+        }
+        if let Some(access) = access {
+            builder.access_token_id(access);
+        }
+        builder.build().unwrap()
+    }
+
+    #[test]
+    fn test_chain_and_access_token_must_equal() {
+        let chain = record(Some("c1"), None);
+        assert!(revokes(&chain, &token(Some("c1"), None)));
+        assert!(!revokes(&chain, &token(Some("c2"), None)));
+        assert!(!revokes(&chain, &token(None, None)));
+
+        let access = record(None, Some("at1"));
+        assert!(revokes(&access, &token(None, Some("at1"))));
+        assert!(!revokes(&access, &token(None, Some("at2"))));
+        assert!(!revokes(&access, &token(Some("c1"), None)));
+
+        // An event naming neither applies to every token.
+        assert!(revokes(
+            &record(None, None),
+            &token(Some("c1"), Some("at1"))
+        ));
+    }
 }

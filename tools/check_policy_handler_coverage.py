@@ -190,6 +190,7 @@ ALLOWLIST_NO_POLICY_CONTRACT = {
         "keystone/src/api/v4/oauth2/ensure_signing_key.rs",
         "keystone/src/api/v4/oauth2/local_emergency_key.rs",
         "keystone/src/api/v4/oauth2/rotate_signing_key.rs",
+        "keystone/src/api/v4/oauth2/sessions.rs",
         "keystone/src/api/v4/scim_realm/create.rs",
         "keystone/src/api/v4/scim_realm/list.rs",
         "keystone/src/api/v4/scim_realm/purge.rs",

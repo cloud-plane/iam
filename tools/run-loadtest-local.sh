@@ -31,9 +31,13 @@ mkdir -p "$LOADTEST_HOME"
 
 tools/start-spire.sh
 
+# The database gets the settings of the k3s deployment plus
+# `pg_stat_statements`. LOADTEST_PG_CPUS pins it, see below.
 docker run -d --name loadtest_postgres \
     -e POSTGRES_USER=postgres -e POSTGRES_PASSWORD=password \
-    -p 15432:5432 mirror.gcr.io/library/postgres:18-alpine
+    -p 15432:5432 mirror.gcr.io/library/postgres:18-alpine \
+    -c max_connections=200 -c shared_buffers=128MB \
+    -c shared_preload_libraries=pg_stat_statements
 
 for i in {1..30}; do
     if docker exec loadtest_postgres pg_isready -U postgres > /dev/null 2>&1; then
@@ -42,6 +46,18 @@ for i in {1..30}; do
     fi
     sleep 1
 done
+
+# LOADTEST_PG_CPUS (`0-7`, `8,9`) pins the database so that the processes of a
+# run do not compete for the same cores. `--cpuset-cpus` is not available to
+# rootless podman, so the processes of the container are pinned from outside;
+# the backends of later connections inherit the set from the postmaster.
+if [ -n "${LOADTEST_PG_CPUS:-}" ]; then
+  PG_PID="$(docker inspect -f '{{.State.Pid}}' loadtest_postgres)"
+  for pid in $PG_PID $(pgrep -P "$PG_PID" || true); do
+    taskset -a -cp "$LOADTEST_PG_CPUS" "$pid" > /dev/null \
+      || echo "could not pin postgres process $pid to $LOADTEST_PG_CPUS" >&2
+  done
+fi
 
 cat <<EOF > "$CONFIG_FILE"
 [api_policy]
@@ -59,7 +75,7 @@ enabled = false
 methods = password,token,openid,application_credential,x509
 
 [DEFAULT]
-debug = true
+debug = ${KEYSTONE_DEBUG:-true}
 use_stderr = false
 log_dir = ${STATE_DIR}
 
@@ -88,15 +104,25 @@ EOF
 
 echo "2Rlc-npWYOGqqG1zM-bmfBj2apLacLXhIbBsdyqQ0zg=" > "${STATE_DIR}/etc/fernet-keys/0"
 
+# LOADTEST_DEBUG_SYMBOLS=1 keeps line tables in the release binaries so that
+# `perf` and flamegraphs show function names and lines (the profile strips
+# symbols otherwise; the code generated stays the same).
+if [ -n "${LOADTEST_DEBUG_SYMBOLS:-}" ]; then
+  export CARGO_PROFILE_RELEASE_DEBUG=line-tables-only CARGO_PROFILE_RELEASE_STRIP=false
+fi
 cargo build --release --bins
 
 ./target/release/keystone-manage -c "$CONFIG_FILE" db sync
 ./target/release/keystone-manage -c "$CONFIG_FILE" db up
 
+# LOADTEST_KEYSTONE_CPUS pins the server (`taskset` list), KEYSTONE_VERBOSITY
+# replaces the default `-vv` (empty: warnings only, what a capacity run wants).
+KEYSTONE_TASKSET=()
+if [ -n "${LOADTEST_KEYSTONE_CPUS:-}" ]; then KEYSTONE_TASKSET=(taskset -c "$LOADTEST_KEYSTONE_CPUS"); fi
 KEYSTONE_DEV_KEK=4242424242424242424242424242424242424242424242424242424242424242 \
 KEYSTONE_ALLOW_ENV_KEK=1 \
 SPIFFE_ENDPOINT_SOCKET=$SPIFFE_ENDPOINT_SOCKET \
-./target/release/keystone -c "$CONFIG_FILE" -vv > "${STATE_DIR}/rust.log" 2>&1 &
+"${KEYSTONE_TASKSET[@]}" ./target/release/keystone -c "$CONFIG_FILE" ${KEYSTONE_VERBOSITY--vv} > "${STATE_DIR}/rust.log" 2>&1 &
 KEYSTONE_PID=$!
 echo "$KEYSTONE_PID" > "${STATE_DIR}/keystone.pid"
 
@@ -125,6 +151,12 @@ SPIFFE_ENDPOINT_SOCKET=$SPIFFE_ENDPOINT_SOCKET \
 ./target/release/keystone-manage -c "$CONFIG_FILE" bootstrap --bootstrap-password password
 
 echo "✅ Keystone bootstrap completed!"
+
+docker exec loadtest_postgres psql -U postgres -c \
+    "CREATE EXTENSION IF NOT EXISTS pg_stat_statements" > /dev/null
+
+# tools/loadtest-local-knee.sh starts the load generator itself.
+if [ -n "${LOADTEST_SETUP_ONLY:-}" ]; then exit 0; fi
 
 (cd tests/loadtest && cargo build --release)
 

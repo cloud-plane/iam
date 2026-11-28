@@ -91,6 +91,10 @@ impl TryFrom<&ValidatedSecurityContext> for RevocationEventListParametersBuilder
                     .first()
                     .ok_or(RevokeProviderError::TokenHasNoAuditId)?,
             );
+            if let Some(chain_id) = token.audit_ids().last() {
+                // The last audit id is the one that started the chain.
+                builder.audit_chain_id(chain_id);
+            }
             builder.issued_before(*token.issued_at());
             if let Some(domain_id) = token.domain_id() {
                 builder.domain_ids(vec![domain_id.clone()]);
@@ -369,6 +373,8 @@ mod tests {
         let params = params_builder.build().unwrap();
 
         assert_eq!(params.audit_id, Some("test_audit_id".to_string()));
+        // A token that was not rescoped is its own chain.
+        assert_eq!(params.audit_chain_id, Some("test_audit_id".to_string()));
         assert_eq!(params.project_id, Some("project_id".to_string()));
         assert_eq!(params.user_ids, Some(vec!["user_id".to_string()]));
         assert!(params.trust_id.is_none());
@@ -376,6 +382,30 @@ mod tests {
             HashSet::<String>::from_iter(["r1".to_string(), "r2".to_string()]),
             HashSet::<String>::from_iter(params.role_ids.expect("roles must be there").into_iter())
         );
+    }
+
+    #[test]
+    fn test_revocation_list_audit_chain_is_the_last_audit_id() {
+        let payload = ProjectScopePayloadBuilder::default()
+            .methods(vec!["password".to_string()].into_iter())
+            .audit_ids(
+                vec!["own".to_string(), "parent".to_string(), "root".to_string()].into_iter(),
+            )
+            .user_id("user_id")
+            .project_id("project_id")
+            .expires_at(Utc::now() + chrono::TimeDelta::hours(1))
+            .build()
+            .unwrap();
+        let vsc = make_vsc_password(FernetToken::ProjectScope(payload));
+
+        let params = RevocationEventListParametersBuilder::try_from(&vsc)
+            .unwrap()
+            .build()
+            .unwrap();
+
+        assert_eq!(params.audit_id, Some("own".to_string()));
+        assert_eq!(params.audit_chain_id, Some("root".to_string()));
+        assert!(params.access_token_id.is_none());
     }
 
     #[test]

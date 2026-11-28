@@ -208,14 +208,26 @@ pub fn read_bin_data<R: Read>(len: u32, rd: &mut R) -> Result<Vec<u8>, io::Error
 
 /// Read string data.
 ///
+/// Reads exactly `len` bytes and converts them to a `String` in a single
+/// allocation (no intermediate `Vec` plus lossy-conversion copy). Invalid
+/// UTF-8 is a malformed token, not something to silently mangle with
+/// replacement characters: both issuers (Python keystone and this driver)
+/// write these fields as `str`, so a non-UTF-8 payload must be rejected.
+///
 /// # Parameters
 /// - `len`: The length of the data to read.
 /// - `rd`: The reader to read from.
 ///
 /// # Returns
-/// A `Result` containing the read string if successful, or an `io::Error`.
-pub fn read_str_data<R: Read>(len: u32, rd: &mut R) -> Result<String, io::Error> {
-    Ok(String::from_utf8_lossy(&read_bin_data(len, rd)?).into_owned())
+/// A `Result` containing the read string if successful, or a
+/// `FernetDriverError`.
+pub fn read_str_data<R: Read>(len: u32, rd: &mut R) -> Result<String, FernetDriverError> {
+    let mut buf = Vec::with_capacity(len.min(1 << 16) as usize);
+    let bytes_read = rd.take(u64::from(len)).read_to_end(&mut buf)?;
+    if bytes_read != len as usize {
+        return Err(io::Error::from(io::ErrorKind::UnexpectedEof).into());
+    }
+    String::from_utf8(buf).map_err(|_| FernetDriverError::InvalidToken)
 }
 
 /// Write string.
@@ -243,11 +255,11 @@ pub fn read_str<R: Read>(rd: &mut R) -> Result<String, FernetDriverError> {
     match read_marker(rd).map_err(ValueReadError::from)? {
         marker @ (Marker::Bin8 | Marker::Bin16 | Marker::Bin32) => {
             let len = read_bin_len_for_marker(marker, rd)?;
-            Ok(String::from_utf8_lossy(&read_bin_data(len, rd)?).to_string())
+            read_str_data(len, rd)
         }
         marker @ (Marker::FixStr(_) | Marker::Str8 | Marker::Str16 | Marker::Str32) => {
             let len = read_str_len_for_marker(marker, rd)?;
-            Ok(read_str_data(len, rd)?)
+            read_str_data(len, rd)
         }
         other => Err(FernetDriverError::InvalidTokenUuidMarker(other)),
     }
@@ -277,6 +289,15 @@ pub fn read_uuid(rd: &mut &[u8]) -> Result<String, FernetDriverError> {
                     let marker = read_marker(rd).map_err(ValueReadError::from)?;
                     if let Marker::Bin8 | Marker::Bin16 | Marker::Bin32 = marker {
                         let len = read_bin_len_for_marker(marker, rd)?;
+                        if len == 16 {
+                            // Canonical case (both issuers write exactly 16 raw
+                            // UUID bytes): read straight off the payload into a
+                            // stack buffer, so the only allocation is the hex
+                            // string itself.
+                            let mut bytes = [0u8; 16];
+                            rd.read_exact(&mut bytes)?;
+                            return Ok(Uuid::from_bytes(bytes).as_simple().to_string());
+                        }
                         return Ok(Uuid::try_from(read_bin_data(len, rd)?)?
                             .as_simple()
                             .to_string());
@@ -287,16 +308,14 @@ pub fn read_uuid(rd: &mut &[u8]) -> Result<String, FernetDriverError> {
                     match read_marker(rd).map_err(ValueReadError::from)? {
                         marker @ (Marker::Bin8 | Marker::Bin16 | Marker::Bin32) => {
                             let len = read_bin_len_for_marker(marker, rd)?;
-                            return Ok(
-                                String::from_utf8_lossy(&read_bin_data(len, rd)?).to_string()
-                            );
+                            return read_str_data(len, rd);
                         }
                         marker @ (Marker::FixStr(_)
                         | Marker::Str8
                         | Marker::Str16
                         | Marker::Str32) => {
                             let len = read_str_len_for_marker(marker, rd)?;
-                            return Ok(read_str_data(len, rd)?);
+                            return read_str_data(len, rd);
                         }
                         other => {
                             return Err(FernetDriverError::InvalidTokenUuidMarker(other));
@@ -309,7 +328,7 @@ pub fn read_uuid(rd: &mut &[u8]) -> Result<String, FernetDriverError> {
             }
         }
         Marker::FixStr(len) => {
-            return Ok(read_str_data(len.into(), rd)?);
+            return read_str_data(len.into(), rd);
         }
         other => {
             return Err(FernetDriverError::InvalidTokenUuidMarker(other));
@@ -425,9 +444,16 @@ pub fn read_audit_ids(
         let marker = read_marker(rd).map_err(ValueReadError::from)?;
         if let Marker::Bin8 | Marker::Bin16 | Marker::Bin32 = marker {
             let bin_len = read_bin_len_for_marker(marker, rd)?;
-            let dt = read_bin_data(bin_len, rd)?;
-            let audit_id: String = URL_SAFE_NO_PAD.encode(dt);
-            result.push(audit_id);
+            if bin_len == 16 {
+                // Audit ids are 16 random bytes on the wire; the stack fast
+                // path skips the per-id `Vec` allocation.
+                let mut bytes = [0u8; 16];
+                rd.read_exact(&mut bytes)?;
+                result.push(URL_SAFE_NO_PAD.encode(bytes.as_slice()));
+            } else {
+                let dt = read_bin_data(bin_len, rd)?;
+                result.push(URL_SAFE_NO_PAD.encode(dt));
+            }
         } else {
             return Err(FernetDriverError::InvalidToken);
         }
@@ -534,6 +560,27 @@ mod tests {
     use tempfile::tempdir;
 
     use super::*;
+
+    #[test]
+    fn read_str_data_rejects_invalid_utf8() {
+        let mut rd: &[u8] = &[0xff, 0xfe, 0xfd];
+        assert!(matches!(
+            read_str_data(3, &mut rd),
+            Err(FernetDriverError::InvalidToken)
+        ));
+    }
+
+    #[test]
+    fn read_str_data_rejects_short_input() {
+        let mut rd: &[u8] = b"ab";
+        assert!(read_str_data(3, &mut rd).is_err());
+    }
+
+    #[test]
+    fn read_str_data_valid() {
+        let mut rd: &[u8] = b"abc";
+        assert_eq!(read_str_data(3, &mut rd).unwrap_or_default(), "abc");
+    }
 
     // Low-level key parsing/rotation/Null-Key-detection coverage lives with
     // `openstack-keystone-key-repository`, which this adapter delegates to.
