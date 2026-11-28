@@ -484,12 +484,11 @@ impl TokenService {
 
         let mut sc = SecurityContext::try_from(auth_result)?;
         sc.set_token(token);
-        let scope = sc
-            .authorization()
-            .ok_or(TokenProviderError::ScopeMissing)?
-            .scope
-            .clone();
-        let vsc = ValidatedSecurityContext::new_for_scope(sc, scope, state).await?;
+        // The context carries the scope the token was validated against;
+        // validate it from there instead of cloning the scope out to pass
+        // it back in.
+        sc.authorization().ok_or(TokenProviderError::ScopeMissing)?;
+        let vsc = ValidatedSecurityContext::new_for_scope_stored(sc, state).await?;
 
         if state
             .provider
@@ -623,7 +622,8 @@ impl TokenApi for TokenService {
             Utc::now().trunc_subsecs(0),
         )?;
         sc.set_token(token);
-        let vsc = ValidatedSecurityContext::new_for_scope(sc, scope.clone(), state).await?;
+        // The requested scope was just set on the context above.
+        let vsc = ValidatedSecurityContext::new_for_scope_stored(sc, state).await?;
 
         // ADR 0031 "Tokens": `keystone_token_issued_total{driver,method}`.
         // Only recorded when the authentication context maps to one of the

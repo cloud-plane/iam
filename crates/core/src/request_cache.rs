@@ -27,7 +27,6 @@
 
 use std::any::Any;
 use std::cell::RefCell;
-use std::collections::HashMap;
 use std::future::Future;
 use std::sync::LazyLock;
 
@@ -89,8 +88,26 @@ tokio::task_local! {
     static REQUEST_CACHE: RequestCache;
 }
 
-type CacheKey = (&'static str, String);
-type CacheEntries = RefCell<HashMap<CacheKey, Box<dyn Any + Send>>>;
+/// Upper bound on cached entries per request. The linear lookup is only
+/// cheap for small lists; past the bound new keys are simply not cached (the
+/// cache is an optimization, so a miss just reloads), keeping every lookup
+/// O(MAX_ENTRIES) however many users or groups a request touches.
+const MAX_ENTRIES: usize = 64;
+
+type CacheEntries = RefCell<Vec<CacheEntry>>;
+
+/// A single cached entry.
+///
+/// The cache holds only a handful of entries per request, so it is a flat
+/// list looked up linearly: the hot [`cache_get`] path then performs no
+/// allocation at all. (The previous `HashMap` design built an owned
+/// `String` key on *every* lookup and every write, which showed up
+/// prominently in the per-request allocation profile.)
+struct CacheEntry {
+    namespace: &'static str,
+    key: String,
+    value: Box<dyn Any + Send>,
+}
 
 /// Request-scoped cache of arbitrary, `Send` values keyed by
 /// `(namespace, id)`.
@@ -112,21 +129,36 @@ impl RequestCache {
     fn get<T: Clone + 'static>(&self, namespace: &'static str, id: &str) -> Option<T> {
         self.entries
             .borrow()
-            .get(&(namespace, id.to_string()))
-            .and_then(|v| v.downcast_ref::<T>())
+            .iter()
+            .find(|e| e.namespace == namespace && e.key == id)
+            .and_then(|e| e.value.downcast_ref::<T>())
             .cloned()
     }
 
+    /// Insert or replace the value for `(namespace, id)` — replacement
+    /// matches the previous `HashMap::insert` semantics, so a mutation
+    /// followed by another read in the same request never sees a stale
+    /// earlier entry.
     fn set<T: Send + 'static>(&self, namespace: &'static str, id: &str, value: T) {
-        self.entries
-            .borrow_mut()
-            .insert((namespace, id.to_string()), Box::new(value));
+        let mut entries = self.entries.borrow_mut();
+        if let Some(entry) = entries
+            .iter_mut()
+            .find(|e| e.namespace == namespace && e.key == id)
+        {
+            entry.value = Box::new(value);
+        } else if entries.len() < MAX_ENTRIES {
+            entries.push(CacheEntry {
+                namespace,
+                key: id.to_string(),
+                value: Box::new(value),
+            });
+        }
     }
 
     fn remove(&self, namespace: &'static str, id: &str) {
         self.entries
             .borrow_mut()
-            .remove(&(namespace, id.to_string()));
+            .retain(|e| !(e.namespace == namespace && e.key == id));
     }
 }
 
@@ -167,6 +199,22 @@ mod tests {
     use openstack_keystone_telemetry::metrics::MetricsPipeline;
 
     use super::*;
+
+    #[test]
+    fn entries_are_bounded() {
+        let cache = RequestCache::default();
+        for i in 0..(MAX_ENTRIES + 10) {
+            cache.set("ns", &i.to_string(), i);
+        }
+        assert_eq!(cache.entries.borrow().len(), MAX_ENTRIES);
+        // Existing keys still update when full.
+        cache.set("ns", "0", 999usize);
+        assert_eq!(cache.get::<usize>("ns", "0"), Some(999));
+        assert_eq!(
+            cache.get::<usize>("ns", &(MAX_ENTRIES + 1).to_string()),
+            None
+        );
+    }
 
     /// Pins the rendered exposition text (series names, labels, HELP/TYPE and
     /// bucket layout) against `tests/golden/request_cache.prom` (ADR 0040).

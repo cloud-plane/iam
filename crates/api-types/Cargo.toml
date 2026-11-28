@@ -25,11 +25,11 @@ http = { workspace = true, optional = true }
 openstack-keystone-common = { workspace = true, optional = true }
 openstack-keystone-core-types = { workspace = true, optional = true }
 secrecy = { workspace = true, features = ["serde"] }
-serde.workspace = true
+serde = { workspace = true, features = ["rc"] }
 serde_json.workspace = true
 serde_urlencoded = { workspace = true, optional = true }
 thiserror.workspace = true
-utoipa = { workspace = true, features = ["chrono", "url"], optional = true }
+utoipa = { workspace = true, features = ["chrono", "url", "rc_schema"], optional = true }
 validator = { workspace = true, features = ["derive"], optional = true }
 webauthn-rs-proto.workspace = true
 url = { workspace = true, optional = true }

@@ -28,9 +28,9 @@ use openstack_keystone_core_types::credential::Ec2SignatureRequest;
 
 use crate::api::auth::Auth;
 use crate::api::common::PeerAddr;
+use crate::api::error::KeystoneApiError;
 use crate::api::v3::ec2tokens::redeem::redeem_ec2_credential;
 use crate::api::v3::ec2tokens::types::Ec2TokenAuthRequest;
-use crate::api::{Catalog, error::KeystoneApiError};
 use crate::audit::{
     CorrelationId, build_initiator_from_vsc, build_initiator_unknown,
     emit_perimeter_authenticate_event, perimeter_outcome,
@@ -130,15 +130,8 @@ async fn create_inner(
     let mut api_token = TokenResponse {
         token: TokenBuilder::try_from(&vsc)?.build()?,
     };
-    let catalog: Catalog = Catalog::from(
-        state
-            .provider
-            .get_catalog_provider()
-            .get_catalog(&ExecutionContext::internal(state), true)
-            .await?
-            .as_slice(),
-    );
-    api_token.token.catalog = Some(catalog);
+    api_token.token.catalog =
+        Some(crate::catalog::response_catalog(state, &ExecutionContext::internal(state)).await?);
 
     let response = (
         StatusCode::OK,

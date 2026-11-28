@@ -33,7 +33,6 @@ use openstack_keystone_core_types::mapping::authorization::Authorization;
 use openstack_keystone_core_types::resource::{DomainRef, ProjectRef};
 use tracing::{debug, warn};
 
-use crate::api::types::Catalog;
 use crate::api::v4::auth::token::types::TokenResponse;
 
 pub(super) fn openapi_router() -> OpenApiRouter<ServiceState> {
@@ -89,15 +88,7 @@ pub async fn post(
     };
     api_token.validate()?;
 
-    let catalog: Catalog = Catalog::from(
-        state
-            .provider
-            .get_catalog_provider()
-            .get_catalog(&exec, true)
-            .await?
-            .as_slice(),
-    );
-    api_token.token.catalog = Some(catalog);
+    api_token.token.catalog = Some(crate::catalog::response_catalog(&state, &exec).await?);
 
     Ok((
         StatusCode::OK,

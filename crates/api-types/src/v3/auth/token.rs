@@ -12,11 +12,13 @@
 //
 // SPDX-License-Identifier: Apache-2.0
 
+use std::sync::Arc;
+
 use chrono::{DateTime, Utc};
 use secrecy::SecretString;
 use serde::{Deserialize, Serialize};
 #[cfg(feature = "validate")]
-use validator::Validate;
+use validator::{Validate, ValidationError, ValidationErrorsKind};
 
 use crate::catalog::*;
 use crate::scope::*;
@@ -111,10 +113,57 @@ pub struct Token {
     pub system: Option<System>,
 
     /// A catalog object.
+    ///
+    /// Shared (`Arc`) rather than deep-copied per response: the catalog
+    /// rarely changes, and the response-shaped conversion is built once per
+    /// catalog generation (see the keystone crate's catalog response cache),
+    /// so serving a token response never re-copies the service/endpoint
+    /// strings.
     #[serde(skip_serializing_if = "Option::is_none")]
     #[cfg_attr(feature = "builder", builder(default))]
-    #[cfg_attr(feature = "validate", validate(nested))]
-    pub catalog: Option<Catalog>,
+    #[cfg_attr(
+        feature = "validate",
+        validate(custom(function = "validate_catalog_ref"))
+    )]
+    pub catalog: Option<Arc<Catalog>>,
+}
+
+/// Validation for the shared catalog field: `validator` has no `Arc`
+/// support, so the reference is dereferenced by hand. A custom function can
+/// only report a single error, so the nested violations are flattened into
+/// its message as `path: code` pairs (e.g. `[0].name: length`).
+#[cfg(feature = "validate")]
+fn validate_catalog_ref(catalog: &Arc<Catalog>) -> Result<(), ValidationError> {
+    fn collect(errors: &validator::ValidationErrors, path: &str, out: &mut Vec<String>) {
+        for (name, kind) in errors.errors() {
+            let here = if path.is_empty() {
+                name.to_string()
+            } else {
+                format!("{path}.{name}")
+            };
+            match kind {
+                ValidationErrorsKind::Field(errs) => {
+                    out.extend(errs.iter().map(|e| format!("{here}: {}", e.code)));
+                }
+                ValidationErrorsKind::Struct(inner) => collect(inner, &here, out),
+                ValidationErrorsKind::List(items) => {
+                    for (idx, inner) in items {
+                        collect(inner, &format!("{here}[{idx}]"), out);
+                    }
+                }
+            }
+        }
+    }
+    match catalog.validate() {
+        Ok(()) => Ok(()),
+        Err(errors) => {
+            let mut found = Vec::new();
+            collect(&errors, "", &mut found);
+            let mut err = ValidationError::new("catalog");
+            err.message = Some(found.join("; ").into());
+            Err(err)
+        }
+    }
 }
 
 #[derive(Clone, Debug, Deserialize, PartialEq, Serialize)]

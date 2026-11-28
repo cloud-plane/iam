@@ -37,7 +37,7 @@ use openstack_keystone_core::auth::ExecutionContext;
 
 use crate::api::common::PeerAddr;
 use crate::api::v3::auth::token::types::{ExistingToken, TokenResponse, ValidateTokenParameters};
-use crate::api::{Catalog, auth::Auth, error::KeystoneApiError};
+use crate::api::{auth::Auth, error::KeystoneApiError};
 use crate::keystone::ServiceState;
 
 /// Validate and show information for token.
@@ -123,16 +123,13 @@ pub(super) async fn show(
     let mut response_token = TokenResponse { token };
 
     if !query.nocatalog.is_some_and(|x| x) {
-        let catalog: Catalog = Catalog::from(
-            state
-                .provider
-                .get_catalog_provider()
-                .get_catalog(&ExecutionContext::from_auth(&state, &user_auth), true)
-                .await?
-                .as_slice(),
+        response_token.token.catalog = Some(
+            crate::catalog::response_catalog(
+                &state,
+                &ExecutionContext::from_auth(&state, &user_auth),
+            )
+            .await?,
         );
-
-        response_token.token.catalog = Some(catalog);
     }
 
     Ok((StatusCode::OK, Json(response_token)).into_response())

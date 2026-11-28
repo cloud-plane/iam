@@ -30,4 +30,33 @@
 //! An OpenStack service, such as Compute (nova), Object Storage (swift), or
 //! Image service (glance), that provides one or more endpoints through which
 //! users can access resources and perform operations.
+mod response_cache;
+
 pub use openstack_keystone_core::catalog::*;
+pub use response_cache::{CATALOG_RESPONSE_CACHE, CatalogResponseCache};
+
+use std::sync::Arc;
+
+use openstack_keystone_api_types::catalog::Catalog;
+use openstack_keystone_core::auth::ExecutionContext;
+
+use crate::api::error::KeystoneApiError;
+use crate::keystone::ServiceState;
+
+/// Fetch the catalog of enabled services and return it in its shared,
+/// response-shaped form.
+///
+/// Single place that chooses the `enabled` filter, so the driver call and the
+/// response cache key cannot drift apart.
+pub async fn response_catalog(
+    state: &ServiceState,
+    exec: &ExecutionContext<'_>,
+) -> Result<Arc<Catalog>, KeystoneApiError> {
+    const ENABLED: bool = true;
+    let shared = state
+        .provider
+        .get_catalog_provider()
+        .get_catalog(exec, ENABLED)
+        .await?;
+    Ok(CATALOG_RESPONSE_CACHE.get_or_build(&shared, ENABLED))
+}
